@@ -136,5 +136,98 @@ if st.button("🔍 เริ่มวิเคราะห์ข้อสอบ"
                         )
                         
                         raw_ans = response.text.strip()
-                        # ล้างโค้ดส่วนเกินแบบปลอดภัย ไม่ใช้เครื่องหมายสัญลักษณ์สุ่มเสี่ยง
-                        raw_ans = raw_ans.replace("
+                        # ใช้รหัส \x60 ล้างแท็ก markdown ป้องกัน error บนจอมือถือ
+                        raw_ans = re.sub(r'\x60{3}(?:json)?', '', raw_ans).strip()
+                        ai_answers = json.loads(raw_ans)
+                    else:
+                        ai_answers = {}
+
+                    st.session_state["submit_url"] = submit_url
+                    st.session_state["parsed_questions"] = parsed_questions
+                    st.session_state["personal_data_map"] = personal_data_map
+                    st.session_state["ai_answers"] = ai_answers
+                    st.success("🎉 ดึงและวิเคราะห์ข้อสอบสำเร็จ!")
+
+            except Exception as e:
+                st.error(f"เกิดข้อผิดพลาดในการประมวลผล: {e}")
+
+# 3. แสดงผล UI แบบแก้ไขได้ พร้อมแถบสีความมั่นใจ
+if "parsed_questions" in st.session_state:
+    st.write("---")
+    st.write("### ✏️ จำลองคำตอบ (ตรวจสอบ/ปรับแก้ได้ก่อนส่งจริง)")
+    
+    final_payload = {}
+
+    # โชว์ข้อมูลส่วนตัว
+    for entry_id, (title, val, cat) in st.session_state["personal_data_map"].items():
+        st.text_input(f"📌 {title} [{cat}]", value=val, key=f"input_{entry_id}", disabled=True)
+        final_payload[entry_id] = val
+
+    if st.session_state["personal_data_map"]:
+        st.write("---")
+    
+    parsed_q = st.session_state["parsed_questions"]
+    ai_ans = st.session_state["ai_answers"]
+
+    for idx, q in enumerate(parsed_q, 1):
+        entry_id = q["entry_id"]
+        title = q["title"]
+        choices = q["choices"]
+        
+        # ดึงข้อมูลจาก AI
+        q_data = ai_ans.get(entry_id, {})
+        if isinstance(q_data, str):
+            default_val = q_data
+            score = 80
+            reason = "ประมวลผลคำตอบอัตโนมัติ"
+        else:
+            default_val = q_data.get("answer", "")
+            score = q_data.get("confidence", 70)
+            reason = q_data.get("reasoning", "ไม่ระบุเหตุผล")
+
+        st.markdown(f"**ข้อ {idx}: {title}**")
+        
+        # แสดงแถบสีความมั่นใจแบบ Gradient
+        st.markdown(f"""
+        <div class="gradient-bar-container">
+            <div class="gradient-bar" style="width: {score}%"></div>
+        </div>
+        <small style="color: #555;">🎯 ความมั่นใจ: <b>{score}%</b> | 💡 <i>เหตุผล: {reason}</i></small>
+        """, unsafe_allow_html=True)
+        
+        st.write("")
+
+        # ข้อเลือกตอบ (Dropdown)
+        if choices:
+            default_idx = 0
+            for c_idx, choice_str in enumerate(choices):
+                if choice_str.strip() == str(default_val).strip() or choice_str in str(default_val):
+                    default_idx = c_idx
+                    break
+            
+            selected_choice = st.selectbox(
+                f"คำตอบข้อ {idx}:",
+                options=choices,
+                index=default_idx,
+                key=f"user_choice_{entry_id}"
+            )
+            final_payload[entry_id] = selected_choice
+        
+        # ข้อเติมคำ (Text Box)
+        else:
+            user_text = st.text_input(
+                f"คำตอบข้อ {idx}:",
+                value=str(default_val),
+                key=f"user_text_{entry_id}"
+            )
+            final_payload[entry_id] = user_text
+        
+        st.write("---")
+
+    if st.button("🚀 ยืนยันส่งคำตอบเข้า Google Form", type="primary"):
+        res_submit = requests.post(st.session_state["submit_url"], data=final_payload)
+        if res_submit.status_code == 200:
+            st.balloons()
+            st.success("🎉 ส่งคำตอบเข้า Google Form เรียบร้อยแล้วครับ!")
+        else:
+            st.error(f"เกิดข้อผิดพลาดในการส่ง Status Code: {res_submit.status_code}")
