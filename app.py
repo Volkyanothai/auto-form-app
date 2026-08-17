@@ -9,7 +9,7 @@ st.set_page_config(page_title="Auto Google Form AI Pro", page_icon="🤖")
 st.title("🤖 ระบบผู้ช่วยตอบข้อสอบ (Pro Edition)")
 st.write("วิเคราะห์แม่นยำ พร้อมโชว์คะแนนความมั่นใจ เหตุผล และแก้ไขคำตอบได้ตามใจชอบ")
 
-# --- CSS สำหรับแถบไล่เฉดสีสวยๆ ---
+# --- CSS สำหรับแถบไล่เฉดสี ---
 st.markdown("""
 <style>
 .gradient-bar-container {
@@ -136,4 +136,5 @@ if st.button("🔍 เริ่มวิเคราะห์ข้อสอบ"
                         )
                         
                         raw_ans = response.text.strip()
-                        raw_ans = re.sub(r'```json\s*|\s*
+                        # ล้างโค้ดส่วนเกินแบบปลอดภัย ไม่ใช้เครื่องหมายสัญลักษณ์สุ่มเสี่ยง
+                        raw_ans = raw_ans.replace("
