@@ -11,58 +11,63 @@ st.set_page_config(page_title="Auto Google Form AI Pro", page_icon="🤖")
 st.title("🤖 ระบบผู้ช่วยตอบข้อสอบ (Pro Edition + Vision AI)")
 st.write("วิเคราะห์แม่นยำ อ่านรูปภาพประกอบข้อสอบได้ พร้อมคะแนนความมั่นใจและเหตุผล")
 
-# --- ฟังก์ชันตรวจจับข้อมูลส่วนตัวแบบแม่นยำสูง ---
-def check_personal_info(q_title, my_name, my_student_id, my_no, my_class):
-    title = q_title.strip()
-    title_lower = title.lower()
-    
-    # 1. ถ้าโจทย์ยาวเกิน 30 ตัวอักษร หรือมีคำถามประเภท "คืออะไร", "ข้อใด", "กี่" -> เป็นข้อสอบแน่นอน
-    if len(title) > 30:
+# --- ฟังก์ชันตรวจจับข้อมูลส่วนตัวแบบแม่นยำและยืดหยุ่นสูง ---
+def check_personal_info(q_title, choices, my_name, my_student_id, my_no, my_class):
+    # ตัดสัญลักษณ์ Markdown และเลขข้อออกเพื่อเช็กข้อความจริง
+    clean_title = re.sub(r'^\*?\*?(?:ข้อ\s*\d+[\s.:-]*)?', '', q_title.strip()).strip()
+    clean_title = re.sub(r'\*+\s*$', '', clean_title).strip()
+    title_lower = clean_title.lower()
+
+    # คำต้องห้ามที่เป็นโจทย์วิชาการ (ป้องกันการเข้าใจผิด)
+    exam_stopwords = [
+        "สาร", "เคมี", "ดาว", "วิทยาศาสตร์", "โรค", "องค์กร", 
+        "กษัตริย์", "ธาตุ", "เมือง", "ประเทศ", "วรรณคดี", "ผู้แต่ง",
+        "หัวใจ", "บรรยากาศ", "ผิวหนัง", "ปฏิบัติการ", "ดิน", "หิน"
+    ]
+    if any(sw in title_lower for sw in exam_stopwords):
         return None
-        
-    question_words = ["คือ", "ใด", "อะไร", "กี่", "เท่าใด", "หมายถึง", "ประเภท", "ความหมาย", "หน้าที่", "จงบอก"]
-    if any(w in title_lower for w in question_words):
-        return None
 
-    # 2. เช็ก ชื่อ-นามสกุล
-    if my_name:
-        name_keywords = ["ชื่อ-นามสกุล", "ชื่อ นามสกุล", "ชื่อ - นามสกุล", "ชื่อนักเรียน", "ชื่อผู้ตอบ", "ชื่อ-สกุล", "first name", "full name"]
-        if any(k in title_lower for k in name_keywords) or title_lower in ["ชื่อ", "name"]:
-            return (q_title, my_name, "ชื่อ-นามสกุล")
+    # 1. เช็ก ชื่อ-นามสกุล
+    if my_name and any(k in title_lower for k in ["ชื่อ", "นามสกุล", "สกุล", "name"]):
+        return (q_title, my_name, "ชื่อ-นามสกุล")
 
-    # 3. เช็ก เลขประจำตัวนักเรียน
-    if my_student_id:
-        id_keywords = ["เลขประจำตัว", "รหัสนักเรียน", "รหัสประจำตัว", "student id", "idนักเรียน"]
-        if any(k in title_lower for k in id_keywords):
-            return (q_title, my_student_id, "เลขประจำตัว")
+    # 2. เช็ก เลขประจำตัวนักเรียน
+    if my_student_id and any(k in title_lower for k in ["เลขประจำตัว", "รหัส", "student id", "id"]):
+        return (q_title, my_student_id, "เลขประจำตัว")
 
-    # 4. เช็ก เลขที่
-    if my_no:
-        if title_lower in ["เลขที่", "เลขที่นักเรียน", "no.", "number", "no"] or title_lower.startswith("เลขที่"):
-            return (q_title, my_no, "เลขที่")
+    # 3. เช็ก เลขที่
+    if my_no and (any(k in title_lower for k in ["เลขที่", "no.", "number"]) or title_lower == "no"):
+        return (q_title, my_no, "เลขที่")
 
-    # 5. เช็ก ชั้น/ห้อง
-    if my_class:
-        class_keywords = ["ชั้น/ห้อง", "ชั้น / ห้อง", "ระดับชั้น", "ห้องเรียน", "ชั้นมัธยม", "grade", "class"]
-        if any(k in title_lower for k in class_keywords) or title_lower in ["ชั้น", "ห้อง"]:
-            return (q_title, my_class, "ชั้น/ห้อง")
+    # 4. เช็ก ชั้น/ห้อง (จับคู่กับตัวเลือกถ้ามี)
+    if my_class and any(k in title_lower for k in ["ชั้น", "ห้อง", "ม.", "มัธยม", "class", "grade", "room"]):
+        best_val = my_class
+        if choices:
+            for c in choices:
+                c_str = str(c).strip()
+                if c_str == my_class.strip() or c_str in my_class or my_class.endswith(c_str):
+                    best_val = c_str
+                    break
+        return (q_title, best_val, "ชั้น/ห้อง")
 
     return None
 
-# --- ฟังก์ชันดึง URL รูปภาพจากโครงสร้าง Google Form ---
+# --- ฟังก์ชันค้นหารูปภาพในโจทย์แบบลึกทุกจุด ---
 def extract_image_url(item):
-    if len(item) > 6 and item[6]:
-        def find_url(obj):
-            if isinstance(obj, str) and (obj.startswith("http://") or obj.startswith("https://")):
-                return obj
-            elif isinstance(obj, list):
-                for sub in obj:
-                    res = find_url(sub)
-                    if res:
-                        return res
-            return None
-        return find_url(item[6])
-    return None
+    found_urls = []
+    def find_urls(obj):
+        if isinstance(obj, str):
+            if (obj.startswith("http://") or obj.startswith("https://")):
+                if "/viewform" not in obj and "/formResponse" not in obj and "forms.gle" not in obj:
+                    found_urls.append(obj)
+        elif isinstance(obj, list):
+            for sub in obj:
+                find_urls(sub)
+        elif isinstance(obj, dict):
+            for v in obj.values():
+                find_urls(v)
+    find_urls(item)
+    return found_urls[0] if found_urls else None
 
 # --- CSS สำหรับแถบไล่เฉดสี ---
 st.markdown("""
@@ -140,14 +145,14 @@ if st.button("🔍 เริ่มวิเคราะห์ข้อสอบ"
                         q_title = item[1]
                         entry_id = f"entry.{item[4][0][0]}"
                         choices_raw = item[4][0][1] if len(item[4][0]) > 1 else None
+                        choices = [c[0] for c in choices_raw if c and len(c) > 0] if choices_raw else []
 
-                        # ดักจับข้อมูลส่วนตัวด้วยฟังก์ชันใหม่ที่ไม่แย่งข้อสอบ
-                        p_info = check_personal_info(q_title, my_name, my_student_id, my_no, my_class)
+                        # ดักจับข้อมูลส่วนตัวด้วยฟังก์ชันใหม่
+                        p_info = check_personal_info(q_title, choices, my_name, my_student_id, my_no, my_class)
                         if p_info:
                             personal_data_map[entry_id] = p_info
                             continue
 
-                        choices = [c[0] for c in choices_raw if c and len(c) > 0] if choices_raw else []
                         img_url = extract_image_url(item)
 
                         parsed_questions.append({
@@ -246,7 +251,7 @@ if "parsed_questions" in st.session_state:
     
     final_payload = {}
 
-    # โชว์ข้อมูลส่วนตัว
+    # โชว์ข้อมูลส่วนตัวที่ถูกล็อกไว้ถูกต้อง
     for entry_id, (title, val, cat) in st.session_state["personal_data_map"].items():
         st.text_input(f"📌 {title} [{cat}]", value=val, key=f"input_{entry_id}", disabled=True)
         final_payload[entry_id] = val
