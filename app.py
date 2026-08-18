@@ -7,11 +7,10 @@ from google import genai
 from google.genai import types
 import streamlit as st
 
-# ตั้งค่าหน้าเว็บ
 st.set_page_config(page_title="AutoForm AI", page_icon="✨", layout="centered")
 
 # ==========================================
-# 🎨 CSS Overhaul (เปลี่ยนโทนสีเป็น Modern Indigo)
+# 🎨 CSS Overhaul
 # ==========================================
 st.markdown("""
 <style>
@@ -19,8 +18,6 @@ st.markdown("""
     html, body, [class*="css"] {
         font-family: 'Sarabun', sans-serif !important;
     }
-
-    /* เปลี่ยนสีปุ่ม Primary (ที่เคยเป็นสีแดง) ให้เป็นสี Indigo สวยๆ */
     button[data-testid="baseButton-primary"] {
         background-color: #4F46E5 !important;
         border-color: #4F46E5 !important;
@@ -35,18 +32,14 @@ st.markdown("""
         box-shadow: 0 4px 12px rgba(79, 70, 229, 0.3) !important;
         transform: translateY(-2px);
     }
-
-    /* ตกแต่ง Card ของข้อสอบให้ดูมีมิติ ไม่เหงา */
     div[data-testid="stVerticalBlockBorderWrapper"] {
         border: 1px solid #E5E7EB !important;
         border-radius: 12px !important;
-        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03) !important;
+        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05) !important;
         background-color: #ffffff !important;
         padding: 1rem !important;
-        border-top: 4px solid #4F46E5 !important; /* เพิ่มแถบสีด้านบนให้การ์ดดูมีลูกเล่น */
+        border-top: 4px solid #4F46E5 !important;
     }
-
-    /* Minimalist Slim Progress Bar */
     .confidence-track {
         width: 100%;
         height: 5px;
@@ -60,33 +53,40 @@ st.markdown("""
         border-radius: 4px;
         transition: width 0.8s ease-out;
     }
-    
-    /* กล่องเหตุผล AI โทนสีละมุนขึ้น */
     .reasoning-text {
         color: #4B5563;
         font-size: 0.9rem;
-        background-color: #EEF2FF; /* พื้นหลังสีฟ้าอ่อนๆ */
+        background-color: #EEF2FF;
         padding: 8px 12px;
         border-radius: 6px;
         border-left: 3px solid #6366F1;
         margin-bottom: 12px;
     }
-
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
 </style>
 """, unsafe_allow_html=True)
 
 # ==========================================
-# ⚙️ Core Functions (ระบบอัจฉริยะ)
+# ⚙️ Core Functions
 # ==========================================
 def check_personal_info(q_title, choices, my_name, my_student_id, my_no, my_class):
     clean_title = re.sub(r'^\*?\*?(?:ข้อ\s*\d+[\s.:-]*)?', '', q_title.strip()).strip()
     clean_title = re.sub(r'\*+\s*$', '', clean_title).strip()
     title_lower = clean_title.lower()
 
-    exam_stopwords = ["สาร", "เคมี", "ดาว", "วิทยาศาสตร์", "โรค", "องค์กร", "กษัตริย์", "ธาตุ", "เมือง", "ประเทศ", "วรรณคดี", "ผู้แต่ง", "หัวใจ", "บรรยากาศ", "ผิวหนัง", "ปฏิบัติการ", "ดิน", "หิน"]
-    if any(sw in title_lower for sw in exam_stopwords) or len(clean_title) > 40: return None
+    # 1. กฎความยาว: ถ้าโจทย์ยาวเกิน 25 ตัวอักษร ให้ฟันธงว่าเป็นข้อสอบ 100% ห้ามล็อค!
+    if len(clean_title) > 25:
+        return None
+
+    # 2. บัญชีดำคำศัพท์: เพิ่มคำศัพท์ไอทีและคำต้องห้ามลงไป
+    exam_stopwords = ["สาร", "เคมี", "ดาว", "วิทยาศาสตร์", "โรค", "องค์กร", "กษัตริย์", "ธาตุ", 
+                      "เมือง", "ประเทศ", "วรรณคดี", "ผู้แต่ง", "หัวใจ", "บรรยากาศ", "ผิวหนัง", 
+                      "ปฏิบัติการ", "ดิน", "หิน", "เชื่อม", "เครือข่าย", "อินเทอร์เน็ต", "เว็บ", 
+                      "จัดเป็น", "คืออะไร", "ข้อใด", "หมายถึง"]
+    
+    if any(sw in title_lower for sw in exam_stopwords): 
+        return None
 
     if my_name and any(k in title_lower for k in ["ชื่อ", "นามสกุล", "สกุล", "name"]): return (q_title, my_name, "ชื่อ-นามสกุล")
     if my_student_id and any(k in title_lower for k in ["เลขประจำตัว", "รหัส", "student id", "id"]): return (q_title, my_student_id, "เลขประจำตัว")
@@ -116,12 +116,11 @@ def extract_image_url(item):
     return found_urls[0] if found_urls else None
 
 # ==========================================
-# 📱 Layout หลัก (รวมทุกอย่างไว้หน้าแรก จัดกลุ่มสวยงาม)
+# 📱 Layout หลัก
 # ==========================================
 st.markdown("<h1 style='text-align: center; color: #1F2937; margin-bottom: 0;'>✨ AutoForm AI</h1>", unsafe_allow_html=True)
 st.markdown("<p style='text-align: center; color: #6B7280; margin-top: 0; margin-bottom: 30px;'>ผู้ช่วยทำฟอร์มอัจฉริยะ (Vision AI Edition)</p>", unsafe_allow_html=True)
 
-# 1. การ์ดตั้งค่าหลัก (เห็นชัดเจน ไม่ต้องซ่อน)
 with st.container(border=True):
     st.markdown("#### ⚙️ 1. ตั้งค่าระบบ (Setup)")
     form_url = st.text_input("🔗 ลิงก์ Google Form (forms.gle/...)", placeholder="วางลิงก์ฟอร์มที่นี่...")
@@ -129,7 +128,6 @@ with st.container(border=True):
 
 st.write("")
 
-# 2. การ์ดข้อมูลส่วนตัว (จัดให้กะทัดรัด)
 with st.expander("👤 2. ข้อมูลผู้สอบ & บริบท (พับเก็บได้)", expanded=True):
     exam_context = st.text_area("📚 บริบทข้อสอบ (แนะนำให้ใส่)", placeholder="เช่น วิทยาศาสตร์ ม.ปลาย...", height=68)
     st.write("---")
@@ -273,7 +271,6 @@ if "parsed_questions" in st.session_state:
         score = q_data.get("confidence", 70) if isinstance(q_data, dict) else 80
         reason = q_data.get("reasoning", "ประมวลผลอัตโนมัติ") if isinstance(q_data, dict) else ""
 
-        # โทนสีแถบความมั่นใจที่นุ่มนวลขึ้น
         color = "#10B981" if score >= 85 else "#F59E0B" if score >= 60 else "#EF4444"
 
         with st.container(border=True):
