@@ -11,6 +11,44 @@ st.set_page_config(page_title="Auto Google Form AI Pro", page_icon="🤖")
 st.title("🤖 ระบบผู้ช่วยตอบข้อสอบ (Pro Edition + Vision AI)")
 st.write("วิเคราะห์แม่นยำ อ่านรูปภาพประกอบข้อสอบได้ พร้อมคะแนนความมั่นใจและเหตุผล")
 
+# --- ฟังก์ชันตรวจจับข้อมูลส่วนตัวแบบแม่นยำสูง ---
+def check_personal_info(q_title, my_name, my_student_id, my_no, my_class):
+    title = q_title.strip()
+    title_lower = title.lower()
+    
+    # 1. ถ้าโจทย์ยาวเกิน 30 ตัวอักษร หรือมีคำถามประเภท "คืออะไร", "ข้อใด", "กี่" -> เป็นข้อสอบแน่นอน
+    if len(title) > 30:
+        return None
+        
+    question_words = ["คือ", "ใด", "อะไร", "กี่", "เท่าใด", "หมายถึง", "ประเภท", "ความหมาย", "หน้าที่", "จงบอก"]
+    if any(w in title_lower for w in question_words):
+        return None
+
+    # 2. เช็ก ชื่อ-นามสกุล
+    if my_name:
+        name_keywords = ["ชื่อ-นามสกุล", "ชื่อ นามสกุล", "ชื่อ - นามสกุล", "ชื่อนักเรียน", "ชื่อผู้ตอบ", "ชื่อ-สกุล", "first name", "full name"]
+        if any(k in title_lower for k in name_keywords) or title_lower in ["ชื่อ", "name"]:
+            return (q_title, my_name, "ชื่อ-นามสกุล")
+
+    # 3. เช็ก เลขประจำตัวนักเรียน
+    if my_student_id:
+        id_keywords = ["เลขประจำตัว", "รหัสนักเรียน", "รหัสประจำตัว", "student id", "idนักเรียน"]
+        if any(k in title_lower for k in id_keywords):
+            return (q_title, my_student_id, "เลขประจำตัว")
+
+    # 4. เช็ก เลขที่
+    if my_no:
+        if title_lower in ["เลขที่", "เลขที่นักเรียน", "no.", "number", "no"] or title_lower.startswith("เลขที่"):
+            return (q_title, my_no, "เลขที่")
+
+    # 5. เช็ก ชั้น/ห้อง
+    if my_class:
+        class_keywords = ["ชั้น/ห้อง", "ชั้น / ห้อง", "ระดับชั้น", "ห้องเรียน", "ชั้นมัธยม", "grade", "class"]
+        if any(k in title_lower for k in class_keywords) or title_lower in ["ชั้น", "ห้อง"]:
+            return (q_title, my_class, "ชั้น/ห้อง")
+
+    return None
+
 # --- ฟังก์ชันดึง URL รูปภาพจากโครงสร้าง Google Form ---
 def extract_image_url(item):
     if len(item) > 6 and item[6]:
@@ -103,18 +141,10 @@ if st.button("🔍 เริ่มวิเคราะห์ข้อสอบ"
                         entry_id = f"entry.{item[4][0][0]}"
                         choices_raw = item[4][0][1] if len(item[4][0]) > 1 else None
 
-                        # ดักจับข้อมูลส่วนตัวอัตโนมัติ
-                        if ("ชื่อ" in q_title or "นามสกุล" in q_title) and my_name:
-                            personal_data_map[entry_id] = (q_title, my_name, "ข้อมูลส่วนตัว")
-                            continue
-                        elif ("เลขประจำตัว" in q_title or "รหัส" in q_title or "student id" in q_title.lower()) and my_student_id:
-                            personal_data_map[entry_id] = (q_title, my_student_id, "ข้อมูลส่วนตัว")
-                            continue
-                        elif "เลขที่" in q_title and my_no:
-                            personal_data_map[entry_id] = (q_title, my_no, "ข้อมูลส่วนตัว")
-                            continue
-                        elif ("ชั้น" in q_title or "ห้อง" in q_title) and my_class:
-                            personal_data_map[entry_id] = (q_title, my_class, "ข้อมูลส่วนตัว")
+                        # ดักจับข้อมูลส่วนตัวด้วยฟังก์ชันใหม่ที่ไม่แย่งข้อสอบ
+                        p_info = check_personal_info(q_title, my_name, my_student_id, my_no, my_class)
+                        if p_info:
+                            personal_data_map[entry_id] = p_info
                             continue
 
                         choices = [c[0] for c in choices_raw if c and len(c) > 0] if choices_raw else []
