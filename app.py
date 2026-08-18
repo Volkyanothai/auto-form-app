@@ -1,13 +1,30 @@
 import json
 import re
 import requests
+import time
 from google import genai
+from google.genai import types
 import streamlit as st
 
 st.set_page_config(page_title="Auto Google Form AI Pro", page_icon="🤖")
 
-st.title("🤖 ระบบผู้ช่วยตอบข้อสอบ (Pro Edition)")
-st.write("วิเคราะห์แม่นยำ พร้อมโชว์คะแนนความมั่นใจ เหตุผล และแก้ไขคำตอบได้ตามใจชอบ")
+st.title("🤖 ระบบผู้ช่วยตอบข้อสอบ (Pro Edition + Vision AI)")
+st.write("วิเคราะห์แม่นยำ อ่านรูปภาพประกอบข้อสอบได้ พร้อมคะแนนความมั่นใจและเหตุผล")
+
+# --- ฟังก์ชันดึง URL รูปภาพจากโครงสร้าง Google Form ---
+def extract_image_url(item):
+    if len(item) > 6 and item[6]:
+        def find_url(obj):
+            if isinstance(obj, str) and (obj.startswith("http://") or obj.startswith("https://")):
+                return obj
+            elif isinstance(obj, list):
+                for sub in obj:
+                    res = find_url(sub)
+                    if res:
+                        return res
+            return None
+        return find_url(item[6])
+    return None
 
 # --- CSS สำหรับแถบไล่เฉดสี ---
 st.markdown("""
@@ -42,12 +59,14 @@ exam_context = st.text_area(
 
 st.write("---")
 st.subheader("👤 ข้อมูลผู้ส่งข้อสอบ (กรอกเฉพาะข้อที่ฟอร์มนั้นๆ มี)")
-col1, col2, col3 = st.columns(3)
+col1, col2, col3, col4 = st.columns(4)
 with col1:
     my_name = st.text_input("ชื่อ-นามสกุล:")
 with col2:
-    my_no = st.text_input("เลขที่:")
+    my_student_id = st.text_input("เลขประจำตัวนักเรียน:")
 with col3:
+    my_no = st.text_input("เลขที่:")
+with col4:
     my_class = st.text_input("ชั้น/ห้อง:")
 
 # 2. เริ่มแกะฟอร์ม
@@ -55,7 +74,7 @@ if st.button("🔍 เริ่มวิเคราะห์ข้อสอบ"
     if not form_url or not gemini_key:
         st.error("⚠️ กรุณากรอกลิงก์ Google Form และ API Key ให้ครบถ้วน")
     else:
-        with st.spinner("AI กำลังวิเคราะห์ข้อสอบ..."):
+        with st.spinner("AI กำลังวิเคราะห์ข้อสอบและอ่านรูปภาพประกอบ..."):
             try:
                 client = genai.Client(api_key=gemini_key)
                 res = requests.get(form_url, allow_redirects=True)
@@ -88,6 +107,9 @@ if st.button("🔍 เริ่มวิเคราะห์ข้อสอบ"
                         if ("ชื่อ" in q_title or "นามสกุล" in q_title) and my_name:
                             personal_data_map[entry_id] = (q_title, my_name, "ข้อมูลส่วนตัว")
                             continue
+                        elif ("เลขประจำตัว" in q_title or "รหัส" in q_title or "student id" in q_title.lower()) and my_student_id:
+                            personal_data_map[entry_id] = (q_title, my_student_id, "ข้อมูลส่วนตัว")
+                            continue
                         elif "เลขที่" in q_title and my_no:
                             personal_data_map[entry_id] = (q_title, my_no, "ข้อมูลส่วนตัว")
                             continue
@@ -96,17 +118,24 @@ if st.button("🔍 เริ่มวิเคราะห์ข้อสอบ"
                             continue
 
                         choices = [c[0] for c in choices_raw if c and len(c) > 0] if choices_raw else []
+                        img_url = extract_image_url(item)
+
                         parsed_questions.append({
                             "entry_id": entry_id,
                             "title": q_title,
-                            "choices": choices
+                            "choices": choices,
+                            "image_url": img_url
                         })
 
-                    # มัดรวมส่ง AI พร้อมบริบท
+                    # มัดรวมส่ง AI (พร้อมรูปภาพประกอบ Vision AI)
                     if parsed_questions:
+                        contents_payload = []
                         prompt_data = []
+
                         for idx, q in enumerate(parsed_questions, 1):
                             q_info = f"ข้อ {idx} (ID: {q['entry_id']}): {q['title']}"
+                            if q.get("image_url"):
+                                q_info += " [ข้อนี้มีรูปภาพประกอบแนบมาด้วย]"
                             if q['choices']:
                                 q_info += f"\nตัวเลือก: {json.dumps(q['choices'], ensure_ascii=False)}"
                             prompt_data.append(q_info)
@@ -118,7 +147,7 @@ if st.button("🔍 เริ่มวิเคราะห์ข้อสอบ"
 {'\n\n'.join(prompt_data)}
 
 คำสั่ง:
-1. วิเคราะห์และหาคำตอบที่ถูกต้องที่สุดสำหรับทุกข้อ
+1. วิเคราะห์และหาคำตอบที่ถูกต้องที่สุดสำหรับทุกข้อ (หากข้อใดมีรูปภาพแนบ ให้ดูรูปภาพประกอบการวิเคราะห์ด้วย)
 2. ข้อที่มีตัวเลือก ต้องเลือกคำตอบที่ตรงกับตัวเลือกในลิสต์เป๊ะๆ 100%
 3. ประเมินระดับความมั่นใจ (confidence) เป็นตัวเลข 0-100% และเขียนเหตุผลสั้นๆ (reasoning)
 4. ตอบกลับในรูปแบบ JSON dictionary เท่านั้น ตัวอย่าง:
@@ -129,14 +158,43 @@ if st.button("🔍 เริ่มวิเคราะห์ข้อสอบ"
     "reasoning": "เหตุผลสั้นๆ ที่เลือกข้อนี้"
   }}
 }}"""
+                        contents_payload.append(full_prompt)
 
-                        response = client.models.generate_content(
-                            model="gemini-3.6-flash", 
-                            contents=full_prompt
-                        )
-                        
+                        # ดึงไฟล์ภาพส่งให้ Gemini Vision
+                        for q in parsed_questions:
+                            if q.get("image_url"):
+                                try:
+                                    img_res = requests.get(q["image_url"], timeout=5)
+                                    if img_res.status_code == 200:
+                                        mime_type = img_res.headers.get("Content-Type", "image/jpeg")
+                                        if "image" not in mime_type:
+                                            mime_type = "image/jpeg"
+                                        img_part = types.Part.from_bytes(data=img_res.content, mime_type=mime_type)
+                                        contents_payload.append(img_part)
+                                except Exception:
+                                    pass
+
+                        # รายชื่อโมเดลเรียงตามลำดับหลัก-สำรอง
+                        models_to_try = ["gemini-3.6-flash", "gemini-2.5-flash"]
+                        response = None
+                        last_err = None
+
+                        for model_name in models_to_try:
+                            try:
+                                response = client.models.generate_content(
+                                    model=model_name, 
+                                    contents=contents_payload
+                                )
+                                if response and response.text:
+                                    break
+                            except Exception as err:
+                                last_err = err
+                                time.sleep(2)
+
+                        if not response or not response.text:
+                            raise last_err
+
                         raw_ans = response.text.strip()
-                        # ใช้รหัส \x60 ล้างแท็ก markdown ป้องกัน error บนจอมือถือ
                         raw_ans = re.sub(r'\x60{3}(?:json)?', '', raw_ans).strip()
                         ai_answers = json.loads(raw_ans)
                     else:
@@ -151,7 +209,7 @@ if st.button("🔍 เริ่มวิเคราะห์ข้อสอบ"
             except Exception as e:
                 st.error(f"เกิดข้อผิดพลาดในการประมวลผล: {e}")
 
-# 3. แสดงผล UI แบบแก้ไขได้ พร้อมแถบสีความมั่นใจ
+# 3. แสดงผล UI แบบแก้ไขได้ พร้อมแถบสีความมั่นใจและรูปภาพประกอบ
 if "parsed_questions" in st.session_state:
     st.write("---")
     st.write("### ✏️ จำลองคำตอบ (ตรวจสอบ/ปรับแก้ได้ก่อนส่งจริง)")
@@ -173,6 +231,7 @@ if "parsed_questions" in st.session_state:
         entry_id = q["entry_id"]
         title = q["title"]
         choices = q["choices"]
+        img_url = q.get("image_url")
         
         # ดึงข้อมูลจาก AI
         q_data = ai_ans.get(entry_id, {})
@@ -187,6 +246,10 @@ if "parsed_questions" in st.session_state:
 
         st.markdown(f"**ข้อ {idx}: {title}**")
         
+        # แสดงรูปภาพประกอบข้อสอบบนหน้าเว็บ (ถ้ามี)
+        if img_url:
+            st.image(img_url, caption=f"📷 รูปภาพประกอบข้อ {idx}", use_column_width=True)
+
         # แสดงแถบสีความมั่นใจแบบ Gradient
         st.markdown(f"""
         <div class="gradient-bar-container">
