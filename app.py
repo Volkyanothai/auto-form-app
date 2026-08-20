@@ -10,7 +10,7 @@ import streamlit as st
 st.set_page_config(page_title="AutoForm AI", page_icon="✨", layout="centered")
 
 # ==========================================
-# 🎨 CSS Overhaul
+# 🎨 CSS Overhaul (ดีไซน์ Modern Indigo คงเดิม 100%)
 # ==========================================
 st.markdown("""
 <style>
@@ -62,29 +62,38 @@ st.markdown("""
         border-left: 3px solid #6366F1;
         margin-bottom: 12px;
     }
+    .score-box {
+        background: linear-gradient(135deg, #4F46E5 0%, #7C3AED 100%);
+        color: white;
+        padding: 15px;
+        border-radius: 10px;
+        text-align: center;
+        font-size: 1.2rem;
+        font-weight: 600;
+        margin-top: 15px;
+        margin-bottom: 15px;
+        box-shadow: 0 4px 10px rgba(124, 58, 237, 0.3);
+    }
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
 </style>
 """, unsafe_allow_html=True)
 
 # ==========================================
-# ⚙️ Core Functions
+# ⚙️ Core Functions (ระบบคัดกรองฉลาด คงเดิม 100%)
 # ==========================================
 def check_personal_info(q_title, choices, my_name, my_student_id, my_no, my_class):
     clean_title = re.sub(r'^\*?\*?(?:ข้อ\s*\d+[\s.:-]*)?', '', q_title.strip()).strip()
     clean_title = re.sub(r'\*+\s*$', '', clean_title).strip()
     title_lower = clean_title.lower()
 
-    # 1. กฎความยาว: ถ้าโจทย์ยาวเกิน 25 ตัวอักษร ให้ฟันธงว่าเป็นข้อสอบ 100% ห้ามล็อค!
     if len(clean_title) > 25:
         return None
 
-    # 2. บัญชีดำคำศัพท์: เพิ่มคำศัพท์ไอทีและคำต้องห้ามลงไป
     exam_stopwords = ["สาร", "เคมี", "ดาว", "วิทยาศาสตร์", "โรค", "องค์กร", "กษัตริย์", "ธาตุ", 
                       "เมือง", "ประเทศ", "วรรณคดี", "ผู้แต่ง", "หัวใจ", "บรรยากาศ", "ผิวหนัง", 
                       "ปฏิบัติการ", "ดิน", "หิน", "เชื่อม", "เครือข่าย", "อินเทอร์เน็ต", "เว็บ", 
                       "จัดเป็น", "คืออะไร", "ข้อใด", "หมายถึง"]
-    
     if any(sw in title_lower for sw in exam_stopwords): 
         return None
 
@@ -244,7 +253,7 @@ Instructions:
                 st.error(f"รายละเอียด: {e}")
 
 # ==========================================
-# 📝 Review & Edit Section
+# 📝 Review, Edit & Submit (ส่วนเพิ่มฟีเจอร์ดึงคะแนน)
 # ==========================================
 if "parsed_questions" in st.session_state:
     st.write("---")
@@ -296,11 +305,48 @@ if "parsed_questions" in st.session_state:
                 final_payload[entry_id] = st.text_input("คำตอบ", value=str(default_val), key=f"ans_{entry_id}", label_visibility="collapsed")
     
     st.write("")
+    
+    # --- ปุ่มยืนยันและดึงคะแนน ---
     if st.button("✅ ยืนยันส่งข้อมูล", type="primary", use_container_width=True):
-        res_submit = requests.post(st.session_state["submit_url"], data=final_payload)
-        if res_submit.status_code == 200:
-            st.balloons()
-            st.success("🎉 ส่งคำตอบเรียบร้อยแล้ว!")
-        else:
-            st.error(f"Error: {res_submit.status_code}")
+        with st.spinner("⏳ กำลังส่งข้อมูลและดึงผลคะแนน..."):
+            res_submit = requests.post(st.session_state["submit_url"], data=final_payload)
+            
+            if res_submit.status_code == 200:
+                st.balloons()
+                st.success("🎉 ส่งคำตอบเข้า Google Form เรียบร้อยแล้ว!")
+                
+                # 1. ควานหาลิงก์หน้าคะแนน
+                html_response = res_submit.text
+                link_match = re.search(r'href="([^"]*?viewscore\?[^"]*)"', html_response)
+                
+                if link_match:
+                    raw_url = link_match.group(1)
+                    score_url = html_lib.unescape(raw_url) # แปลงตัวอักษร HTML ให้เป็นลิงก์ที่ใช้ได้จริง
+                    
+                    # 2. แอบเข้าไปอ่านคะแนน
+                    try:
+                        score_page = requests.get(score_url, timeout=5).text
+                        # ใช้ Regex ควานหาตัวเลขรูปแบบ เช่น >40</span> <span...>/ 40
+                        score_match = re.search(r'<span[^>]*>\s*([0-9]+)\s*</span>\s*<span[^>]*>\s*(?:/|&#47;|จาก)\s*([0-9]+)\s*</span>', score_page)
+                        if not score_match: 
+                            score_match = re.search(r'([0-9]+)\s*(?:/|&#47;|จาก)\s*([0-9]+)\s*(?:คะแนน|points)', score_page)
+                        
+                        if score_match:
+                            my_score = score_match.group(1)
+                            full_score = score_match.group(2)
+                            # โชว์ป้ายคะแนนสวยๆ บนเว็บ
+                            st.markdown(f'<div class="score-box">🏆 คุณได้คะแนน: {my_score} / {full_score} คะแนน</div>', unsafe_allow_html=True)
+                    except:
+                        pass # ถ้าดึงคะแนนไม่ได้ ก็ปล่อยผ่านเพื่อไปสร้างปุ่มลิงก์ด้านล่างแทน
+                    
+                    # 3. สร้างปุ่มให้ผู้ใช้กดเปิดไปแคปหน้าจอเอง
+                    st.markdown(f'''
+                    <a href="{score_url}" target="_blank" style="display: block; text-align: center; background-color: #4F46E5; color: white; padding: 12px; border-radius: 8px; text-decoration: none; font-weight: bold; margin-top: 10px; box-shadow: 0 4px 6px rgba(79, 70, 229, 0.2);">
+                        🎯 คลิกลิงก์เพื่อเปิดหน้าคะแนน (แคปหน้าจอส่งครูที่นี่)
+                    </a>
+                    ''', unsafe_allow_html=True)
 
+                else:
+                    st.warning("⚠️ ส่งคำตอบสำเร็จ! แต่ฟอร์มนี้ไม่ได้เปิดตั้งค่า 'ประกาศคะแนนทันที' หรือซ่อนผลคะแนนไว้ จึงไม่สามารถดึงหน้าคะแนนได้ครับ")
+            else:
+                st.error(f"Error: เกิดข้อผิดพลาดรหัส {res_submit.status_code}")
