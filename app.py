@@ -10,7 +10,7 @@ import streamlit as st
 st.set_page_config(page_title="AutoForm AI", page_icon="✨", layout="centered")
 
 # ==========================================
-# 🎨 CSS Overhaul (ดีไซน์ Modern Indigo)
+# 🎨 CSS Overhaul
 # ==========================================
 st.markdown("""
 <style>
@@ -92,7 +92,7 @@ def check_personal_info(q_title, choices, my_name, my_student_id, my_no, my_clas
     exam_stopwords = ["สาร", "เคมี", "ดาว", "วิทยาศาสตร์", "โรค", "องค์กร", "กษัตริย์", "ธาตุ", 
                       "เมือง", "ประเทศ", "วรรณคดี", "ผู้แต่ง", "หัวใจ", "บรรยากาศ", "ผิวหนัง", 
                       "ปฏิบัติการ", "ดิน", "หิน", "เชื่อม", "เครือข่าย", "อินเทอร์เน็ต", "เว็บ", 
-                      "จัดเป็น", "คืออะไร", "ข้อใด", "หมายถึง"]
+                      "จัดเป็น", "คืออะไร", "ข้อใด", "หมายถึง", "ตัวอักษรย่อ"]
     if any(sw in title_lower for sw in exam_stopwords): return None
 
     if my_name and any(k in title_lower for k in ["ชื่อ", "นามสกุล", "สกุล", "name"]): return (q_title, my_name, "ชื่อ-นามสกุล")
@@ -178,18 +178,24 @@ if st.button("🚀 เริ่มวิเคราะห์ข้อสอบ"
                 parsed_questions = []
                 personal_data_map = {}
                 
-                # --- [ใหม่] ดึงรหัสซ่อนสำหรับฟอร์มหลายหน้า (ป้องกันส่งแล้วข้อสอบหาย) ---
-                pageHistory = "0"
-                page_match = re.search(r'name="pageHistory" value="([^"]*)"', html)
-                if page_match: pageHistory = page_match.group(1)
+                # --- [ทีเด็ด V7] สร้างตั๋วปลอมทะลุทุกหน้า ---
+                page_count = 0
                 
                 fbzx = ""
                 fbzx_match = re.search(r'name="fbzx" value="([^"]*)"', html)
                 if fbzx_match: fbzx = fbzx_match.group(1)
 
-                st.write("🔍 แยกโจทย์และรูปภาพ...")
+                st.write("🔍 แยกโจทย์และคำนวณจำนวนหน้า...")
                 for item in questions_data:
-                    if not item or len(item) < 5 or not item[4]: continue
+                    if not item or len(item) < 4: continue
+                    
+                    # ถ้าเจอ Type 8 (Page Break) แปลว่ามีการขึ้นหน้าใหม่ ให้นับหน้าเพิ่ม
+                    if item[3] == 8:
+                        page_count += 1
+                        continue
+
+                    if len(item) < 5 or not item[4]: continue
+                    
                     q_title = item[1]
                     entry_id = f"entry.{item[4][0][0]}"
                     choices_raw = item[4][0][1] if len(item[4][0]) > 1 else None
@@ -202,6 +208,9 @@ if st.button("🚀 เริ่มวิเคราะห์ข้อสอบ"
 
                     img_url = extract_image_url(item)
                     parsed_questions.append({"entry_id": entry_id, "title": q_title, "choices": choices, "image_url": img_url})
+
+                # สร้าง String pageHistory ตามจำนวนหน้าทั้งหมด เช่น มี 3 หน้า -> "0,1,2"
+                generated_page_history = ",".join([str(i) for i in range(page_count + 1)])
 
                 if parsed_questions:
                     st.write("🧠 ให้ AI อ่านและคิดคำตอบ...")
@@ -257,7 +266,7 @@ Instructions:
                     "parsed_questions": parsed_questions, 
                     "personal_data_map": personal_data_map, 
                     "ai_answers": ai_answers,
-                    "pageHistory": pageHistory,
+                    "pageHistory": generated_page_history,
                     "fbzx": fbzx
                 })
                 status.update(label="🎉 วิเคราะห์สำเร็จ!", state="complete", expanded=False)
@@ -320,13 +329,12 @@ if "parsed_questions" in st.session_state:
     
     st.write("")
     
-    # --- [ใหม่] แอบแนบรหัสลับสำหรับฟอร์มหลายหน้า ---
+    # --- [ทีเด็ด V7] แนบตั๋วผ่านด่านแบบเจาะทะลุทุกหน้า ---
     final_payload["pageHistory"] = st.session_state.get("pageHistory", "0")
     if st.session_state.get("fbzx"):
         final_payload["fbzx"] = st.session_state["fbzx"]
-    final_payload["fvv"] = "1" # บังคับเวอร์ชันเพื่อความเสถียร
+    final_payload["fvv"] = "1"
     
-    # --- ปุ่มยืนยันและดึงคะแนน ---
     if st.button("✅ ยืนยันส่งข้อมูล", type="primary", use_container_width=True):
         with st.spinner("⏳ กำลังส่งข้อมูลและดึงผลคะแนน..."):
             res_submit = requests.post(st.session_state["submit_url"], data=final_payload)
@@ -362,7 +370,7 @@ if "parsed_questions" in st.session_state:
                     ''', unsafe_allow_html=True)
 
                 else:
-                    st.warning("⚠️ ส่งคำตอบสำเร็จ! แต่ฟอร์มนี้ไม่ได้เปิดตั้งค่า 'ประกาศคะแนนทันที' หรือซ่อนผลคะแนนไว้ จึงไม่สามารถดึงหน้าคะแนนได้ครับ")
+                    st.warning("⚠️ ส่งคำตอบสำเร็จ! แต่ฟอร์มนี้ไม่ได้เปิดตั้งค่า 'ประกาศคะแนนทันที' จึงไม่สามารถดึงหน้าคะแนนได้ครับ")
             else:
                 st.error(f"Error: เกิดข้อผิดพลาดรหัส {res_submit.status_code}")
 
