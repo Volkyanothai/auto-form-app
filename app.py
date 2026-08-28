@@ -10,6 +10,15 @@ import streamlit as st
 st.set_page_config(page_title="AutoForm AI", page_icon="✨", layout="centered")
 
 # ==========================================
+# 🔑 ระบบจัดการ API Key อัตโนมัติ (ซ่อนจากผู้ใช้)
+# ==========================================
+try:
+    gemini_key = st.secrets["GEMINI_API_KEY"]
+except:
+    st.error("⚠️ ระบบยังไม่ได้ตั้งค่า API Key จากหลังบ้าน กรุณาเพิ่ม GEMINI_API_KEY ใน Streamlit Secrets")
+    st.stop()
+
+# ==========================================
 # 🎨 CSS Overhaul
 # ==========================================
 st.markdown("""
@@ -129,9 +138,8 @@ st.markdown("<h1 style='text-align: center; color: #1F2937; margin-bottom: 0;'>�
 st.markdown("<p style='text-align: center; color: #6B7280; margin-top: 0; margin-bottom: 30px;'>ผู้ช่วยทำฟอร์มอัจฉริยะ (Vision AI Edition)</p>", unsafe_allow_html=True)
 
 with st.container(border=True):
-    st.markdown("#### ⚙️ 1. ตั้งค่าระบบ (Setup)")
+    st.markdown("#### ⚙️ 1. ตั้งค่าแบบฟอร์ม (Setup)")
     form_url = st.text_input("🔗 ลิงก์ Google Form (forms.gle/...)", placeholder="วางลิงก์ฟอร์มที่นี่...")
-    gemini_key = st.text_input("🔑 Gemini API Key", type="password", placeholder="กรอก API Key...")
 
 st.write("")
 
@@ -152,8 +160,8 @@ st.write("")
 # 🚀 Action: ปุ่มประมวลผล
 # ==========================================
 if st.button("🚀 เริ่มวิเคราะห์ข้อสอบ", type="primary", use_container_width=True):
-    if not form_url or not gemini_key:
-        st.error("⚠️ กรุณากรอกลิงก์ฟอร์ม และ API Key ให้ครบถ้วน")
+    if not form_url:
+        st.error("⚠️ กรุณากรอกลิงก์ฟอร์มให้ครบถ้วน")
     else:
         with st.status("🤖 กำลังวิเคราะห์ข้อมูล...", expanded=True) as status:
             try:
@@ -178,7 +186,6 @@ if st.button("🚀 เริ่มวิเคราะห์ข้อสอบ"
                 parsed_questions = []
                 personal_data_map = {}
                 
-                # --- [ทีเด็ด V7] สร้างตั๋วปลอมทะลุทุกหน้า ---
                 page_count = 0
                 
                 fbzx = ""
@@ -189,7 +196,6 @@ if st.button("🚀 เริ่มวิเคราะห์ข้อสอบ"
                 for item in questions_data:
                     if not item or len(item) < 4: continue
                     
-                    # ถ้าเจอ Type 8 (Page Break) แปลว่ามีการขึ้นหน้าใหม่ ให้นับหน้าเพิ่ม
                     if item[3] == 8:
                         page_count += 1
                         continue
@@ -209,7 +215,6 @@ if st.button("🚀 เริ่มวิเคราะห์ข้อสอบ"
                     img_url = extract_image_url(item)
                     parsed_questions.append({"entry_id": entry_id, "title": q_title, "choices": choices, "image_url": img_url})
 
-                # สร้าง String pageHistory ตามจำนวนหน้าทั้งหมด เช่น มี 3 หน้า -> "0,1,2"
                 generated_page_history = ",".join([str(i) for i in range(page_count + 1)])
 
                 if parsed_questions:
@@ -329,7 +334,6 @@ if "parsed_questions" in st.session_state:
     
     st.write("")
     
-    # --- [ทีเด็ด V7] แนบตั๋วผ่านด่านแบบเจาะทะลุทุกหน้า ---
     final_payload["pageHistory"] = st.session_state.get("pageHistory", "0")
     if st.session_state.get("fbzx"):
         final_payload["fbzx"] = st.session_state["fbzx"]
