@@ -19,12 +19,13 @@ except:
     st.stop()
 
 # ==========================================
-# 🎨 CSS Overhaul (Bug Fixes & Layout)
+# 🎨 CSS Overhaul (Bug Fixes & UI Polish)
 # ==========================================
 st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Orbitron:wght@700;900&family=Sarabun:wght@300;400;500&display=swap');
 
+    /* พื้นหลัง */
     .stApp {
         background-color: #0b1120 !important;
         background-image: 
@@ -33,12 +34,18 @@ st.markdown("""
         background-attachment: fixed !important;
     }
 
-    p, h1, h2, h3, h4, h5, h6, label, span {
+    /* บังคับฟอนต์ข้อความ (ยกเว้นไอคอน) เพื่อแก้บั๊ก arrox */
+    p, h1, h2, h3, h4, h5, h6, label, input, textarea, li {
         font-family: 'Inter', 'Sarabun', sans-serif !important;
         color: #f8fafc;
     }
+    
+    /* คืนค่าฟอนต์ไอคอนให้ Streamlit */
+    .material-symbols-rounded {
+        font-family: 'Material Symbols Rounded' !important;
+    }
 
-    /* กล่องกระจกสมจริง (Glass Cards) */
+    /* กล่องข้อมูลหลัก (Glass Cards) */
     div[data-testid="stVerticalBlockBorderWrapper"] {
         background: rgba(15, 23, 42, 0.6) !important;
         backdrop-filter: blur(12px) !important;
@@ -49,13 +56,12 @@ st.markdown("""
         padding: 1.5rem !important;
     }
 
-    /* บังคับช่องกรอกข้อมูลให้เป็นสีเข้ม (แก้ปัญหาช่องสีขาว) */
+    /* ช่องกรอกข้อมูล */
     .stTextInput input, .stSelectbox div[data-baseweb="select"], .stTextArea textarea {
         background-color: #1e293b !important;
-        border: 1px solid rgba(255, 255, 255, 0.2) !important;
+        border: 1px solid rgba(255, 255, 255, 0.15) !important;
         border-radius: 8px !important;
         color: #ffffff !important;
-        font-family: 'Inter', 'Sarabun', sans-serif !important;
     }
     .stTextInput input:focus, .stTextArea textarea:focus, .stSelectbox div[data-baseweb="select"]:focus-within {
         border-color: #3b82f6 !important;
@@ -83,6 +89,29 @@ st.markdown("""
     div.stButton > button:hover {
         transform: translateY(-2px);
         box-shadow: 0 6px 20px rgba(37, 99, 235, 0.6) !important;
+    }
+
+    /* -----------------------------------
+       🛠️ แก้กล่องสถานะ (Status) & แจ้งเตือน Error
+       ----------------------------------- */
+    [data-testid="stStatusWidget"] {
+        background: rgba(15, 23, 42, 0.8) !important;
+        border: 1px solid rgba(255, 255, 255, 0.1) !important;
+        border-radius: 12px !important;
+        padding: 10px !important;
+    }
+    [data-testid="stStatusWidget"] summary {
+        color: #e2e8f0 !important;
+        font-weight: 500 !important;
+    }
+    [data-testid="stAlert"] {
+        background: rgba(239, 68, 68, 0.15) !important;
+        border: 1px solid rgba(239, 68, 68, 0.3) !important;
+        border-radius: 8px !important;
+        color: #fca5a5 !important;
+    }
+    [data-testid="stAlert"] p {
+        color: #fca5a5 !important;
     }
 
     /* AI Score & Reasoning */
@@ -179,12 +208,12 @@ def extract_image_url(item):
     return found_urls[0] if found_urls else None
 
 # ==========================================
-# 📱 Layout หลัก
+# 📱 Layout หลัก (แก้บั๊กจัดกลางคำรอง)
 # ==========================================
 st.markdown("""
-<div style="text-align: center; width: 100%; margin-bottom: 40px;">
-    <h1 style='color: #ffffff; font-family: "Orbitron", sans-serif; letter-spacing: 3px; font-size: 3rem; margin: 0; text-shadow: 0 0 20px rgba(59,130,246,0.8);'>EZEXAM</h1>
-    <p style='color: #60a5fa; font-family: "Orbitron", sans-serif; letter-spacing: 2px; font-weight: 700; font-size: 0.9rem; margin: 5px 0 0 0;'>AUTO FORM SYSTEM</p>
+<div style="display: flex; flex-direction: column; align-items: center; justify-content: center; margin-bottom: 40px; text-align: center;">
+    <h1 style='color: #ffffff; font-family: "Orbitron", sans-serif; letter-spacing: 3px; font-size: 3.2rem; margin: 0; text-shadow: 0 0 20px rgba(59,130,246,0.8); line-height: 1.2;'>EZEXAM</h1>
+    <div style='color: #60a5fa; font-family: "Orbitron", sans-serif; letter-spacing: 2.5px; font-weight: 700; font-size: 0.85rem; margin-top: 2px;'>AUTO FORM SYSTEM</div>
 </div>
 """, unsafe_allow_html=True)
 
@@ -194,7 +223,6 @@ with st.container(border=True):
 
 st.write("")
 
-# เปลี่ยน Expander เป็น Container แบบธรรมดา
 with st.container(border=True):
     st.markdown('<div class="glass-header"><span style="color:#3b82f6;">👤</span> PERSONAL DATA & CONTEXT</div>', unsafe_allow_html=True)
     exam_context = st.text_area("EXAM CONTEXT", placeholder="e.g. High school physics...", height=68)
