@@ -19,133 +19,94 @@ except:
     st.stop()
 
 # ==========================================
-# 🎨 CSS Overhaul (Premium SaaS Glassmorphism)
+# 🎨 CSS Overhaul (Real Glassmorphism & Bug Fixes)
 # ==========================================
 st.markdown("""
 <style>
-    /* นำเข้าฟอนต์: Orbitron สำหรับโลโก้, Inter/Sarabun สำหรับเนื้อหาอ่านง่าย */
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Orbitron:wght@700;900&family=Sarabun:wght@300;400;500&display=swap');
 
-    /* พื้นหลัง Midnight Dark Mode (ดูแพงและโปร) */
+    /* 1. สร้างแสงออโรร่าด้านหลังเพื่อให้กระจกมีมิติ (Real Glassmorphism Needs Background Light) */
     .stApp {
-        background: radial-gradient(circle at 50% 0%, #1e293b 0%, #0f172a 50%, #020617 100%) !important;
+        background-color: #0b1120 !important;
+        background-image: 
+            radial-gradient(at 0% 0%, rgba(59, 130, 246, 0.4) 0px, transparent 50%),
+            radial-gradient(at 100% 100%, rgba(16, 185, 129, 0.2) 0px, transparent 50%) !important;
         background-attachment: fixed !important;
     }
 
-    /* บังคับฟอนต์ทั่วไปให้คลีนและเรียบหรู */
-    html, body, [class*="css"], p, span {
+    /* 2. บังคับฟอนต์เฉพาะส่วนที่จำเป็น (ป้องกันบั๊กไอคอนลูกศรทับซ้อน) */
+    p, h1, h2, h3, h4, h5, h6, label, input, button, textarea {
         font-family: 'Inter', 'Sarabun', sans-serif !important;
-        color: #e2e8f0;
+        color: #f8fafc;
     }
 
-    /* --------------------------------------
-       ✨ GLASSMORPHISM CARDS (กล่องกระจก)
-       -------------------------------------- */
-    div[data-testid="stVerticalBlockBorderWrapper"] {
-        border: 1px solid rgba(255, 255, 255, 0.08) !important;
-        border-radius: 16px !important;
-        background: rgba(15, 23, 42, 0.4) !important;
+    /* 3. กล่องกระจกสมจริง (Glass Cards) */
+    div[data-testid="stVerticalBlockBorderWrapper"], 
+    div[data-testid="stExpander"] {
+        background: rgba(255, 255, 255, 0.03) !important;
         backdrop-filter: blur(16px) !important;
         -webkit-backdrop-filter: blur(16px) !important;
-        padding: 1.5rem !important;
-        box-shadow: 0 4px 30px rgba(0, 0, 0, 0.5) !important;
+        border: 1px solid rgba(255, 255, 255, 0.1) !important;
+        border-radius: 16px !important;
+        box-shadow: 0 4px 30px rgba(0, 0, 0, 0.2) !important;
     }
 
-    /* แก้บั๊กสีขาวของ Expander (เมนูพับได้) ให้เป็นกระจกกลมกลืนกัน */
-    [data-testid="stExpander"] {
-        border: 1px solid rgba(255, 255, 255, 0.08) !important;
-        border-radius: 16px !important;
-        background: rgba(15, 23, 42, 0.4) !important;
-        backdrop-filter: blur(16px) !important;
-        overflow: hidden;
-    }
-    [data-testid="stExpander"] details summary {
-        color: #94a3b8 !important;
-        font-weight: 600 !important;
-        letter-spacing: 1px;
-    }
-    [data-testid="stExpander"] details summary:hover {
+    /* 4. แก้ไขช่องกรอกข้อมูล (Inputs) ให้ดูคลีน */
+    .stTextInput input, .stSelectbox div[data-baseweb="select"], .stTextArea textarea {
+        background: rgba(255, 255, 255, 0.05) !important;
+        border: 1px solid rgba(255, 255, 255, 0.15) !important;
+        border-radius: 8px !important;
         color: #ffffff !important;
     }
-    
-    /* --------------------------------------
-       📝 INPUT FIELDS (ช่องกรอกข้อมูล)
-       -------------------------------------- */
-    .stTextInput input, .stSelectbox div[data-baseweb="select"], .stTextArea textarea {
-        background-color: rgba(0, 0, 0, 0.3) !important;
-        border: 1px solid rgba(255, 255, 255, 0.12) !important;
-        border-radius: 8px !important;
-        color: #f8fafc !important;
-        font-family: 'Inter', 'Sarabun', sans-serif !important;
-        font-size: 0.95rem !important;
-        transition: all 0.3s ease;
-    }
-    
-    /* เอฟเฟกต์ตอนกดพิมพ์ (Focus) */
     .stTextInput input:focus, .stTextArea textarea:focus, .stSelectbox div[data-baseweb="select"]:focus-within {
         border-color: #3b82f6 !important;
-        box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.3) !important;
+        box-shadow: 0 0 10px rgba(59, 130, 246, 0.3) !important;
     }
     
-    /* สไตล์ของหัวข้อ Label ให้ดูเรียบหรูแบบ Modern UI */
     .stTextInput label p, .stSelectbox label p, .stTextArea label p {
         color: #94a3b8 !important;
         font-size: 0.75rem !important;
         font-weight: 600 !important;
         letter-spacing: 0.5px;
-        text-transform: uppercase;
-        margin-bottom: 4px;
     }
 
-    /* --------------------------------------
-       🔘 BUTTONS (ปุ่มกดหลัก)
-       -------------------------------------- */
-    button[data-testid="baseButton-primary"] {
+    /* 5. ล็อกเป้าปุ่มกด (ทับสีแดงของ Streamlit แบบ 100%) */
+    div.stButton > button {
         background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%) !important;
-        border: 1px solid rgba(255, 255, 255, 0.1) !important;
+        border: none !important;
         color: #ffffff !important;
-        border-radius: 10px !important;
-        font-family: 'Inter', sans-serif !important;
+        border-radius: 8px !important;
         font-weight: 600 !important;
         letter-spacing: 1px;
-        padding: 0.75rem 1.5rem !important;
-        box-shadow: 0 4px 20px rgba(37, 99, 235, 0.3) !important;
+        box-shadow: 0 4px 15px rgba(37, 99, 235, 0.3) !important;
         transition: all 0.3s ease !important;
     }
-    button[data-testid="baseButton-primary"]:hover {
+    div.stButton > button:hover {
         transform: translateY(-2px);
-        box-shadow: 0 6px 25px rgba(37, 99, 235, 0.5) !important;
-        background: linear-gradient(135deg, #60a5fa 0%, #3b82f6 100%) !important;
+        box-shadow: 0 6px 20px rgba(37, 99, 235, 0.6) !important;
     }
 
-    /* --------------------------------------
-       🎯 AI REASONING & SCORE
-       -------------------------------------- */
+    /* 6. AI Score & Reasoning */
     .reasoning-text {
         color: #cbd5e1;
         font-size: 0.85rem;
-        background-color: rgba(59, 130, 246, 0.05);
+        background: rgba(59, 130, 246, 0.1);
         padding: 10px 15px;
         border-radius: 8px;
         border-left: 3px solid #3b82f6;
         margin-bottom: 12px;
-        line-height: 1.5;
     }
-    
     .confidence-track {
         width: 100%;
-        height: 4px;
+        height: 5px;
         background-color: rgba(255, 255, 255, 0.1);
         border-radius: 4px;
         margin: 10px 0;
-        overflow: hidden;
     }
     .confidence-fill {
         height: 100%;
         border-radius: 4px;
-        transition: width 0.8s ease-out;
     }
-    
     .score-box {
         background: rgba(16, 185, 129, 0.1);
         border: 1px solid rgba(16, 185, 129, 0.3);
@@ -157,21 +118,15 @@ st.markdown("""
         font-weight: 600;
         margin-top: 15px;
         margin-bottom: 15px;
-        box-shadow: 0 4px 20px rgba(16, 185, 129, 0.15);
     }
     
-    /* Header หัวข้อกล่องแบบใหม่ */
     .glass-header {
         font-size: 1.1rem;
         font-weight: 600;
         color: #f8fafc;
         margin-bottom: 1rem;
-        display: flex;
-        align-items: center;
-        gap: 8px;
     }
 
-    /* ซ่อนเมนูขยะ */
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     header {visibility: hidden;}
@@ -224,9 +179,8 @@ def extract_image_url(item):
 # ==========================================
 # 📱 Layout หลัก
 # ==========================================
-# โลโก้คงฟอนต์ Orbitron ไว้ให้ดูเป็น Brand Identity 
-st.markdown("<h1 style='text-align: center; color: #ffffff; font-family: \"Orbitron\", sans-serif; letter-spacing: 3px; font-size: 3rem; margin-bottom: 0; text-shadow: 0 0 20px rgba(59,130,246,0.5);'>EZEXAM</h1>", unsafe_allow_html=True)
-st.markdown("<p style='text-align: center; color: #60a5fa; letter-spacing: 2px; font-weight: 500; font-size: 0.9rem; margin-top: -10px; margin-bottom: 40px;'>AUTO FORM SYSTEM</p>", unsafe_allow_html=True)
+st.markdown("<h1 style='text-align: center; color: #ffffff; font-family: \"Orbitron\", sans-serif; letter-spacing: 3px; font-size: 3rem; margin-bottom: 0; text-shadow: 0 0 20px rgba(59,130,246,0.8);'>EZEXAM</h1>", unsafe_allow_html=True)
+st.markdown("<p style='text-align: center; color: #60a5fa; font-family: \"Orbitron\", sans-serif; letter-spacing: 2px; font-weight: 700; font-size: 0.9rem; margin-top: -10px; margin-bottom: 40px;'>AUTO FORM SYSTEM</p>", unsafe_allow_html=True)
 
 with st.container(border=True):
     st.markdown('<div class="glass-header"><span style="color:#3b82f6;">🔗</span> TARGET FORM LINK</div>', unsafe_allow_html=True)
@@ -372,7 +326,7 @@ Instructions:
 # ==========================================
 if "parsed_questions" in st.session_state:
     st.write("---")
-    st.markdown("<h2 style='color: #f8fafc; font-family: \"Inter\", sans-serif; font-weight: 600; font-size: 1.5rem;'>📋 REVIEW & SUBMIT</h2>", unsafe_allow_html=True)
+    st.markdown("<h2 style='color: #f8fafc; font-weight: 600; font-size: 1.5rem;'>📋 REVIEW & SUBMIT</h2>", unsafe_allow_html=True)
     
     final_payload = {}
 
@@ -395,7 +349,6 @@ if "parsed_questions" in st.session_state:
         score = q_data.get("confidence", 70) if isinstance(q_data, dict) else 80
         reason = q_data.get("reasoning", "ประมวลผลอัตโนมัติ") if isinstance(q_data, dict) else ""
 
-        # ปรับโทนสีแถบความมั่นใจให้ดูแพง ไม่แสบตา
         color = "#10b981" if score >= 85 else "#f59e0b" if score >= 60 else "#ef4444"
 
         with st.container(border=True):
