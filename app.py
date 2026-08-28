@@ -143,7 +143,7 @@ with st.container(border=True):
 
 st.write("")
 
-with st.expander("👤 2. ข้อมูลผู้สอบ & บริบท (พับเก็บได้)", expanded=True):
+with st.expander("👤 2. ข้อมูลผู้สอบ & บริบท", expanded=True):
     exam_context = st.text_area("📚 บริบทข้อสอบ (แนะนำให้ใส่)", placeholder="เช่น วิทยาศาสตร์ ม.ปลาย...", height=68)
     st.write("---")
     col1, col2 = st.columns(2)
