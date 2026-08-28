@@ -369,7 +369,7 @@ if "parsed_questions" in st.session_state:
                     
                     st.markdown(f'''
                     <a href="{score_url}" target="_blank" style="display: block; text-align: center; background-color: #4F46E5; color: white; padding: 12px; border-radius: 8px; text-decoration: none; font-weight: bold; margin-top: 10px; box-shadow: 0 4px 6px rgba(79, 70, 229, 0.2);">
-                        🎯 คลิกลิงก์เพื่อเปิดหน้าคะแนน (แคปหน้าจอส่งครูที่นี่)
+                        🎯 คลิกลิงก์เพื่อเปิดหน้าคะแนน
                     </a>
                     ''', unsafe_allow_html=True)
 
