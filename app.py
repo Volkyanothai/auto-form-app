@@ -7,7 +7,7 @@ from google import genai
 from google.genai import types
 import streamlit as st
 
-st.set_page_config(page_title="AutoForm AI", page_icon="✨", layout="centered")
+st.set_page_config(page_title="EZEXAM | Auto Form System", page_icon="⚡", layout="centered")
 
 # ==========================================
 # 🔑 ระบบจัดการ API Key อัตโนมัติ (ซ่อนจากผู้ใช้)
@@ -19,40 +19,95 @@ except:
     st.stop()
 
 # ==========================================
-# 🎨 CSS Overhaul
+# 🎨 CSS Overhaul (ดีไซน์ EZEXAM สไตล์ Sci-Fi Gradient)
 # ==========================================
 st.markdown("""
 <style>
-    @import url('https://fonts.googleapis.com/css2?family=Sarabun:wght@300;400;500;600&display=swap');
+    /* นำเข้าฟอนต์ล้ำๆ จาก Google Fonts */
+    @import url('https://fonts.googleapis.com/css2?family=Michroma&family=Sarabun:wght@300;400;600&family=Orbitron:wght@700&display=swap');
+
+    /* เปลี่ยนพื้นหลังเว็บให้เป็น Gradient ขาว -> น้ำเงินเข้ม */
+    .stApp {
+        background: linear-gradient(180deg, #FFFFFF 0%, #2A5298 35%, #1E3C72 100%) !important;
+        background-attachment: fixed !important;
+    }
+
+    /* บังคับฟอนต์ทั่วไปให้เป็น Sarabun */
     html, body, [class*="css"] {
         font-family: 'Sarabun', sans-serif !important;
+        color: #ffffff;
     }
+
+    /* ฟอนต์หัวข้อสไตล์ Sci-Fi (เหมือนใน Canva) */
+    h1, h2, h3, h4, .stMarkdown p strong {
+        font-family: 'Michroma', sans-serif !important;
+        text-transform: uppercase;
+        letter-spacing: 1.5px;
+    }
+
+    /* สีข้อความหัวข้อตอนอยู่บนพื้นขาวด้านบน จะได้มองเห็นชัด */
+    h1 { color: #1E3C72 !important; text-shadow: 2px 2px 4px rgba(0,0,0,0.1); }
+    p { color: #f0f0f0; }
+
+    /* ปรับแต่งช่องกรอกข้อมูล (Text Input & Select & Text Area) ให้โปร่งแสงและล้ำยุค */
+    .stTextInput input, .stSelectbox div[data-baseweb="select"], .stTextArea textarea {
+        background-color: rgba(0, 0, 0, 0.2) !important;
+        border: 1px solid rgba(255, 255, 255, 0.4) !important;
+        border-radius: 6px !important;
+        color: #ffffff !important;
+        font-family: 'Michroma', sans-serif !important;
+        font-size: 0.9rem !important;
+    }
+    
+    /* สีของ Label (เช่น Name, Class) */
+    .stTextInput label p, .stSelectbox label p, .stTextArea label p {
+        color: #ffffff !important;
+        font-family: 'Michroma', sans-serif !important;
+        font-size: 0.85rem !important;
+        text-shadow: 1px 1px 3px rgba(0,0,0,0.5);
+    }
+
+    /* กรอบ Card แบบโปร่งแสง (Glassmorphism) */
+    div[data-testid="stVerticalBlockBorderWrapper"] {
+        border: 1px solid rgba(255, 255, 255, 0.2) !important;
+        border-radius: 12px !important;
+        background: rgba(255, 255, 255, 0.1) !important;
+        backdrop-filter: blur(12px) !important;
+        padding: 1rem !important;
+        box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.3) !important;
+    }
+
+    /* ปุ่มกดสีสว่าง ให้เข้ากับธีม Futuristic */
     button[data-testid="baseButton-primary"] {
-        background-color: #4F46E5 !important;
-        border-color: #4F46E5 !important;
-        color: white !important;
-        border-radius: 8px !important;
-        font-weight: 600 !important;
-        padding: 0.5rem 1rem !important;
+        background: linear-gradient(90deg, #00f2fe 0%, #4facfe 100%) !important;
+        border: none !important;
+        color: #111 !important;
+        font-family: 'Orbitron', sans-serif !important;
+        font-weight: 700 !important;
+        letter-spacing: 1px;
+        box-shadow: 0 4px 15px rgba(0, 242, 254, 0.4) !important;
         transition: all 0.3s ease;
     }
     button[data-testid="baseButton-primary"]:hover {
-        background-color: #4338CA !important;
-        box-shadow: 0 4px 12px rgba(79, 70, 229, 0.3) !important;
         transform: translateY(-2px);
+        box-shadow: 0 6px 20px rgba(0, 242, 254, 0.6) !important;
     }
-    div[data-testid="stVerticalBlockBorderWrapper"] {
-        border: 1px solid #E5E7EB !important;
-        border-radius: 12px !important;
-        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05) !important;
-        background-color: #ffffff !important;
-        padding: 1rem !important;
-        border-top: 4px solid #4F46E5 !important;
+
+    /* กล่องเหตุผล AI (ปรับให้เข้ากับกระจกโปร่งแสง) */
+    .reasoning-text {
+        color: #e0e0e0;
+        font-size: 0.9rem;
+        background-color: rgba(0, 242, 254, 0.1);
+        padding: 8px 12px;
+        border-radius: 6px;
+        border-left: 3px solid #00f2fe;
+        margin-bottom: 12px;
     }
+    
     .confidence-track {
         width: 100%;
         height: 5px;
-        background-color: #F3F4F6;
+        background-color: rgba(255, 255, 255, 0.2);
         border-radius: 4px;
         margin: 10px 0;
         overflow: hidden;
@@ -62,18 +117,10 @@ st.markdown("""
         border-radius: 4px;
         transition: width 0.8s ease-out;
     }
-    .reasoning-text {
-        color: #4B5563;
-        font-size: 0.9rem;
-        background-color: #EEF2FF;
-        padding: 8px 12px;
-        border-radius: 6px;
-        border-left: 3px solid #6366F1;
-        margin-bottom: 12px;
-    }
+    
     .score-box {
-        background: linear-gradient(135deg, #4F46E5 0%, #7C3AED 100%);
-        color: white;
+        background: linear-gradient(135deg, #00f2fe 0%, #4facfe 100%);
+        color: #111;
         padding: 15px;
         border-radius: 10px;
         text-align: center;
@@ -81,15 +128,18 @@ st.markdown("""
         font-weight: 600;
         margin-top: 15px;
         margin-bottom: 15px;
-        box-shadow: 0 4px 10px rgba(124, 58, 237, 0.3);
+        box-shadow: 0 4px 15px rgba(0, 242, 254, 0.4);
+        font-family: 'Orbitron', sans-serif !important;
     }
+
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
+    header {visibility: hidden;}
 </style>
 """, unsafe_allow_html=True)
 
 # ==========================================
-# ⚙️ Core Functions
+# ⚙️ Core Functions (ระบบคัดกรอง + AI)
 # ==========================================
 def check_personal_info(q_title, choices, my_name, my_student_id, my_no, my_class):
     clean_title = re.sub(r'^\*?\*?(?:ข้อ\s*\d+[\s.:-]*)?', '', q_title.strip()).strip()
@@ -134,38 +184,38 @@ def extract_image_url(item):
 # ==========================================
 # 📱 Layout หลัก
 # ==========================================
-st.markdown("<h1 style='text-align: center; color: #1F2937; margin-bottom: 0;'>✨ AutoForm AI</h1>", unsafe_allow_html=True)
-st.markdown("<p style='text-align: center; color: #6B7280; margin-top: 0; margin-bottom: 30px;'>ผู้ช่วยทำฟอร์มอัจฉริยะ (Vision AI Edition)</p>", unsafe_allow_html=True)
+st.markdown("<h1 style='text-align: center; margin-bottom: 0;'>EZEXAM</h1>", unsafe_allow_html=True)
+st.markdown("<p style='text-align: center; color: #4facfe; margin-top: 0; margin-bottom: 30px; font-family: \"Orbitron\", sans-serif; font-weight: 700; letter-spacing: 2px;'>AUTO FORM SYSTEM</p>", unsafe_allow_html=True)
 
 with st.container(border=True):
-    st.markdown("#### ⚙️ 1. ตั้งค่าแบบฟอร์ม (Setup)")
-    form_url = st.text_input("🔗 ลิงก์ Google Form (forms.gle/...)", placeholder="วางลิงก์ฟอร์มที่นี่...")
+    st.markdown("#### 🔗 GOOGLE FORM LINK")
+    form_url = st.text_input("Form URL", placeholder="Paste google form link here...", label_visibility="collapsed")
 
 st.write("")
 
-with st.expander("👤 2. ข้อมูลผู้สอบ & บริบท", expanded=True):
-    exam_context = st.text_area("📚 บริบทข้อสอบ (แนะนำให้ใส่)", placeholder="เช่น วิทยาศาสตร์ ม.ปลาย...", height=68)
+with st.expander("👤 INFORMATION & CONTEXT", expanded=True):
+    exam_context = st.text_area("EXAM CONTEXT", placeholder="e.g. High school physics...", height=68)
     st.write("---")
     col1, col2 = st.columns(2)
     with col1:
-        my_name = st.text_input("ชื่อ-นามสกุล", placeholder="กรอกชื่อ...")
-        my_no = st.text_input("เลขที่", placeholder="กรอกเลขที่...")
+        my_name = st.text_input("NAME", placeholder="Your name...")
+        my_no = st.text_input("NUMBER", placeholder="Your number...")
     with col2:
-        my_student_id = st.text_input("เลขประจำตัว", placeholder="กรอกรหัส...")
-        my_class = st.text_input("ชั้น/ห้อง", placeholder="เช่น ม.6/3...")
+        my_student_id = st.text_input("STUDENT ID", placeholder="Your ID...")
+        my_class = st.text_input("CLASS", placeholder="Your class...")
 
 st.write("")
 
 # ==========================================
 # 🚀 Action: ปุ่มประมวลผล
 # ==========================================
-if st.button("🚀 เริ่มวิเคราะห์ข้อสอบ", type="primary", use_container_width=True):
+if st.button("🚀 ANALYZE EXAM", type="primary", use_container_width=True):
     if not form_url:
-        st.error("⚠️ กรุณากรอกลิงก์ฟอร์มให้ครบถ้วน")
+        st.error("⚠️ Please insert Google Form link.")
     else:
-        with st.status("🤖 กำลังวิเคราะห์ข้อมูล...", expanded=True) as status:
+        with st.status("🤖 SYSTEM PROCESSING...", expanded=True) as status:
             try:
-                st.write("📥 กำลังดึงโครงสร้าง...")
+                st.write("📥 Extracting form structure...")
                 client = genai.Client(api_key=gemini_key)
                 res = requests.get(form_url, allow_redirects=True)
                 html = res.text
@@ -177,7 +227,7 @@ if st.button("🚀 เริ่มวิเคราะห์ข้อสอบ"
 
                 match = re.search(r'FB_PUBLIC_LOAD_DATA_\s*=\s*(.*?);\s*</script>', html, re.DOTALL)
                 if not match:
-                    status.update(label="❌ ไม่พบฟอร์ม", state="error")
+                    status.update(label="❌ Form not found", state="error")
                     st.stop()
 
                 form_data = json.loads(match.group(1))
@@ -185,21 +235,17 @@ if st.button("🚀 เริ่มวิเคราะห์ข้อสอบ"
 
                 parsed_questions = []
                 personal_data_map = {}
-                
                 page_count = 0
-                
                 fbzx = ""
                 fbzx_match = re.search(r'name="fbzx" value="([^"]*)"', html)
                 if fbzx_match: fbzx = fbzx_match.group(1)
 
-                st.write("🔍 แยกโจทย์และคำนวณจำนวนหน้า...")
+                st.write("🔍 Identifying pages and images...")
                 for item in questions_data:
                     if not item or len(item) < 4: continue
-                    
                     if item[3] == 8:
                         page_count += 1
                         continue
-
                     if len(item) < 5 or not item[4]: continue
                     
                     q_title = item[1]
@@ -218,7 +264,7 @@ if st.button("🚀 เริ่มวิเคราะห์ข้อสอบ"
                 generated_page_history = ",".join([str(i) for i in range(page_count + 1)])
 
                 if parsed_questions:
-                    st.write("🧠 ให้ AI อ่านและคิดคำตอบ...")
+                    st.write("🧠 AI is thinking...")
                     contents_payload = []
                     prompt_data = []
 
@@ -274,24 +320,24 @@ Instructions:
                     "pageHistory": generated_page_history,
                     "fbzx": fbzx
                 })
-                status.update(label="🎉 วิเคราะห์สำเร็จ!", state="complete", expanded=False)
+                status.update(label="🎉 ANALYSIS COMPLETE!", state="complete", expanded=False)
 
             except Exception as e:
-                status.update(label="❌ Error", state="error")
-                st.error(f"รายละเอียด: {e}")
+                status.update(label="❌ ERROR", state="error")
+                st.error(f"Details: {e}")
 
 # ==========================================
 # 📝 Review & Edit Section
 # ==========================================
 if "parsed_questions" in st.session_state:
     st.write("---")
-    st.markdown("<h3 style='color: #1F2937;'>📋 ตรวจสอบก่อนส่ง</h3>", unsafe_allow_html=True)
+    st.markdown("<h3 style='color: #ffffff; font-family: \"Michroma\", sans-serif;'>📋 REVIEW & SUBMIT</h3>", unsafe_allow_html=True)
     
     final_payload = {}
 
     if st.session_state["personal_data_map"]:
         with st.container(border=True):
-            st.markdown("<b style='color:#4B5563;'>📌 ข้อมูลที่จะถูกส่ง</b>", unsafe_allow_html=True)
+            st.markdown("<b style='color:#00f2fe; font-family: \"Michroma\", sans-serif;'>📌 AUTO-FILLED DATA</b>", unsafe_allow_html=True)
             cols = st.columns(len(st.session_state["personal_data_map"]))
             for idx, (entry_id, (title, val, cat)) in enumerate(st.session_state["personal_data_map"].items()):
                 cols[idx].text_input(f"{title}", value=val, key=f"input_{entry_id}", disabled=True)
@@ -308,19 +354,20 @@ if "parsed_questions" in st.session_state:
         score = q_data.get("confidence", 70) if isinstance(q_data, dict) else 80
         reason = q_data.get("reasoning", "ประมวลผลอัตโนมัติ") if isinstance(q_data, dict) else ""
 
-        color = "#10B981" if score >= 85 else "#F59E0B" if score >= 60 else "#EF4444"
+        # สีโทน Sci-Fi (ฟ้า ส้ม แดง)
+        color = "#00f2fe" if score >= 85 else "#F59E0B" if score >= 60 else "#EF4444"
 
         with st.container(border=True):
-            st.markdown(f"<div style='font-size: 1.1rem; font-weight: 500; color: #1F2937;'>{idx}. {title}</div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='font-size: 1.1rem; font-weight: 500; color: #ffffff;'>{idx}. {title}</div>", unsafe_allow_html=True)
             
             st.markdown(f"""
             <div class="confidence-track">
-                <div class="confidence-fill" style="width: {score}%; background-color: {color};"></div>
+                <div class="confidence-fill" style="width: {score}%; background-color: {color}; box-shadow: 0 0 10px {color};"></div>
             </div>
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-                <span style="font-size: 0.8rem; font-weight: 600; color: {color};">ความมั่นใจ: {score}%</span>
+                <span style="font-size: 0.8rem; font-weight: 600; color: {color}; font-family: 'Orbitron', sans-serif;">MATCH: {score}%</span>
             </div>
-            <div class="reasoning-text">💡 <b>AI คิดว่า:</b> {reason}</div>
+            <div class="reasoning-text">💡 <b>AI REASON:</b> {reason}</div>
             """, unsafe_allow_html=True)
             
             if img_url:
@@ -328,9 +375,9 @@ if "parsed_questions" in st.session_state:
 
             if choices:
                 default_idx = next((i for i, c in enumerate(choices) if c.strip() == str(default_val).strip() or c in str(default_val)), 0)
-                final_payload[entry_id] = st.selectbox("คำตอบ", options=choices, index=default_idx, key=f"ans_{entry_id}", label_visibility="collapsed")
+                final_payload[entry_id] = st.selectbox("ANSWER", options=choices, index=default_idx, key=f"ans_{entry_id}", label_visibility="collapsed")
             else:
-                final_payload[entry_id] = st.text_input("คำตอบ", value=str(default_val), key=f"ans_{entry_id}", label_visibility="collapsed")
+                final_payload[entry_id] = st.text_input("ANSWER", value=str(default_val), key=f"ans_{entry_id}", label_visibility="collapsed")
     
     st.write("")
     
@@ -339,13 +386,13 @@ if "parsed_questions" in st.session_state:
         final_payload["fbzx"] = st.session_state["fbzx"]
     final_payload["fvv"] = "1"
     
-    if st.button("✅ ยืนยันส่งข้อมูล", type="primary", use_container_width=True):
-        with st.spinner("⏳ กำลังส่งข้อมูลและดึงผลคะแนน..."):
+    if st.button("✅ SUBMIT DATA", type="primary", use_container_width=True):
+        with st.spinner("⏳ Transmitting data..."):
             res_submit = requests.post(st.session_state["submit_url"], data=final_payload)
             
             if res_submit.status_code == 200:
                 st.balloons()
-                st.success("🎉 ส่งคำตอบเข้า Google Form เรียบร้อยแล้ว!")
+                st.success("🎉 Transmission Complete!")
                 
                 html_response = res_submit.text
                 link_match = re.search(r'href="([^"]*?viewscore\?[^"]*)"', html_response)
@@ -363,18 +410,16 @@ if "parsed_questions" in st.session_state:
                         if score_match:
                             my_score = score_match.group(1)
                             full_score = score_match.group(2)
-                            st.markdown(f'<div class="score-box">🏆 คุณได้คะแนน: {my_score} / {full_score} คะแนน</div>', unsafe_allow_html=True)
+                            st.markdown(f'<div class="score-box">🏆 SCORE: {my_score} / {full_score}</div>', unsafe_allow_html=True)
                     except:
                         pass
                     
                     st.markdown(f'''
-                    <a href="{score_url}" target="_blank" style="display: block; text-align: center; background-color: #4F46E5; color: white; padding: 12px; border-radius: 8px; text-decoration: none; font-weight: bold; margin-top: 10px; box-shadow: 0 4px 6px rgba(79, 70, 229, 0.2);">
-                        🎯 คลิกลิงก์เพื่อเปิดหน้าคะแนน
+                    <a href="{score_url}" target="_blank" style="display: block; text-align: center; background: linear-gradient(90deg, #00f2fe 0%, #4facfe 100%); color: #111; padding: 12px; border-radius: 8px; text-decoration: none; font-weight: bold; font-family: 'Orbitron', sans-serif; margin-top: 10px; box-shadow: 0 4px 15px rgba(0, 242, 254, 0.4);">
+                        🎯 CLICK TO VIEW SCORE (SCREENSHOT)
                     </a>
                     ''', unsafe_allow_html=True)
-
                 else:
-                    st.warning("⚠️ ส่งคำตอบสำเร็จ! แต่ฟอร์มนี้ไม่ได้เปิดตั้งค่า 'ประกาศคะแนนทันที' จึงไม่สามารถดึงหน้าคะแนนได้ครับ")
+                    st.warning("⚠️ Data sent! But this form does not release scores immediately.")
             else:
-                st.error(f"Error: เกิดข้อผิดพลาดรหัส {res_submit.status_code}")
-
+                st.error(f"Error Code: {res_submit.status_code}")
