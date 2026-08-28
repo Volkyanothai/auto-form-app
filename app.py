@@ -10,7 +10,7 @@ import streamlit as st
 st.set_page_config(page_title="EZEXAM | Auto Form System", page_icon="⚡", layout="centered")
 
 # ==========================================
-# 🔑 ระบบจัดการ API Key อัตโนมัติ (ซ่อนจากผู้ใช้)
+# 🔑 ระบบจัดการ API Key อัตโนมัติ
 # ==========================================
 try:
     gemini_key = st.secrets["GEMINI_API_KEY"]
@@ -19,13 +19,12 @@ except:
     st.stop()
 
 # ==========================================
-# 🎨 CSS Overhaul (Real Glassmorphism & Bug Fixes)
+# 🎨 CSS Overhaul (Bug Fixes & Layout)
 # ==========================================
 st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Orbitron:wght@700;900&family=Sarabun:wght@300;400;500&display=swap');
 
-    /* 1. สร้างแสงออโรร่าด้านหลังเพื่อให้กระจกมีมิติ (Real Glassmorphism Needs Background Light) */
     .stApp {
         background-color: #0b1120 !important;
         background-image: 
@@ -34,33 +33,33 @@ st.markdown("""
         background-attachment: fixed !important;
     }
 
-    /* 2. บังคับฟอนต์เฉพาะส่วนที่จำเป็น (ป้องกันบั๊กไอคอนลูกศรทับซ้อน) */
-    p, h1, h2, h3, h4, h5, h6, label, input, button, textarea {
+    p, h1, h2, h3, h4, h5, h6, label, span {
         font-family: 'Inter', 'Sarabun', sans-serif !important;
         color: #f8fafc;
     }
 
-    /* 3. กล่องกระจกสมจริง (Glass Cards) */
-    div[data-testid="stVerticalBlockBorderWrapper"], 
-    div[data-testid="stExpander"] {
-        background: rgba(255, 255, 255, 0.03) !important;
-        backdrop-filter: blur(16px) !important;
-        -webkit-backdrop-filter: blur(16px) !important;
+    /* กล่องกระจกสมจริง (Glass Cards) */
+    div[data-testid="stVerticalBlockBorderWrapper"] {
+        background: rgba(15, 23, 42, 0.6) !important;
+        backdrop-filter: blur(12px) !important;
+        -webkit-backdrop-filter: blur(12px) !important;
         border: 1px solid rgba(255, 255, 255, 0.1) !important;
         border-radius: 16px !important;
-        box-shadow: 0 4px 30px rgba(0, 0, 0, 0.2) !important;
+        box-shadow: 0 4px 30px rgba(0, 0, 0, 0.3) !important;
+        padding: 1.5rem !important;
     }
 
-    /* 4. แก้ไขช่องกรอกข้อมูล (Inputs) ให้ดูคลีน */
+    /* บังคับช่องกรอกข้อมูลให้เป็นสีเข้ม (แก้ปัญหาช่องสีขาว) */
     .stTextInput input, .stSelectbox div[data-baseweb="select"], .stTextArea textarea {
-        background: rgba(255, 255, 255, 0.05) !important;
-        border: 1px solid rgba(255, 255, 255, 0.15) !important;
+        background-color: #1e293b !important;
+        border: 1px solid rgba(255, 255, 255, 0.2) !important;
         border-radius: 8px !important;
         color: #ffffff !important;
+        font-family: 'Inter', 'Sarabun', sans-serif !important;
     }
     .stTextInput input:focus, .stTextArea textarea:focus, .stSelectbox div[data-baseweb="select"]:focus-within {
         border-color: #3b82f6 !important;
-        box-shadow: 0 0 10px rgba(59, 130, 246, 0.3) !important;
+        box-shadow: 0 0 8px rgba(59, 130, 246, 0.5) !important;
     }
     
     .stTextInput label p, .stSelectbox label p, .stTextArea label p {
@@ -70,7 +69,7 @@ st.markdown("""
         letter-spacing: 0.5px;
     }
 
-    /* 5. ล็อกเป้าปุ่มกด (ทับสีแดงของ Streamlit แบบ 100%) */
+    /* ปุ่มกด */
     div.stButton > button {
         background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%) !important;
         border: none !important;
@@ -86,11 +85,11 @@ st.markdown("""
         box-shadow: 0 6px 20px rgba(37, 99, 235, 0.6) !important;
     }
 
-    /* 6. AI Score & Reasoning */
+    /* AI Score & Reasoning */
     .reasoning-text {
         color: #cbd5e1;
         font-size: 0.85rem;
-        background: rgba(59, 130, 246, 0.1);
+        background: rgba(59, 130, 246, 0.15);
         padding: 10px 15px;
         border-radius: 8px;
         border-left: 3px solid #3b82f6;
@@ -125,6 +124,9 @@ st.markdown("""
         font-weight: 600;
         color: #f8fafc;
         margin-bottom: 1rem;
+        display: flex;
+        align-items: center;
+        gap: 8px;
     }
 
     #MainMenu {visibility: hidden;}
@@ -179,8 +181,12 @@ def extract_image_url(item):
 # ==========================================
 # 📱 Layout หลัก
 # ==========================================
-st.markdown("<h1 style='text-align: center; color: #ffffff; font-family: \"Orbitron\", sans-serif; letter-spacing: 3px; font-size: 3rem; margin-bottom: 0; text-shadow: 0 0 20px rgba(59,130,246,0.8);'>EZEXAM</h1>", unsafe_allow_html=True)
-st.markdown("<p style='text-align: center; color: #60a5fa; font-family: \"Orbitron\", sans-serif; letter-spacing: 2px; font-weight: 700; font-size: 0.9rem; margin-top: -10px; margin-bottom: 40px;'>AUTO FORM SYSTEM</p>", unsafe_allow_html=True)
+st.markdown("""
+<div style="text-align: center; width: 100%; margin-bottom: 40px;">
+    <h1 style='color: #ffffff; font-family: "Orbitron", sans-serif; letter-spacing: 3px; font-size: 3rem; margin: 0; text-shadow: 0 0 20px rgba(59,130,246,0.8);'>EZEXAM</h1>
+    <p style='color: #60a5fa; font-family: "Orbitron", sans-serif; letter-spacing: 2px; font-weight: 700; font-size: 0.9rem; margin: 5px 0 0 0;'>AUTO FORM SYSTEM</p>
+</div>
+""", unsafe_allow_html=True)
 
 with st.container(border=True):
     st.markdown('<div class="glass-header"><span style="color:#3b82f6;">🔗</span> TARGET FORM LINK</div>', unsafe_allow_html=True)
@@ -188,7 +194,9 @@ with st.container(border=True):
 
 st.write("")
 
-with st.expander("👤 PERSONAL DATA & CONTEXT", expanded=True):
+# เปลี่ยน Expander เป็น Container แบบธรรมดา
+with st.container(border=True):
+    st.markdown('<div class="glass-header"><span style="color:#3b82f6;">👤</span> PERSONAL DATA & CONTEXT</div>', unsafe_allow_html=True)
     exam_context = st.text_area("EXAM CONTEXT", placeholder="e.g. High school physics...", height=68)
     st.write("")
     col1, col2 = st.columns(2)
