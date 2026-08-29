@@ -158,6 +158,14 @@ st.markdown("""
         gap: 8px;
     }
 
+    /* บังคับสีตัวหนังสือในช่องที่ถูกล็อกให้สว่างชัดเจน */
+    .stTextInput input:disabled {
+        color: #f8fafc !important;
+        -webkit-text-fill-color: #f8fafc !important;
+        opacity: 1 !important;
+    }
+
+
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     header {visibility: hidden;}
