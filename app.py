@@ -69,7 +69,7 @@ st.markdown("""
     }
     
     .stTextInput label p, .stSelectbox label p, .stTextArea label p {
-        color: #94a3b8 !important;
+        color: #ffffff !important;
         font-size: 0.75rem !important;
         font-weight: 600 !important;
         letter-spacing: 0.5px;
