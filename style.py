@@ -48,7 +48,7 @@ div.stButton>button:active{transform:translateY(1px) scale(.99);}
 .stTextInput input,.stTextArea textarea,.stSelectbox div[data-baseweb="select"]>div{background:rgba(10,20,44,.62);border:1px solid rgba(140,175,255,.16);border-radius:14px;color:#eaf0ff;}
 .stTextInput input:focus,.stTextArea textarea:focus{border-color:#7fb3ff;box-shadow:0 0 0 3px rgba(127,179,255,.18);}
 .stTextInput label p,.stSelectbox label p,.stTextArea label p{color:#93a7cc;font-size:.72rem;font-weight:700;letter-spacing:1px;text-transform:uppercase;}
-.stTextInput input:disabled{color:#eaf0ff;-webkit-text-fill-color:#eaf0ff;opacity:1;}
+.stTextInput input:disabled{-webkit-appearance:none;appearance:none;background-color:rgba(10,20,44,.78) !important;color:#eaf0ff !important;-webkit-text-fill-color:#eaf0ff !important;opacity:1 !important;border:1px solid rgba(140,175,255,.20) !important;}
 .confidence-track{width:100%;height:6px;background:rgba(255,255,255,.07);border-radius:99px;overflow:hidden;margin:.6rem 0 .5rem;}
 .confidence-fill{height:100%;border-radius:99px;animation:grow 1.1s cubic-bezier(.2,.8,.2,1) both;}
 @keyframes grow{from{width:0}}
