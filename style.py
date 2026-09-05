@@ -32,17 +32,17 @@ footer{visibility:hidden;}
 
 .block-container{padding:1.6rem 1.1rem 4rem;max-width:920px;}
 
-.hero{text-align:center;padding:1.6rem 1.2rem 1.1rem;margin-bottom:1.5rem;background:linear-gradient(145deg,rgba(30,52,102,.55),rgba(10,18,40,.32));border:1px solid rgba(140,175,255,.16);border-radius:28px;backdrop-filter:blur(22px) saturate(160%);-webkit-backdrop-filter:blur(22px) saturate(160%);box-shadow:0 20px 60px rgba(0,0,0,.5),inset 0 1px 0 rgba(255,255,255,.10);animation:rise .8s cubic-bezier(.2,.8,.2,1) both;}
+.hero{text-align:center;padding:1rem 1.2rem;margin-bottom:1.3rem;background:linear-gradient(145deg,rgba(30,52,102,.55),rgba(10,18,40,.32));border:1px solid rgba(140,175,255,.16);border-radius:24px;backdrop-filter:blur(22px) saturate(160%);-webkit-backdrop-filter:blur(22px) saturate(160%);box-shadow:0 20px 60px rgba(0,0,0,.5),inset 0 1px 0 rgba(255,255,255,.10);animation:rise .8s cubic-bezier(.2,.8,.2,1) both;}
 
-.hero-logo-wrap{position:relative;width:230px;height:230px;margin:0 auto 1.1rem;display:flex;align-items:center;justify-content:center;border-radius:32px;background:linear-gradient(155deg,#ffffff 0%,#f4f2ec 55%,#ece7da 100%);box-shadow:0 18px 46px rgba(0,0,0,.38),0 0 0 1px rgba(255,255,255,.6) inset,0 0 40px rgba(232,201,138,.18);animation:float 5s ease-in-out infinite;}
-.hero-logo{position:relative;z-index:1;width:172px;height:172px;object-fit:contain;}
+.hero-logo-wrap{position:relative;width:auto;margin:0 auto .6rem;display:flex;align-items:center;justify-content:center;}
+.hero-logo{width:150px;height:150px;object-fit:contain;filter:drop-shadow(0 6px 18px rgba(0,0,0,.35));}
 
 .hero-mark{width:180px;height:180px;margin:0 auto 1rem;border-radius:26px;display:flex;align-items:center;justify-content:center;font-size:4.5rem;background:linear-gradient(135deg,rgba(127,179,255,.28),rgba(95,227,208,.16));border:1px solid rgba(127,179,255,.35);box-shadow:0 0 34px rgba(127,179,255,.30);animation:float 5s ease-in-out infinite;}
 @keyframes float{0%,100%{transform:translateY(0)}50%{transform:translateY(-9px)}}
 
 .hero h1,.hero p{display:none;}
 
-.hero-line{width:110px;height:2px;margin:1.1rem auto 0;border-radius:2px;background:linear-gradient(90deg,transparent,#e8c98a,transparent);}
+.hero-line{width:90px;height:2px;margin:.8rem auto 0;border-radius:2px;background:linear-gradient(90deg,transparent,#e8c98a,transparent);}
 div[data-testid="stVerticalBlockBorderWrapper"]{background:rgba(18,32,64,.55);border:1px solid rgba(140,175,255,.16);border-radius:22px;padding:1.4rem;backdrop-filter:blur(18px) saturate(150%);-webkit-backdrop-filter:blur(18px) saturate(150%);box-shadow:0 14px 44px rgba(0,0,0,.42),inset 0 1px 0 rgba(255,255,255,.08);transition:transform .35s cubic-bezier(.2,.8,.2,1),box-shadow .35s,border-color .35s;animation:rise .6s ease both;}
 div[data-testid="stVerticalBlockBorderWrapper"]:hover{transform:translateY(-4px);border-color:rgba(127,179,255,.38);box-shadow:0 22px 60px rgba(0,0,0,.55),0 0 26px rgba(127,179,255,.14);}
 @keyframes rise{from{opacity:0;transform:translateY(22px)}to{opacity:1;transform:none}}
@@ -70,7 +70,7 @@ div.stButton>button:active{transform:translateY(1px) scale(.99);}
 [data-testid="stExpander"]{background:rgba(14,26,54,.5);border:1px solid rgba(140,175,255,.16);border-radius:16px;}
 .stProgress>div>div>div>div{background:linear-gradient(90deg,#7fb3ff,#5fe3d0);}
 hr{border-color:rgba(140,175,255,.16);}
-@media (max-width:640px){.block-container{padding:1rem .7rem 3rem;}.hero{padding:1.2rem .9rem .9rem;border-radius:22px;}.hero-logo-wrap{width:170px;height:170px;border-radius:26px;}.hero-logo{width:128px;height:128px;}.hero-mark{width:130px;height:130px;font-size:2.8rem;}div[data-testid="stVerticalBlockBorderWrapper"]{padding:1.05rem;border-radius:18px;}div[data-testid="stVerticalBlockBorderWrapper"]:hover{transform:none;}.q-title{font-size:.99rem;}.score-val{font-size:2.6rem;}}
+@media (max-width:640px){.block-container{padding:1rem .7rem 3rem;}.hero{padding:.9rem .8rem;border-radius:20px;}.hero-logo{width:120px;height:120px;}.hero-mark{width:130px;height:130px;font-size:2.8rem;}div[data-testid="stVerticalBlockBorderWrapper"]{padding:1.05rem;border-radius:18px;}div[data-testid="stVerticalBlockBorderWrapper"]:hover{transform:none;}.q-title{font-size:.99rem;}.score-val{font-size:2.6rem;}}
 </style>"""
 
 def inject_css() -> None:
