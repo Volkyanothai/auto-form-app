@@ -2,7 +2,6 @@ import base64
 from pathlib import Path
 import streamlit as st
 
-
 @st.cache_data
 def _logo_b64() -> str:
     for name in ("logo.png", "logo.jpg", "logo.jpeg", "logo.webp"):
@@ -11,13 +10,11 @@ def _logo_b64() -> str:
             return base64.b64encode(p.read_bytes()).decode()
     return ""
 
-
 def _raw(html_code: str) -> None:
     try:
         st.html(html_code)
     except Exception:
         st.markdown(html_code, unsafe_allow_html=True)
-
 
 CSS = """<style>
 @import url('https://fonts.googleapis.com/css2?family=Sora:wght@300;400;600;700;800&family=Noto+Sans+Thai:wght@300;400;600;700&display=swap');
@@ -29,13 +26,22 @@ html,body,p,h1,h2,h3,h4,h5,h6,label,input,textarea,li,button,span,div{font-famil
 [data-testid="stHeader"]{background:transparent;}
 #MainMenu{visibility:hidden;}
 footer{visibility:hidden;}
+
+/* === ซ่อนแถบ Share/GitHub/Star มุมขวาบน === */
+[data-testid="stToolbar"]{visibility:hidden;height:0;}
+[data-testid="stDecoration"]{display:none;}
+
 .block-container{padding:1.6rem 1.1rem 4rem;max-width:920px;}
 .hero{text-align:center;padding:2.3rem 1.2rem;margin-bottom:1.5rem;background:linear-gradient(145deg,rgba(30,52,102,.55),rgba(10,18,40,.32));border:1px solid rgba(140,175,255,.16);border-radius:28px;backdrop-filter:blur(22px) saturate(160%);-webkit-backdrop-filter:blur(22px) saturate(160%);box-shadow:0 20px 60px rgba(0,0,0,.5),inset 0 1px 0 rgba(255,255,255,.10);animation:rise .8s cubic-bezier(.2,.8,.2,1) both;}
-.hero-logo{width:96px;height:96px;object-fit:contain;margin-bottom:1rem;filter:drop-shadow(0 0 22px rgba(127,179,255,.55));animation:float 5s ease-in-out infinite;}
-.hero-mark{width:88px;height:88px;margin:0 auto 1rem;border-radius:26px;display:flex;align-items:center;justify-content:center;font-size:2.3rem;background:linear-gradient(135deg,rgba(127,179,255,.28),rgba(95,227,208,.16));border:1px solid rgba(127,179,255,.35);box-shadow:0 0 34px rgba(127,179,255,.30);animation:float 5s ease-in-out infinite;}
+
+/* === โลโก้ใหญ่ขึ้น อยู่กลางกล่อง === */
+.hero-logo{width:200px;height:200px;object-fit:contain;margin:0 auto 1rem;display:block;filter:drop-shadow(0 0 22px rgba(127,179,255,.55));animation:float 5s ease-in-out infinite;}
+.hero-mark{width:180px;height:180px;margin:0 auto 1rem;border-radius:26px;display:flex;align-items:center;justify-content:center;font-size:4.5rem;background:linear-gradient(135deg,rgba(127,179,255,.28),rgba(95,227,208,.16));border:1px solid rgba(127,179,255,.35);box-shadow:0 0 34px rgba(127,179,255,.30);animation:float 5s ease-in-out infinite;}
 @keyframes float{0%,100%{transform:translateY(0)}50%{transform:translateY(-9px)}}
-.hero h1{font-size:2.7rem;font-weight:800;letter-spacing:4px;margin:0 0 .45rem;background:linear-gradient(100deg,#fff 10%,#7fb3ff 45%,#e8c98a 92%);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;}
-.hero p{color:#93a7cc;font-size:.82rem;letter-spacing:3px;font-weight:600;margin:0;}
+
+/* === ซ่อนตัวหนังสือ EZEXAM / AUTO FORM SYSTEM === */
+.hero h1,.hero p{display:none;}
+
 .hero-line{width:110px;height:2px;margin:1.1rem auto 0;border-radius:2px;background:linear-gradient(90deg,transparent,#e8c98a,transparent);}
 div[data-testid="stVerticalBlockBorderWrapper"]{background:rgba(18,32,64,.55);border:1px solid rgba(140,175,255,.16);border-radius:22px;padding:1.4rem;backdrop-filter:blur(18px) saturate(150%);-webkit-backdrop-filter:blur(18px) saturate(150%);box-shadow:0 14px 44px rgba(0,0,0,.42),inset 0 1px 0 rgba(255,255,255,.08);transition:transform .35s cubic-bezier(.2,.8,.2,1),box-shadow .35s,border-color .35s;animation:rise .6s ease both;}
 div[data-testid="stVerticalBlockBorderWrapper"]:hover{transform:translateY(-4px);border-color:rgba(127,179,255,.38);box-shadow:0 22px 60px rgba(0,0,0,.55),0 0 26px rgba(127,179,255,.14);}
@@ -64,13 +70,11 @@ div.stButton>button:active{transform:translateY(1px) scale(.99);}
 [data-testid="stExpander"]{background:rgba(14,26,54,.5);border:1px solid rgba(140,175,255,.16);border-radius:16px;}
 .stProgress>div>div>div>div{background:linear-gradient(90deg,#7fb3ff,#5fe3d0);}
 hr{border-color:rgba(140,175,255,.16);}
-@media (max-width:640px){.block-container{padding:1rem .7rem 3rem;}.hero{padding:1.7rem .9rem;border-radius:22px;}.hero h1{font-size:1.9rem;letter-spacing:2.5px;}.hero p{font-size:.7rem;letter-spacing:2px;}.hero-logo,.hero-mark{width:70px;height:70px;font-size:1.8rem;}div[data-testid="stVerticalBlockBorderWrapper"]{padding:1.05rem;border-radius:18px;}div[data-testid="stVerticalBlockBorderWrapper"]:hover{transform:none;}.q-title{font-size:.99rem;}.score-val{font-size:2.6rem;}}
+@media (max-width:640px){.block-container{padding:1rem .7rem 3rem;}.hero{padding:1.7rem .9rem;border-radius:22px;}.hero-logo,.hero-mark{width:130px;height:130px;font-size:2.8rem;}div[data-testid="stVerticalBlockBorderWrapper"]{padding:1.05rem;border-radius:18px;}div[data-testid="stVerticalBlockBorderWrapper"]:hover{transform:none;}.q-title{font-size:.99rem;}.score-val{font-size:2.6rem;}}
 </style>"""
-
 
 def inject_css() -> None:
     _raw(CSS)
-
 
 def render_header(title: str = "EZEXAM", subtitle: str = "AUTO FORM SYSTEM") -> None:
     b64 = _logo_b64()
@@ -78,5 +82,4 @@ def render_header(title: str = "EZEXAM", subtitle: str = "AUTO FORM SYSTEM") -> 
         mark = '<img src="data:image/png;base64,' + b64 + '" class="hero-logo">'
     else:
         mark = '<div class="hero-mark">&#9889;</div>'
-    _raw('<div class="hero">' + mark + '<h1>' + title + '</h1><p>' + subtitle
-         + '</p><div class="hero-line"></div></div>')
+    _raw('<div class="hero">' + mark + '<h1>' + title + '</h1><p>' + subtitle + '</p><div class="hero-line"></div></div>')
