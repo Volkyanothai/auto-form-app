@@ -200,7 +200,7 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                             except Exception:
                                 pass
 
-                    models_to_try = ["gemini-2.5-flash", "gemini-2.0-flash"]
+                    models_to_try = ["gemini-flash-latest", "gemini-3.6-flash"]
                     response = None
                     last_err = None
                     for model_name in models_to_try:
