@@ -28,7 +28,7 @@ except Exception:
 # ==========================================
 def check_personal_info(q_title, choices, my_name, my_student_id, my_no, my_class):
     clean_title = re.sub(r'^\*?\*?(?:ข้อ\s*\d+[\s.:-]*)?', '', q_title.strip()).strip()
-    clean_title = re.sub(r'\*+\s*
+    clean_title = clean_title.rstrip('*').strip()
 
 ---
 
