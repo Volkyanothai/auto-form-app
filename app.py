@@ -16,6 +16,8 @@ inject_css()
 UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                     "(KHTML, like Gecko) Chrome/122.0 Safari/537.36"}
 
+CHECKBOX_TYPE = 4  # รหัสประเภทคำถามแบบ checkbox (เลือกได้หลายข้อ) ของ Google Form
+
 try:
     gemini_key = st.secrets["GEMINI_API_KEY"]
 except Exception:
@@ -145,6 +147,7 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                         continue
 
                     q_title = item[1]
+                    q_type = item[3]
                     entry_id = "entry." + str(item[4][0][0])
                     choices_raw = item[4][0][1] if len(item[4][0]) > 1 else None
                     choices = [c[0] for c in choices_raw if c and len(c) > 0] if choices_raw else []
@@ -159,6 +162,7 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                         "title": q_title,
                         "choices": choices,
                         "image_url": extract_image_url(item),
+                        "is_multi": q_type == CHECKBOX_TYPE,
                     })
 
                 generated_page_history = ",".join(str(i) for i in range(page_count + 1))
@@ -167,7 +171,10 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                     st.write("AI กำลังคิดคำตอบ...")
                     prompt_data = []
                     for idx, q in enumerate(parsed_questions, 1):
-                        q_info = "ข้อ " + str(idx) + " (ID: " + q["entry_id"] + "): " + str(q["title"])
+                        q_info = "ข้อ " + str(idx) + " (ID: " + q["entry_id"] + ")"
+                        if q.get("is_multi"):
+                            q_info += " [เลือกได้หลายข้อ]"
+                        q_info += ": " + str(q["title"])
                         if q.get("image_url"):
                             q_info += " [มีรูปภาพแนบ]"
                         if q["choices"]:
@@ -181,8 +188,11 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                         "Instructions:\n"
                         "1. ตอบให้แม่นยำที่สุด\n"
                         "2. ข้อช้อยส์ ต้องเลือกตรงตามช้อยส์เป๊ะๆ\n"
-                        '3. ตอบเป็น JSON เท่านั้น: '
-                        '{"entry.123": {"answer": "...", "confidence": 90, "reasoning": "..."}}'
+                        "3. ถ้าข้อไหนมีป้าย [เลือกได้หลายข้อ] ให้ตอบ answer เป็น array ของตัวเลือกที่ถูกทั้งหมด "
+                        'เช่น ["ตัวเลือก A","ตัวเลือก C"] ถ้าไม่มีป้ายนี้ให้ตอบ answer เป็น string เดียว\n'
+                        '4. ตอบเป็น JSON เท่านั้น: '
+                        '{"entry.123": {"answer": "..." (หรือ array ถ้าเลือกได้หลายข้อ), '
+                        '"confidence": 90, "reasoning": "..."}}'
                     )
 
                     contents_payload = [full_prompt]
@@ -261,6 +271,7 @@ if "parsed_questions" in st.session_state:
         title = html_lib.escape(str(q["title"]))
         choices = q["choices"]
         img_url = q.get("image_url")
+        is_multi = q.get("is_multi", False)
 
         q_data = st.session_state["ai_answers"].get(entry_id, {})
         if isinstance(q_data, dict):
@@ -302,7 +313,19 @@ if "parsed_questions" in st.session_state:
             if img_url:
                 st.image(img_url, use_container_width=True)
 
-            if choices:
+            if is_multi and choices:
+                if isinstance(default_val, list):
+                    default_list = [str(v).strip() for v in default_val]
+                elif default_val:
+                    default_list = [str(default_val).strip()]
+                else:
+                    default_list = []
+                default_selected = [c for c in choices if str(c).strip() in default_list]
+                final_payload[entry_id] = st.multiselect(
+                    "ANSWER", options=choices, default=default_selected,
+                    key="ans_" + entry_id, label_visibility="collapsed"
+                )
+            elif choices:
                 default_idx = 0
                 for i, c in enumerate(choices):
                     if str(c).strip() == str(default_val).strip() or str(c) in str(default_val):
