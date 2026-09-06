@@ -22,17 +22,13 @@ from style import inject_css, render_header
 st.set_page_config(page_title="EZEXAM | Auto Form System", page_icon="⚡", layout="centered")
 inject_css()
 
-UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                    "(KHTML, like Gecko) Chrome/122.0 Safari/537.36"}
-
+UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"}
 CHECKBOX_TYPE = 4
 
-# --- จุดที่ 1: ระบบดึง API Key ทั้งหมดที่คุณมีใน Secrets ---
 api_keys = [st.secrets[k] for k in st.secrets if "GEMINI_API_KEY" in k]
 if not api_keys:
     st.error("ระบบยังไม่ได้ตั้งค่า API Key กรุณาเพิ่ม GEMINI_API_KEY ใน Streamlit Secrets")
     st.stop()
-
 
 def check_personal_info(q_title, choices, my_name, my_student_id, my_no, my_class):
     clean_title = re.sub(r'^\*?\*?(?:ข้อ\s*\d+[\s.:-]*)?', '', q_title.strip()).strip()
@@ -57,19 +53,15 @@ def check_personal_info(q_title, choices, my_name, my_student_id, my_no, my_clas
         return (q_title, best_val, "ชั้น/ห้อง")
     return None
 
-
 def compress_and_verify_image(raw_bytes, max_dim=1024, quality=82):
     try:
         if len(raw_bytes) < 3000: return None, None
         img = Image.open(io.BytesIO(raw_bytes)).convert("RGB")
-        if max(img.size) > max_dim:
-            img.thumbnail((max_dim, max_dim), Image.LANCZOS)
+        if max(img.size) > max_dim: img.thumbnail((max_dim, max_dim), Image.LANCZOS)
         buf = io.BytesIO()
         img.save(buf, "JPEG", quality=quality, optimize=True)
         return buf.getvalue(), "image/jpeg"
-    except Exception:
-        return None, None
-
+    except Exception: return None, None
 
 def match_choice(ai_answer, choices):
     ai_answer = str(ai_answer).strip()
@@ -84,7 +76,6 @@ def match_choice(ai_answer, choices):
     close = difflib.get_close_matches(ai_answer, clean_choices, n=1, cutoff=0.55)
     if close: return clean_choices.index(close[0]), True
     return 0, False
-
 
 render_header()
 
@@ -108,34 +99,56 @@ with st.container(border=True):
 st.write("")
 
 if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
-    if not form_url:
-        st.error("กรุณาใส่ลิงก์ Google Form ก่อน")
+    if not form_url: st.error("กรุณาใส่ลิงก์ Google Form ก่อน")
     else:
         with st.status("SYSTEM PROCESSING...", expanded=True) as status:
             try:
-                st.write("กำลังจำลองเบราว์เซอร์เพื่อเรนเดอร์ภาพ (อาจใช้เวลา 5-10 วินาที)...")
+                st.write("กำลังหลบหลีกระบบป้องกันและจำลองเบราว์เซอร์...")
                 
+                # --- พรางตัวเบราว์เซอร์ให้เหมือนมนุษย์ ---
                 chrome_options = Options()
-                chrome_options.add_argument("--headless")
+                chrome_options.add_argument("--headless=new")
                 chrome_options.add_argument("--disable-gpu")
                 chrome_options.add_argument("--no-sandbox")
+                chrome_options.add_argument("--disable-dev-shm-usage")
+                chrome_options.add_argument("--window-size=1920,1080")
+                chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
                 
                 service = Service(ChromeDriverManager().install())
                 driver = webdriver.Chrome(service=service, options=chrome_options)
                 
                 driver.get(form_url)
-                time.sleep(3) 
+                
+                # --- จำลองการเลื่อนหน้าจอเพื่อโหลดรูปภาพ (Lazy Loading) ---
+                st.write("กำลังเลื่อนหน้าจอเพื่อดึงรูปภาพที่ซ่อนอยู่...")
+                driver.execute_script("window.scrollTo(0, document.body.scrollHeight/3);")
+                time.sleep(1.5)
+                driver.execute_script("window.scrollTo(0, document.body.scrollHeight/1.5);")
+                time.sleep(1.5)
+                driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+                time.sleep(2)
                 
                 html = driver.page_source
                 
                 st.write("กำลังสกัดรูปภาพของจริง...")
-                image_elements = driver.find_elements(By.TAG_NAME, 'img')
                 raw_image_urls = []
+                
+                # กวาดจากแท็ก img
+                image_elements = driver.find_elements(By.TAG_NAME, 'img')
                 for img in image_elements:
                     src = img.get_attribute('src')
                     if src and ('googleusercontent' in src or 'drive.google' in src):
-                        if 'avatar' not in src.lower(): 
-                            raw_image_urls.append(src)
+                        if 'avatar' not in src.lower(): raw_image_urls.append(src)
+                
+                # กวาดจากพื้นหลัง (เผื่อ Google ซ่อนไว้ใน CSS)
+                divs = driver.find_elements(By.TAG_NAME, 'div')
+                for div in divs:
+                    bg = div.value_of_css_property('background-image')
+                    if bg and 'url(' in bg and ('googleusercontent' in bg or 'drive.google' in bg):
+                        try:
+                            clean_url = bg.split('url("')[1].split('")')[0]
+                            if 'avatar' not in clean_url.lower(): raw_image_urls.append(clean_url)
+                        except: pass
                 
                 driver.quit() 
                 
@@ -145,8 +158,7 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                         img_res = requests.get(url, headers=UA, timeout=10)
                         if img_res.status_code == 200:
                             valid_bytes, mime = compress_and_verify_image(img_res.content)
-                            if valid_bytes:
-                                downloaded_images.append(valid_bytes)
+                            if valid_bytes: downloaded_images.append(valid_bytes)
                     except: pass
 
                 st.write("กำลังวิเคราะห์โครงสร้างข้อสอบ...")
@@ -201,7 +213,7 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                 generated_page_history = ",".join(str(i) for i in range(page_count + 1))
 
                 if parsed_questions:
-                    st.write("AI กำลังวิเคราะห์ข้อมูลและรูปภาพ...")
+                    st.write("AI กำลังวิเคราะห์ข้อมูลและรูปภาพที่ดึงมาได้...")
                     contents_payload = []
                     
                     main_prompt = (
@@ -214,7 +226,7 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                     contents_payload.append(types.Part.from_text(text=main_prompt))
                     
                     if downloaded_images:
-                        contents_payload.append(types.Part.from_text(text="\n--- 📸 รูปภาพที่สกัดได้จากหน้าจอข้อสอบ ---\nหากโจทย์ข้อไหนระบุว่า 'จากรูป' ให้พิจารณาเลือกใช้รูปที่เกี่ยวข้องจากรายการภาพด้านล่างนี้:\n"))
+                        contents_payload.append(types.Part.from_text(text="\n--- 📸 รูปภาพประกอบจากหน้าจอข้อสอบ ---\nหากโจทย์ระบุว่า 'จากรูป' ให้ใช้รูปจากรายการด้านล่างนี้:\n"))
                         for idx, img_bytes in enumerate(downloaded_images):
                             contents_payload.append(types.Part.from_text(text=f"รูปที่ {idx+1}:"))
                             contents_payload.append(types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg"))
@@ -227,7 +239,6 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                         if q["choices"]: q_info += f"\nตัวเลือก: {json.dumps(q['choices'], ensure_ascii=False)}"
                         contents_payload.append(types.Part.from_text(text=q_info))
 
-                    # --- จุดที่ 2: ระบบสลับ API Key อัตโนมัติ ---
                     gen_config = types.GenerateContentConfig(thinking_config=types.ThinkingConfig(thinking_budget=2048), temperature=0.1, max_output_tokens=3072)
                     models_to_try = ["gemini-3.8-flash", "gemini-3.8-flash-8b", "gemini-3.8-pro", "gemini-flash-latest"]
                     MAX_RETRIES = 2
@@ -285,7 +296,7 @@ if "parsed_questions" in st.session_state:
 
     if st.session_state.get("downloaded_images"):
         with st.container(border=True):
-            st.markdown('<div class="glass-header">📸 รูปภาพที่ระบบจำลองหน้าจอดึงมาได้</div>', unsafe_allow_html=True)
+            st.markdown('<div class="glass-header">📸 รูปภาพที่ระบบสกัดได้</div>', unsafe_allow_html=True)
             cols = st.columns(min(len(st.session_state["downloaded_images"]), 4))
             for idx, img_bytes in enumerate(st.session_state["downloaded_images"]):
                 cols[idx % 4].image(img_bytes, use_container_width=True, caption=f"รูปที่ {idx+1}")
@@ -353,7 +364,6 @@ if "parsed_questions" in st.session_state:
                 if res_submit.status_code == 200:
                     st.balloons()
                     st.success("ส่งข้อมูลสำเร็จ")
-                else:
-                    st.error("Error Code: " + str(res_submit.status_code))
+                else: st.error("Error Code: " + str(res_submit.status_code))
             except Exception as e:
                 st.error("ส่งไม่สำเร็จ: " + str(e))
