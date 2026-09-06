@@ -1,6 +1,7 @@
 import json
 import re
 import time
+import random
 import html as html_lib
 
 import requests
@@ -211,19 +212,34 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                                 pass
 
                     models_to_try = ["gemini-flash-latest", "gemini-3.6-flash"]
+                    MAX_RETRIES_PER_MODEL = 3
                     response = None
                     last_err = None
                     for model_name in models_to_try:
-                        try:
-                            response = client.models.generate_content(
-                                model=model_name, contents=contents_payload
-                            )
-                            if response and response.text:
-                                break
-                        except Exception as err:
-                            last_err = err
-                            response = None
-                            time.sleep(2)
+                        for attempt in range(MAX_RETRIES_PER_MODEL):
+                            try:
+                                response = client.models.generate_content(
+                                    model=model_name, contents=contents_payload
+                                )
+                                if response and response.text:
+                                    break
+                            except Exception as err:
+                                last_err = err
+                                response = None
+                                err_text = str(err)
+                                is_overload = ("503" in err_text or "UNAVAILABLE" in err_text
+                                               or "429" in err_text or "RESOURCE_EXHAUSTED" in err_text)
+                                if is_overload and attempt < MAX_RETRIES_PER_MODEL - 1:
+                                    wait_time = (2 ** attempt) * 2 + random.uniform(0, 1)
+                                    st.write("โมเดล " + model_name + " ไม่ว่าง กำลังลองใหม่ใน "
+                                             + str(round(wait_time, 1)) + " วิ... (ครั้งที่ "
+                                             + str(attempt + 2) + "/" + str(MAX_RETRIES_PER_MODEL) + ")")
+                                    time.sleep(wait_time)
+                                    continue
+                                else:
+                                    break
+                        if response and response.text:
+                            break
 
                     if not response:
                         raise last_err if last_err else RuntimeError("AI ไม่ตอบกลับ")
