@@ -67,6 +67,16 @@ def match_choice(ai_answer, choices):
     if close: return clean_choices.index(close[0]), True
     return 0, False
 
+def compress_and_verify_image(raw_bytes, max_dim=1024, quality=82):
+    try:
+        if len(raw_bytes) < 3000: return None, None
+        img = Image.open(io.BytesIO(raw_bytes)).convert("RGB")
+        if max(img.size) > max_dim: img.thumbnail((max_dim, max_dim), Image.LANCZOS)
+        buf = io.BytesIO()
+        img.save(buf, "JPEG", quality=quality, optimize=True)
+        return buf.getvalue(), "image/jpeg"
+    except Exception: return None, None
+
 render_header()
 
 with st.container(border=True):
@@ -107,34 +117,67 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                 driver = webdriver.Chrome(service=service, options=chrome_options)
                 
                 driver.get(form_url)
-                
-                st.write("รอให้หน้าเว็บโหลดเต็มที่ (10 วินาที)...")
-                time.sleep(5)
-                driver.execute_script("window.scrollTo(0, document.body.scrollHeight/2);")
                 time.sleep(3)
-                driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-                time.sleep(2)
                 
-                # โชว์ภาพที่บอทเห็นให้ผู้ใช้ดู เพื่อการ Debug
-                st.write("📸 ถ่ายภาพหน้าจอของบอท...")
+                st.write("กำลังเริ่มระบบ Auto-Pagination ทะลวงด่านแบบฟอร์ม...")
+                raw_image_urls = []
+                
+                # ลูปทะลวงหน้าฟอร์ม (รองรับสูงสุด 5 หน้า)
+                for page in range(5):
+                    # 1. กวาดรูปในหน้าปัจจุบันก่อน
+                    image_elements = driver.find_elements(By.TAG_NAME, 'img')
+                    for img in image_elements:
+                        try:
+                            src = img.get_attribute('src')
+                            if src and ('googleusercontent' in src or 'drive.google' in src) and 'avatar' not in src.lower():
+                                raw_image_urls.append(src)
+                        except: pass
+                        
+                    # 2. ฝัง JavaScript สุ่มกรอกข้อมูลและกดปุ่ม 'ถัดไป'
+                    js_bypass = """
+                    // สุ่มกรอกข้อมูลลงช่อง Text ป้องกันติด Required
+                    document.querySelectorAll('input[type="text"], textarea').forEach(el => {
+                        if(!el.value) {
+                            el.value = '-';
+                            el.dispatchEvent(new Event('input', { bubbles: true }));
+                        }
+                    });
+                    
+                    // สุ่มคลิกปุ่มตัวเลือก (Radio)
+                    document.querySelectorAll('div[role="radio"]').forEach(el => {
+                        el.click();
+                    });
+                    
+                    // หาปุ่มถัดไป
+                    let btns = Array.from(document.querySelectorAll('div[role="button"]'));
+                    let nextBtn = btns.find(b => b.innerText.includes('ถัดไป') || b.innerText.includes('Next'));
+                    if(nextBtn) {
+                        nextBtn.click();
+                        return true;
+                    }
+                    return false;
+                    """
+                    has_next = driver.execute_script(js_bypass)
+                    
+                    if has_next:
+                        st.write(f"พบปุ่มถัดไป กำลังทะลวงไปยังหน้าที่ {page + 2}...")
+                        time.sleep(3) # รอหน้าถัดไปโหลด
+                    else:
+                        break # ถ้าไม่มีปุ่มถัดไปแล้ว ให้ออกจากลูป
+                
                 bot_screenshot = driver.get_screenshot_as_png()
-                
                 html = driver.page_source
-                
-                st.write("กำลังสกัดรูปภาพแบบแคปหน้าจอ (Bypass Download)...")
-                downloaded_images = []
-                image_elements = driver.find_elements(By.TAG_NAME, 'img')
-                for img in image_elements:
-                    try:
-                        # ข้ามพวกไอคอนเล็กๆ (ขนาดน้อยกว่า 50x50)
-                        if img.size['width'] > 50 and img.size['height'] > 50:
-                            # ขโมยพิกเซลรูปออกมาจากหน้าจอตรงๆ เลย!
-                            img_bytes = img.screenshot_as_png
-                            downloaded_images.append(img_bytes)
-                    except:
-                        pass
-                
                 driver.quit() 
+                
+                st.write("กำลังโหลดและประมวลผลรูปภาพ...")
+                downloaded_images = []
+                for url in set(raw_image_urls):
+                    try:
+                        img_res = requests.get(url, headers=UA, timeout=10)
+                        if img_res.status_code == 200:
+                            valid_bytes, mime = compress_and_verify_image(img_res.content)
+                            if valid_bytes: downloaded_images.append(valid_bytes)
+                    except: pass
 
                 st.write("กำลังวิเคราะห์โครงสร้างข้อสอบ...")
                 action_match = re.search(r'<form action="([^"]+)"', html)
@@ -201,10 +244,10 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                     contents_payload.append(types.Part.from_text(text=main_prompt))
                     
                     if downloaded_images:
-                        contents_payload.append(types.Part.from_text(text="\n--- 📸 รูปภาพประกอบจากหน้าจอข้อสอบ ---\nหากโจทย์ระบุว่า 'จากรูป' ให้ใช้รูปจากรายการด้านล่างนี้:\n"))
+                        contents_payload.append(types.Part.from_text(text="\n--- 📸 รูปภาพประกอบจากข้อสอบ ---\nหากโจทย์ระบุว่า 'จากรูป' ให้พิจารณาใช้รูปจากรายการด้านล่างนี้ประกอบการตัดสินใจ:\n"))
                         for idx, img_bytes in enumerate(downloaded_images):
                             contents_payload.append(types.Part.from_text(text=f"รูปที่ {idx+1}:"))
-                            contents_payload.append(types.Part.from_bytes(data=img_bytes, mime_type="image/png"))
+                            contents_payload.append(types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg"))
                     
                     contents_payload.append(types.Part.from_text(text="\nQuestions:\n"))
                     for idx, q in enumerate(parsed_questions, 1):
@@ -270,14 +313,13 @@ if "parsed_questions" in st.session_state:
     st.markdown('<div class="section-title">REVIEW & SUBMIT</div>', unsafe_allow_html=True)
     final_payload = {}
     
-    # ดูสายตาบอท (Debug)
     if st.session_state.get("bot_screenshot"):
         with st.expander("👁️ ดูสิ่งที่ระบบเบราว์เซอร์มองเห็น (Debug)"):
-            st.image(st.session_state["bot_screenshot"], caption="หน้าจอจำลองตอนสกัดข้อมูล", use_container_width=True)
+            st.image(st.session_state["bot_screenshot"], caption="หน้าจอจำลอง (ควรจะเห็นหน้าที่ 2 ของฟอร์มแล้ว)", use_container_width=True)
 
     if st.session_state.get("downloaded_images"):
         with st.container(border=True):
-            st.markdown('<div class="glass-header">📸 รูปภาพที่ระบบสกัดได้ด้วยการแคปจอ</div>', unsafe_allow_html=True)
+            st.markdown('<div class="glass-header">📸 รูปภาพที่ระบบสกัดได้</div>', unsafe_allow_html=True)
             cols = st.columns(min(len(st.session_state["downloaded_images"]), 4))
             for idx, img_bytes in enumerate(st.session_state["downloaded_images"]):
                 cols[idx % 4].image(img_bytes, use_container_width=True, caption=f"รูปที่ {idx+1}")
