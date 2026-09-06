@@ -1,11 +1,13 @@
 import json
 import re
 import time
+import io
 import difflib
 import html as html_lib
 
 import requests
 import streamlit as st
+from PIL import Image
 from google import genai
 from google.genai import types
 
@@ -17,7 +19,7 @@ inject_css()
 UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"}
 CHECKBOX_TYPE = 4
 
-# --- ระบบกวาด API Key อัตโนมัติจาก Streamlit Secrets ---
+# --- ระบบกวาด API Key อัตโนมัติ ---
 api_keys = [st.secrets[k] for k in st.secrets if "GEMINI_API_KEY" in k]
 if not api_keys:
     st.error("ระบบยังไม่ได้ตั้งค่า API Key กรุณาเพิ่ม GEMINI_API_KEY (1, 2, 3...) ใน Streamlit Secrets")
@@ -68,6 +70,17 @@ def match_choice(ai_answer, choices):
     close = difflib.get_close_matches(ai_answer, clean_choices, n=1, cutoff=0.55)
     if close: return clean_choices.index(close[0]), True
     return 0, False
+
+
+def compress_and_verify_image(raw_bytes, max_dim=1024, quality=82):
+    try:
+        if len(raw_bytes) < 3000: return None, None
+        img = Image.open(io.BytesIO(raw_bytes)).convert("RGB")
+        if max(img.size) > max_dim: img.thumbnail((max_dim, max_dim), Image.LANCZOS)
+        buf = io.BytesIO()
+        img.save(buf, "JPEG", quality=quality, optimize=True)
+        return buf.getvalue(), "image/jpeg"
+    except Exception: return None, None
 
 
 render_header()
@@ -123,7 +136,7 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                 fbzx_match = re.search(r'name="fbzx" value="([^"]*)"', html)
                 if fbzx_match: fbzx = fbzx_match.group(1)
 
-                st.write("กำลังสกัดคำถามและคัดแยกข้อมูลส่วนตัว...")
+                st.write("กำลังสกัดคำถามและค้นหารูปภาพ (Claude's Engine)...")
                 for item in questions_data:
                     if not item or len(item) < 4: continue
                     q_type = item[3]
@@ -147,11 +160,34 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                         personal_data_map[entry_id] = p_info
                         continue
 
+                    # --- จุดที่ 1: ดึง URL รูปภาพตามหลักการของ Claude (อัปเกรดให้ค้นหาทั้งก้อน item) ---
+                    image_url = None
+                    found_urls = []
+                    
+                    def find_urls_recursively(obj):
+                        if isinstance(obj, str):
+                            if obj.startswith('http://') or obj.startswith('https://'): found_urls.append(obj)
+                            elif obj.startswith('//'): found_urls.append('https:' + obj)
+                        elif isinstance(obj, list):
+                            for x in obj: find_urls_recursively(x)
+                        elif isinstance(obj, dict):
+                            for x in obj.values(): find_urls_recursively(x)
+                            
+                    find_urls_recursively(item)
+                    
+                    # กรองเอาเฉพาะรูปลิงก์จริง ไม่เอาไอคอนขยะ
+                    for u in found_urls:
+                        if not any(bad in u.lower() for bad in ['avatar', 'favicon', 'cleardot']):
+                            image_url = u
+                            break # เจอลิงก์รูปแรกให้เบรกเลย
+
+                    # --- จุดที่ 2: เก็บ image_url เข้าไปในคลังข้อมูลคำถาม ---
                     parsed_questions.append({
                         "entry_id": entry_id,
                         "title": q_title,
                         "choices": choices,
                         "is_multi": q_type == CHECKBOX_TYPE,
+                        "image_url": image_url, # <-- ตัวแปรใหม่ที่ดึงมาได้
                     })
 
                 generated_page_history = ",".join(str(i) for i in range(page_count + 1))
@@ -166,12 +202,15 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                         "1. คิดทบทวนคำตอบให้รอบคอบก่อนสรุป\n"
                         "2. ถ้ามีตัวเลือกให้ copy ข้อความตัวเลือกมาเป๊ะ ๆ ห้ามแต่งคำตอบขึ้นเอง\n"
                         "3. ถ้าข้อไหนมีป้าย [เลือกได้หลายข้อ] ให้ตอบ answer เป็น array\n"
-                        "4. หากข้อใดจำเป็นต้องใช้รูปภาพ แต่ไม่มีรูปภาพให้ดู ให้วิเคราะห์และคาดเดาจากบริบทของข้อก่อนหน้าให้ดีที่สุด\n"
+                        "4. หากข้อใดมีรูปภาพแนบมาให้ ให้วิเคราะห์คำตอบจากรูปภาพนั้นเป็นหลัก\n"
                         "5. ตอบเป็น JSON รูปแบบ: {\"entry.123\": {\"answer\": \"...\", \"confidence\": 90, \"reasoning\": \"...\"}}\n"
                     )
                     contents_payload.append(types.Part.from_text(text=main_prompt))
                     
                     contents_payload.append(types.Part.from_text(text="\nQuestions:\n"))
+                    
+                    downloaded_preview = [] # ไว้เก็บรูปมาโชว์หน้า UI สวยๆ
+                    
                     for idx, q in enumerate(parsed_questions, 1):
                         q_info = f"\nข้อ {idx} (ID: {q['entry_id']})"
                         if q.get("is_multi"): q_info += " [เลือกได้หลายข้อ]"
@@ -179,6 +218,19 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                         if q["choices"]: q_info += f"\nตัวเลือก: {json.dumps(q['choices'], ensure_ascii=False)}"
                         
                         contents_payload.append(types.Part.from_text(text=q_info))
+                        
+                        # --- จุดที่ 3: โหลดรูปและแนบเข้า AI ตามที่ Claude แนะนำ ---
+                        if q.get("image_url"):
+                            try:
+                                img_res = requests.get(q["image_url"], headers=UA, timeout=10)
+                                if img_res.status_code == 200:
+                                    # บีบอัดเล็กน้อยก่อนส่งให้ Gemini เพื่อความรวดเร็วและไม่กินโควต้า
+                                    valid_bytes, mime = compress_and_verify_image(img_res.content)
+                                    if valid_bytes:
+                                        contents_payload.append(types.Part.from_bytes(data=valid_bytes, mime_type=mime))
+                                        downloaded_preview.append(valid_bytes) # เก็บไว้โชว์ให้ผู้ใช้ดู
+                            except Exception:
+                                pass # โหลดพังก็ข้ามไป ไม่ให้ระบบล่ม
 
                     # --- ระบบสลับ API Key อัตโนมัติ (API Rotation) ---
                     gen_config = types.GenerateContentConfig(
@@ -192,9 +244,8 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                     response = None
                     last_err = None
 
-                    # วนลูปใช้ API Key ที่มีทั้งหมด
                     for current_key in api_keys:
-                        if response: break # ถ้าตอบกลับสำเร็จแล้ว ให้ออกจากลูปคีย์
+                        if response: break
                         client = genai.Client(api_key=current_key, http_options=types.HttpOptions(timeout=30000))
                         
                         for model_name in models_to_try:
@@ -206,18 +257,15 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                                 except Exception as err:
                                     last_err = err
                                     err_text = str(err)
-                                    # ถ้าติดลิมิต 429 ให้เปลี่ยนคีย์ทันที
                                     if "429" in err_text or "RESOURCE_EXHAUSTED" in err_text:
                                         st.write("⚠️ โควต้า API Key เดิมเต็ม! กำลังสลับไปใช้คีย์สำรองเส้นถัดไป...")
                                         break 
-                                    
-                                    # ถ้าเซิร์ฟเวอร์หน่วงให้รอแล้วลองใหม่ด้วยคีย์เดิม
                                     if ("503" in err_text or "504" in err_text) and attempt < MAX_RETRIES - 1:
                                         time.sleep(3)
                                         continue
                                     break
                                     
-                    if not response: raise last_err if last_err else RuntimeError("API Key ทุกเส้นที่เตรียมไว้ โควต้าเต็มหมดแล้ว หรือระบบ AI ขัดข้อง")
+                    if not response: raise last_err if last_err else RuntimeError("API Key ทุกเส้นโควต้าเต็มหมดแล้ว หรือระบบ AI ขัดข้อง")
 
                     raw_ans = re.sub(r'`{3}(?:json)?', '', response.text.strip()).strip()
                     try: ai_answers = json.loads(raw_ans)
@@ -226,6 +274,7 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                         ai_answers = json.loads(m.group(0)) if m else {}
                 else:
                     ai_answers = {}
+                    downloaded_preview = []
 
                 st.session_state["submit_url"] = submit_url
                 st.session_state["parsed_questions"] = parsed_questions
@@ -233,6 +282,7 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                 st.session_state["ai_answers"] = ai_answers
                 st.session_state["pageHistory"] = generated_page_history
                 st.session_state["fbzx"] = fbzx
+                st.session_state["downloaded_preview"] = downloaded_preview
 
                 status.update(label="ANALYSIS COMPLETE", state="complete", expanded=False)
 
@@ -243,6 +293,14 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
 if "parsed_questions" in st.session_state:
     st.markdown('<div class="section-title">REVIEW & SUBMIT</div>', unsafe_allow_html=True)
     final_payload = {}
+    
+    # โชว์รูปที่ดึงมาได้ให้ผู้ใช้ดูด้วย
+    if st.session_state.get("downloaded_preview"):
+        with st.container(border=True):
+            st.markdown('<div class="glass-header">📸 รูปภาพที่ดึงมาจากโจทย์</div>', unsafe_allow_html=True)
+            cols = st.columns(min(len(st.session_state["downloaded_preview"]), 4))
+            for idx, img_bytes in enumerate(st.session_state["downloaded_preview"]):
+                cols[idx % 4].image(img_bytes, use_container_width=True, caption=f"รูปที่ {idx+1}")
 
     if st.session_state["personal_data_map"]:
         with st.container(border=True):
