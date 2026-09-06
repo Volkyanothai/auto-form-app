@@ -118,7 +118,8 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                 st.write("กำลังอ่านโครงสร้างฟอร์มด้วยความเร็วสูง...")
                 res = requests.get(form_url, allow_redirects=True, headers=UA, timeout=15)
                 html = res.text
-                img_urls_found = re.findall(r'https://lh\d?\.?googleusercontent\.com/[^\s"\'<>]+', html)
+                html_no_meta = re.sub(r'<meta[^>]*property="og:image"[^>]*>', '', html)
+                img_urls_found = re.findall(r'https://lh\d?\.?googleusercontent\.com/[^\s"\'<>]+', html_no_meta)
                 img_counter = 0
 
                 match = re.search(r'FB_PUBLIC_LOAD_DATA_\s*=\s*(.*?);\s*</script>', html, re.DOTALL)
