@@ -62,15 +62,28 @@ def check_personal_info(q_title, choices, my_name, my_student_id, my_no, my_clas
 
 
 def extract_image_url(item):
-    """ ค้นหารูปแบบเจาะจงเฉพาะข้อ """
-    s = json.dumps(item, ensure_ascii=False)
-    s = s.replace('\\/', '/').replace('\\u003d', '=').replace('\\u0026', '&')
-    urls = re.findall(r'https?://[a-zA-Z0-9\-\.\/\?\&\=\%_]+', s)
+    """
+    ค้นหารูปเฉพาะในขอบเขตของโจทย์ข้อนั้น ป้องกันการดึงปกฟอร์มมามั่วซั่ว
+    """
+    s = json.dumps(item, ensure_ascii=False).replace('\\/', '/').replace('\\u003d', '=').replace('\\u0026', '&')
+    
+    # ดึงทุกลิงก์ที่อยู่ในก้อนข้อมูลของข้อสอบข้อนี้
+    urls = re.findall(r'(?:https?:)?//[^\s"\'<>\[\]]+', s)
+    
+    valid_urls = []
     for u in urls:
+        if u.startswith('//'): u = 'https:' + u
         ul = u.lower()
-        if ('googleusercontent.com' in ul or 'ggpht.com' in ul) and not any(j in ul for j in ['/a/', 'avatar', 'cleardot', 'favicon']):
-            return u
-    return None
+        
+        # เช็คว่าเป็นโดเมนที่เกี่ยวข้องกับรูปภาพของ Google หรือมีนามสกุลรูป
+        is_google_img = any(domain in ul for domain in ["googleusercontent.com", "ggpht.com", "drive.google.com/file", "docs.google.com"])
+        is_ext = re.search(r'\.(jpg|jpeg|png|webp|gif)($|\?)', ul)
+        
+        # ห้ามดึงรูประบบ (ไอคอน/อวตาร) และลิงก์ฟอร์ม
+        if (is_google_img or is_ext) and not any(bad in ul for bad in ['/a/', 'avatar', 'cleardot', 'favicon', 'w3.org', 'viewform', 'formresponse']):
+            valid_urls.append(u)
+            
+    return valid_urls[0] if valid_urls else None
 
 
 def compress_image(raw_bytes, max_dim=1024, quality=82):
@@ -82,7 +95,7 @@ def compress_image(raw_bytes, max_dim=1024, quality=82):
         img.save(buf, "JPEG", quality=quality, optimize=True)
         return buf.getvalue(), "image/jpeg"
     except Exception:
-        return raw_bytes, "image/jpeg"
+        return None, None
 
 
 def match_choice(ai_answer, choices):
@@ -134,17 +147,6 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                 client = genai.Client(api_key=gemini_key, http_options=types.HttpOptions(timeout=30000))
                 res = requests.get(form_url, allow_redirects=True, headers=UA, timeout=20)
                 html = res.text
-                
-                # --- GLOBAL SCANNER: กวาดรูปทุกใบในหน้าเว็บโยนใส่ตะกร้า ---
-                clean_html = html.replace('\\/', '/').replace('\\u003d', '=').replace('\\u0026', '&')
-                all_raw_urls = re.findall(r'https?://[a-zA-Z0-9\-\.\/\?\&\=\%_]+', clean_html)
-                global_images = []
-                for u in all_raw_urls:
-                    ul = u.lower()
-                    if ('googleusercontent.com' in ul or 'ggpht.com' in ul) and not any(j in ul for j in ['/a/', 'avatar', 'cleardot', 'favicon']):
-                        if u not in global_images:
-                            global_images.append(u)
-                unused_global_images = list(global_images) # รูปที่ยังไม่ได้ถูกใช้งาน
 
                 action_match = re.search(r'<form action="([^"]+)"', html)
                 if action_match: submit_url = action_match.group(1)
@@ -192,15 +194,13 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                         personal_data_map[entry_id] = p_info
                         continue
                         
+                    # จับคู่รูปเฉพาะในขอบเขตข้อสอบ
                     q_img = extract_image_url(item)
                     if not q_img and last_standalone_img:
                         q_img = last_standalone_img
                         
                     if q_img:
                         last_standalone_img = None 
-                        # ถ้ารูปนี้ตรงกับตะกร้ากองกลาง ให้ลบออกจากตะกร้า
-                        if q_img in unused_global_images:
-                            unused_global_images.remove(q_img)
 
                     parsed_questions.append({
                         "entry_id": entry_id,
@@ -209,12 +209,6 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                         "image_url": q_img,
                         "is_multi": q_type == CHECKBOX_TYPE,
                     })
-
-                # --- FALLBACK LOGIC: ยัดรูปจากตะกร้าให้ข้อสอบที่ต้องการรูปแต่หาไม่เจอ ---
-                for q in parsed_questions:
-                    if not q["image_url"] and any(k in q["title"] for k in ["รูป", "ภาพ", "ภาพนี้", "จากรูป"]):
-                        if unused_global_images:
-                            q["image_url"] = unused_global_images.pop(0)
 
                 generated_page_history = ",".join(str(i) for i in range(page_count + 1))
 
@@ -244,14 +238,17 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                                 img_res = requests.get(q["image_url"], headers=UA, timeout=10)
                                 if img_res.status_code == 200:
                                     small_bytes, mime_type = compress_image(img_res.content)
-                                    contents_payload.append(types.Part.from_bytes(data=small_bytes, mime_type=mime_type))
+                                    if small_bytes:
+                                        contents_payload.append(types.Part.from_bytes(data=small_bytes, mime_type=mime_type))
+                                    else:
+                                        contents_payload.append("\n[SYSTEM NOTE: ไฟล์ภาพเสียหาย]\n")
                                 else:
-                                    contents_payload.append(f"\n[SYSTEM NOTE: โหลดรูปไม่สำเร็จ (HTTP {img_res.status_code})]\n")
+                                    contents_payload.append(f"\n[SYSTEM NOTE: โหลดรูปไม่สำเร็จ HTTP {img_res.status_code}]\n")
                             except Exception:
-                                contents_payload.append("\n[SYSTEM NOTE: เกิดปัญหาการเชื่อมต่อขณะโหลดรูปภาพ]\n")
+                                contents_payload.append("\n[SYSTEM NOTE: เกิดปัญหาเชื่อมต่อโหลดรูป]\n")
                         else:
                             if "รูป" in str(q["title"]) or "ภาพ" in str(q["title"]):
-                                contents_payload.append("\n[SYSTEM NOTE: ค้นหารูปภาพไม่พบในฐานข้อมูล JSON สำหรับข้อนี้]\n")
+                                contents_payload.append("\n[SYSTEM NOTE: ตรวจไม่พบรูปในระบบฐานข้อมูลสำหรับข้อนี้]\n")
 
                     gen_config = types.GenerateContentConfig(
                         thinking_config=types.ThinkingConfig(thinking_budget=2048),
