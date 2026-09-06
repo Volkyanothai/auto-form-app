@@ -67,9 +67,14 @@ def extract_image_url(item):
     found_urls = []
 
     def find_urls(obj):
-        if isinstance(obj, str) and obj.startswith(("http://", "https://")):
-            if "/viewform" not in obj and "/formResponse" not in obj and "forms.gle" not in obj:
-                found_urls.append(obj)
+        if isinstance(obj, str) and "googleusercontent.com" in obj:
+            url = obj
+            # เติม https: กรณีที่ Google Forms ส่งมาแค่ //lh3...
+            if url.startswith("//"):
+                url = "https:" + url
+            elif not url.startswith("http"):
+                return
+            found_urls.append(url)
         elif isinstance(obj, list):
             for sub in obj:
                 find_urls(sub)
@@ -78,6 +83,7 @@ def extract_image_url(item):
                 find_urls(v)
 
     find_urls(item)
+    # คืนค่าเฉพาะลิงก์แรกที่เจอในข้อนั้นๆ
     return found_urls[0] if found_urls else None
 
 
@@ -215,37 +221,32 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
 
                 if parsed_questions:
                     st.write("AI กำลังคิดคำตอบ...")
-                    prompt_data = []
+                    
+                    # 1. ใส่คำสั่งหลัก (Instructions) เป็นชิ้นแรกสุด
+                    contents_payload = [
+                        "Context: " + (exam_context if exam_context else "None") + "\n"
+                        "Instructions:\n"
+                        "1. คิดทบทวนคำตอบให้รอบคอบก่อนสรุป โดยเฉพาะข้อที่ต้องคำนวณ\n"
+                        "2. ถ้ามีตัวเลือกให้ ต้อง copy ข้อความตัวเลือกมาเป๊ะ ๆ ตัวต่อตัว ห้ามแต่งคำตอบขึ้นเอง หรือสรุปย่อเอง\n"
+                        "3. ถ้าข้อไหนมีป้าย [เลือกได้หลายข้อ] ให้ตอบ answer เป็น array ของตัวเลือกที่ถูกทั้งหมด เช่น [\"ตัวเลือก A\",\"ตัวเลือก C\"] ถ้าไม่มีป้ายนี้ให้ตอบ answer เป็น string เดียว\n"
+                        "4. ถ้าไม่มั่นใจในคำตอบจริง ๆ ให้ตั้ง confidence ต่ำ (ต่ำกว่า 60) ตามความเป็นจริง ห้ามให้ confidence สูงเกินจริง\n"
+                        "5. ตอบเป็น JSON เท่านั้น: {\"entry.123\": {\"answer\": \"...\" (หรือ array ถ้าเลือกได้หลายข้อ), \"confidence\": 90, \"reasoning\": \"...\"}}\n\n"
+                        "Questions:"
+                    ]
+
+                    # 2. วนลูปเพื่อประกอบ Text คำถาม และตามด้วย Object รูปภาพของข้อนั้นทันที
                     for idx, q in enumerate(parsed_questions, 1):
-                        q_info = "ข้อ " + str(idx) + " (ID: " + q["entry_id"] + ")"
+                        q_info = "\nข้อ " + str(idx) + " (ID: " + q["entry_id"] + ")"
                         if q.get("is_multi"):
                             q_info += " [เลือกได้หลายข้อ]"
                         q_info += ": " + str(q["title"])
-                        if q.get("image_url"):
-                            q_info += " [มีรูปภาพแนบ]"
                         if q["choices"]:
                             q_info += "\nตัวเลือก: " + json.dumps(q["choices"], ensure_ascii=False)
-                        prompt_data.append(q_info)
+                        
+                        # ใส่ข้อความโจทย์เข้าไปใน Payload
+                        contents_payload.append(q_info)
 
-                    questions_block = "\n".join(prompt_data)
-                    full_prompt = (
-                        "Context: " + (exam_context if exam_context else "None") + "\n"
-                        "Questions:\n" + questions_block + "\n"
-                        "Instructions:\n"
-                        "1. คิดทบทวนคำตอบให้รอบคอบก่อนสรุป โดยเฉพาะข้อที่ต้องคำนวณ\n"
-                        "2. ถ้ามีตัวเลือกให้ ต้อง copy ข้อความตัวเลือกมาเป๊ะ ๆ ตัวต่อตัว ห้ามแต่งคำตอบขึ้นเอง "
-                        "หรือสรุปย่อเอง\n"
-                        "3. ถ้าข้อไหนมีป้าย [เลือกได้หลายข้อ] ให้ตอบ answer เป็น array ของตัวเลือกที่ถูกทั้งหมด "
-                        'เช่น ["ตัวเลือก A","ตัวเลือก C"] ถ้าไม่มีป้ายนี้ให้ตอบ answer เป็น string เดียว\n'
-                        "4. ถ้าไม่มั่นใจในคำตอบจริง ๆ ให้ตั้ง confidence ต่ำ (ต่ำกว่า 60) ตามความเป็นจริง "
-                        "ห้ามให้ confidence สูงเกินจริง\n"
-                        '5. ตอบเป็น JSON เท่านั้น: '
-                        '{"entry.123": {"answer": "..." (หรือ array ถ้าเลือกได้หลายข้อ), '
-                        '"confidence": 90, "reasoning": "..."}}'
-                    )
-
-                    contents_payload = [full_prompt]
-                    for q in parsed_questions:
+                        # ถ้าระบุว่ามีรูป ให้โหลดและแทรกรูปต่อท้ายข้อความโจทย์ทันที
                         if q.get("image_url"):
                             try:
                                 img_res = requests.get(q["image_url"], headers=UA, timeout=8)
@@ -254,8 +255,8 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                                     contents_payload.append(
                                         types.Part.from_bytes(data=small_bytes, mime_type=mime_type)
                                     )
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                print(f"Image load failed for {q['entry_id']}: {e}")
 
                     gen_config = types.GenerateContentConfig(
                         thinking_config=types.ThinkingConfig(thinking_budget=2048),
