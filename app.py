@@ -230,7 +230,7 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                                 try:
                                     response = client.models.generate_content(model=model_name, contents=contents_payload, config=gen_config)
                                     if response and response.text: break
-                                    except Exception as err:
+                                except Exception as err:
                                     last_err = err
                                     err_text = str(err)
                                     
