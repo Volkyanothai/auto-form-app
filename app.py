@@ -216,7 +216,7 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                     )
 
                     models_to_try = ["gemini-3.8-flash", "gemini-3.8-flash-8b", "gemini-3.8-pro", "gemini-flash-latest"]
-                    MAX_RETRIES = 2
+                    MAX_RETRIES = 5
                     response = None
                     last_err = None
 
@@ -230,16 +230,22 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                                 try:
                                     response = client.models.generate_content(model=model_name, contents=contents_payload, config=gen_config)
                                     if response and response.text: break
-                                except Exception as err:
+                                    except Exception as err:
                                     last_err = err
                                     err_text = str(err)
+                                    
+                                    # ===== ส่วนที่ให้ระบบ "รอ" เมื่อโควต้าเต็ม (429) =====
                                     if "429" in err_text or "RESOURCE_EXHAUSTED" in err_text:
-                                        st.write("⚠️ โควต้า API Key เดิมเต็ม! กำลังสลับไปใช้คีย์สำรองเส้นถัดไป...")
-                                        break
+                                        st.write(f"⚠️ โควต้า API เต็มชั่วคราว (รอบที่ {attempt+1}/{MAX_RETRIES})... กำลังพักรอ 60 วินาทีเพื่อให้ระบบรีเซ็ต")
+                                        time.sleep(60) # หน่วงเวลา 1 นาทีให้โควต้ารีเซ็ต
+                                        continue # ลองส่งใหม่อีกครั้ง
+                                    # ========================================================
+                                    
                                     if ("503" in err_text or "504" in err_text) and attempt < MAX_RETRIES - 1:
                                         time.sleep(3)
                                         continue
                                     break
+
 
                     if not response: raise last_err if last_err else RuntimeError("API Key ทุกเส้นโควต้าเต็มหมดแล้ว หรือระบบ AI ขัดข้อง")
 
