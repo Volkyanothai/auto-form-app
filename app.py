@@ -119,12 +119,13 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                 driver.get(form_url)
                 time.sleep(3)
                 
-                st.write("กำลังเริ่มระบบ Auto-Pagination ทะลวงด่านแบบฟอร์ม...")
                 raw_image_urls = []
                 
-                # ลูปทะลวงหน้าฟอร์ม (รองรับสูงสุด 5 หน้า)
+                # --- ลูปทะลวงด่านหน้าข้อสอบ (รองรับสูงสุด 5 หน้า) ---
                 for page in range(5):
-                    # 1. กวาดรูปในหน้าปัจจุบันก่อน
+                    st.write(f"กำลังกวาดข้อมูลหน้าที่ {page + 1}...")
+                    
+                    # 1. กวาดรูปในหน้าปัจจุบัน
                     image_elements = driver.find_elements(By.TAG_NAME, 'img')
                     for img in image_elements:
                         try:
@@ -132,44 +133,58 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                             if src and ('googleusercontent' in src or 'drive.google' in src) and 'avatar' not in src.lower():
                                 raw_image_urls.append(src)
                         except: pass
+                    
+                    # 2. ค้นหาปุ่มถัดไป
+                    next_btns = driver.find_elements(By.XPATH, '//div[@role="button"][.//span[contains(text(), "ถัดไป") or contains(text(), "Next")]]')
+                    if not next_btns:
+                        break # ไม่มีปุ่มถัดไป = ถึงหน้าสุดท้ายแล้ว จบลูปทันที
                         
-                    # 2. ฝัง JavaScript สุ่มกรอกข้อมูลและกดปุ่ม 'ถัดไป'
-                    js_bypass = """
-                    // สุ่มกรอกข้อมูลลงช่อง Text ป้องกันติด Required
-                    document.querySelectorAll('input[type="text"], textarea').forEach(el => {
-                        if(!el.value) {
-                            el.value = '-';
-                            el.dispatchEvent(new Event('input', { bubbles: true }));
-                        }
-                    });
+                    st.write("พบปุ่มถัดไป! กำลังจำลองการพิมพ์เพื่อทะลวงด่าน...")
                     
-                    // สุ่มคลิกปุ่มตัวเลือก (Radio)
-                    document.querySelectorAll('div[role="radio"]').forEach(el => {
-                        el.click();
-                    });
+                    # 3. จำลองแป้นพิมพ์มนุษย์ พิมพ์อักษรลงช่องว่างทุกช่อง
+                    text_inputs = driver.find_elements(By.CSS_SELECTOR, 'input[type="text"], input[type="email"], input[type="number"], textarea')
+                    for inp in text_inputs:
+                        try:
+                            if inp.is_displayed():
+                                inp.send_keys("1") # พิมพ์เลข 1 ลงไปจริงๆ เพื่อหลอก React
+                        except: pass
+                        
+                    # 4. จำลองเมาส์คลิกตัวเลือกทุกข้อ
+                    choices = driver.find_elements(By.CSS_SELECTOR, 'div[role="radio"], div[role="checkbox"]')
+                    for c in choices:
+                        try:
+                            if c.is_displayed(): driver.execute_script("arguments[0].click();", c)
+                        except: pass
+                        
+                    # 5. จัดการ Dropdown ให้เลือกตัวเลือกแรกเสมอ
+                    listboxes = driver.find_elements(By.CSS_SELECTOR, 'div[role="listbox"]')
+                    for lb in listboxes:
+                        try:
+                            if lb.is_displayed():
+                                driver.execute_script("arguments[0].click();", lb)
+                                time.sleep(0.5)
+                                options = driver.find_elements(By.CSS_SELECTOR, 'div[role="option"]')
+                                for opt in options:
+                                    if opt.is_displayed() and opt.text.strip() not in ['', 'เลือก', 'Choose']:
+                                        driver.execute_script("arguments[0].click();", opt)
+                                        break
+                                time.sleep(0.5)
+                        except: pass
+                        
+                    time.sleep(1) # รอให้ Google ยืนยันข้อมูล
                     
-                    // หาปุ่มถัดไป
-                    let btns = Array.from(document.querySelectorAll('div[role="button"]'));
-                    let nextBtn = btns.find(b => b.innerText.includes('ถัดไป') || b.innerText.includes('Next'));
-                    if(nextBtn) {
-                        nextBtn.click();
-                        return true;
-                    }
-                    return false;
-                    """
-                    has_next = driver.execute_script(js_bypass)
-                    
-                    if has_next:
-                        st.write(f"พบปุ่มถัดไป กำลังทะลวงไปยังหน้าที่ {page + 2}...")
-                        time.sleep(3) # รอหน้าถัดไปโหลด
-                    else:
-                        break # ถ้าไม่มีปุ่มถัดไปแล้ว ให้ออกจากลูป
+                    # 6. กดปุ่มถัดไปแบบดุดัน
+                    try:
+                        driver.execute_script("arguments[0].click();", next_btns[0])
+                        time.sleep(3) # รอโหลดหน้าถัดไป
+                    except:
+                        break
                 
                 bot_screenshot = driver.get_screenshot_as_png()
                 html = driver.page_source
                 driver.quit() 
                 
-                st.write("กำลังโหลดและประมวลผลรูปภาพ...")
+                st.write("กำลังโหลดและคัดกรองรูปภาพทั้งหมด...")
                 downloaded_images = []
                 for url in set(raw_image_urls):
                     try:
@@ -314,8 +329,8 @@ if "parsed_questions" in st.session_state:
     final_payload = {}
     
     if st.session_state.get("bot_screenshot"):
-        with st.expander("👁️ ดูสิ่งที่ระบบเบราว์เซอร์มองเห็น (Debug)"):
-            st.image(st.session_state["bot_screenshot"], caption="หน้าจอจำลอง (ควรจะเห็นหน้าที่ 2 ของฟอร์มแล้ว)", use_container_width=True)
+        with st.expander("👁️ ดูภาพสุดท้ายจากตาวิเศษบอท (Debug)"):
+            st.image(st.session_state["bot_screenshot"], caption="หน้าจอจำลอง (ควรจะทะลวงถึงหน้าสุดท้ายแล้ว)", use_container_width=True)
 
     if st.session_state.get("downloaded_images"):
         with st.container(border=True):
