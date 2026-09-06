@@ -11,7 +11,6 @@ from PIL import Image
 from google import genai
 from google.genai import types
 
-# --- อาวุธใหม่: Selenium สำหรับเรนเดอร์ JavaScript ---
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
@@ -28,9 +27,9 @@ UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.3
 
 CHECKBOX_TYPE = 4
 
-try:
-    gemini_key = st.secrets["GEMINI_API_KEY"]
-except Exception:
+# --- จุดที่ 1: ระบบดึง API Key ทั้งหมดที่คุณมีใน Secrets ---
+api_keys = [st.secrets[k] for k in st.secrets if "GEMINI_API_KEY" in k]
+if not api_keys:
     st.error("ระบบยังไม่ได้ตั้งค่า API Key กรุณาเพิ่ม GEMINI_API_KEY ใน Streamlit Secrets")
     st.stop()
 
@@ -116,34 +115,30 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
             try:
                 st.write("กำลังจำลองเบราว์เซอร์เพื่อเรนเดอร์ภาพ (อาจใช้เวลา 5-10 วินาที)...")
                 
-                # --- เปิดเบราว์เซอร์จำลอง (Headless Chrome) ---
                 chrome_options = Options()
-                chrome_options.add_argument("--headless") # ซ่อนหน้าต่าง
+                chrome_options.add_argument("--headless")
                 chrome_options.add_argument("--disable-gpu")
                 chrome_options.add_argument("--no-sandbox")
                 
-                # ใช้ webdriver_manager เพื่อโหลด Driver อัตโนมัติ
                 service = Service(ChromeDriverManager().install())
                 driver = webdriver.Chrome(service=service, options=chrome_options)
                 
                 driver.get(form_url)
-                time.sleep(3) # รอให้ JavaScript โหลดรูปภาพให้เสร็จ
+                time.sleep(3) 
                 
                 html = driver.page_source
                 
-                # กวาดรูปภาพจากหน้าเว็บที่เรนเดอร์เสร็จแล้ว
                 st.write("กำลังสกัดรูปภาพของจริง...")
                 image_elements = driver.find_elements(By.TAG_NAME, 'img')
                 raw_image_urls = []
                 for img in image_elements:
                     src = img.get_attribute('src')
                     if src and ('googleusercontent' in src or 'drive.google' in src):
-                        if 'avatar' not in src.lower(): # ตัดรูปโปรไฟล์ทิ้ง
+                        if 'avatar' not in src.lower(): 
                             raw_image_urls.append(src)
                 
-                driver.quit() # ปิดเบราว์เซอร์จำลอง
+                driver.quit() 
                 
-                # โหลดรูปภาพเก็บไว้
                 downloaded_images = []
                 for url in set(raw_image_urls):
                     try:
@@ -206,8 +201,7 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                 generated_page_history = ",".join(str(i) for i in range(page_count + 1))
 
                 if parsed_questions:
-                    st.write("AI กำลังวิเคราะห์ข้อมูลและรูปภาพที่ระบบจำลองดึงมาได้...")
-                    client = genai.Client(api_key=gemini_key, http_options=types.HttpOptions(timeout=30000))
+                    st.write("AI กำลังวิเคราะห์ข้อมูลและรูปภาพ...")
                     contents_payload = []
                     
                     main_prompt = (
@@ -233,8 +227,35 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                         if q["choices"]: q_info += f"\nตัวเลือก: {json.dumps(q['choices'], ensure_ascii=False)}"
                         contents_payload.append(types.Part.from_text(text=q_info))
 
+                    # --- จุดที่ 2: ระบบสลับ API Key อัตโนมัติ ---
                     gen_config = types.GenerateContentConfig(thinking_config=types.ThinkingConfig(thinking_budget=2048), temperature=0.1, max_output_tokens=3072)
-                    response = client.models.generate_content(model="gemini-flash-latest", contents=contents_payload, config=gen_config)
+                    models_to_try = ["gemini-3.8-flash", "gemini-3.8-flash-8b", "gemini-3.8-pro", "gemini-flash-latest"]
+                    MAX_RETRIES = 2
+                    response = None
+                    last_err = None
+
+                    for current_key in api_keys:
+                        if response: break
+                        client = genai.Client(api_key=current_key, http_options=types.HttpOptions(timeout=30000))
+                        
+                        for model_name in models_to_try:
+                            if response: break
+                            for attempt in range(MAX_RETRIES):
+                                try:
+                                    response = client.models.generate_content(model=model_name, contents=contents_payload, config=gen_config)
+                                    if response and response.text: break
+                                except Exception as err:
+                                    last_err = err
+                                    err_text = str(err)
+                                    if "429" in err_text or "RESOURCE_EXHAUSTED" in err_text:
+                                        st.write("⚠️ โควต้าเต็ม กำลังสลับไปใช้ API Key ถัดไป...")
+                                        break 
+                                    if ("503" in err_text or "504" in err_text) and attempt < MAX_RETRIES - 1:
+                                        time.sleep(3)
+                                        continue
+                                    break
+
+                    if not response: raise last_err if last_err else RuntimeError("API Key ทั้งหมดโควต้าเต็ม หรือระบบ AI ขัดข้อง")
 
                     raw_ans = re.sub(r'`{3}(?:json)?', '', response.text.strip()).strip()
                     try: ai_answers = json.loads(raw_ans)
