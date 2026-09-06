@@ -63,40 +63,35 @@ def check_personal_info(q_title, choices, my_name, my_student_id, my_no, my_clas
 
 def extract_image_url(item):
     """
-    เจาะลึกฐานข้อมูล JSON เพื่อหารูปภาพในทุกหน้าของ Google Forms
+    [ไม้ตายทะลวงโครงสร้าง] สแกนแบบ Recursive ดำน้ำค้นหา URL ใน Object ทุกมิติ
     """
-    item_str = json.dumps(item, ensure_ascii=False).replace('\\/', '/')
+    found_urls = []
     
-    # 1. ค้นหา URL ที่อยู่ในเครื่องหมายคำพูด (โครงสร้างปกติของ JSON)
-    urls = re.findall(r'"(https?://[^"\']+)"', item_str)
-    urls += ["https:" + u for u in re.findall(r'"(?<!https:)(?<!http:)(//[^"\']+)"', item_str)]
+    def walk(obj):
+        if isinstance(obj, str):
+            # กวาดหาทุกลิงก์ที่ซ่อนอยู่ในข้อความ
+            matches = re.findall(r'(?:https?:)?//[^\s"\'<>\[\]]+', obj)
+            for u in matches:
+                if u.startswith("//"): u = "https:" + u
+                # กรองไอคอนและลิงก์ระบบทิ้งไป
+                if not any(skip in u.lower() for skip in ["viewform", "formresponse", "forms.gle", "w3.org", "cleardot", "avatar", "favicon", "/a/"]):
+                    found_urls.append(u)
+        elif isinstance(obj, list):
+            for x in obj: walk(x)
+        elif isinstance(obj, dict):
+            for x in obj.values(): walk(x)
+            
+    walk(item)
     
-    # 2. ถ้าไม่เจอ ให้กวาดแบบหยาบเผื่อมีซ่อนไว้
-    if not urls:
-        urls = re.findall(r'https?://[^\s"\'\\]+', item_str)
+    if found_urls:
+        # ให้ความสำคัญกับโดเมนที่มักใช้เก็บรูปภาพเป็นหลัก
+        for u in found_urls:
+            if any(domain in u for domain in ["googleusercontent", "ggpht", "gstatic", "drive.google"]):
+                return u
+        # ถ้าหาโฮสต์ที่คุ้นเคยไม่เจอจริงๆ ก็เอาลิงก์แรกที่หาเจอไปเลย
+        return found_urls[0]
         
-    valid_urls = []
-    for u in urls:
-        u_lower = u.lower()
-        # กรองลิงก์ขยะและลิงก์ของระบบทิ้ง
-        if any(x in u_lower for x in ["viewform", "formresponse", "forms.gle", "w3.org", "cleardot", "avatar", "favicon", "/a/"]):
-            continue
-        valid_urls.append(u)
-        
-    if not valid_urls:
-        return None
-        
-    # ให้ความสำคัญกับเซิร์ฟเวอร์รูปภาพของ Google เป็นอันดับ 1
-    for u in valid_urls:
-        if "googleusercontent.com" in u or "ggpht.com" in u:
-            return u
-            
-    # รองรับการแนบภาพผ่าน Google Drive เป็นอันดับ 2
-    for u in valid_urls:
-        if "drive.google.com" in u:
-            return u
-            
-    return valid_urls[0]
+    return None
 
 
 def compress_image(raw_bytes, max_dim=1024, quality=82):
@@ -192,13 +187,11 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                         page_count += 1
                         continue
                         
-                    # หากเป็นกล่องประเภทรูปภาพลอย (Item Type 11)
                     if q_type == 11 or len(item) < 5 or not item[4]:
                         found_img = extract_image_url(item)
                         if found_img: last_standalone_img = found_img
                         continue
 
-                    # ประมวลผลกล่องคำถาม
                     q_title = item[1]
                     entry_id = "entry." + str(item[4][0][0])
                     choices_raw = item[4][0][1] if len(item[4][0]) > 1 else None
@@ -209,7 +202,7 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                         personal_data_map[entry_id] = p_info
                         continue
                         
-                    # ดึงรูปภาพประจำข้อ
+                    # จับคู่รูปให้ข้อสอบ
                     q_img = extract_image_url(item)
                     if not q_img and last_standalone_img:
                         q_img = last_standalone_img
@@ -263,7 +256,7 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                                 contents_payload.append("\n[SYSTEM NOTE: เกิดปัญหาการเชื่อมต่อขณะโหลดรูปภาพ]\n")
                         else:
                             if "รูป" in str(q["title"]) or "ภาพ" in str(q["title"]):
-                                contents_payload.append("\n[SYSTEM NOTE: ไม่มีรูปภาพแนบในระบบสำหรับข้อนี้]\n")
+                                contents_payload.append("\n[SYSTEM NOTE: ค้นหารูปภาพไม่พบในฐานข้อมูล JSON!]\n")
 
                     gen_config = types.GenerateContentConfig(
                         thinking_config=types.ThinkingConfig(thinking_budget=2048),
@@ -363,7 +356,7 @@ if "parsed_questions" in st.session_state:
             )
             st.markdown(bar_html, unsafe_allow_html=True)
 
-            # แสดงรูปภาพและข้อความยืนยันสถานะ
+            # โชว์ภาพตรงนี้เลย
             if img_url:
                 st.image(img_url, use_container_width=True)
                 st.caption("✅ ระบบดึงรูปภาพสำเร็จและส่งให้ AI วิเคราะห์แล้ว")
