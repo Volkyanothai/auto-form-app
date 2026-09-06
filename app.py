@@ -34,15 +34,13 @@ def check_personal_info(q_title, choices, my_name, my_student_id, my_no, my_clas
     clean_title = clean_title.rstrip('*').strip()
     title_lower = clean_title.lower()
 
-    if len(clean_title) > 25:
-        return None
+    if len(clean_title) > 25: return None
 
     exam_stopwords = ["สาร", "เคมี", "ดาว", "วิทยาศาสตร์", "โรค", "องค์กร", "กษัตริย์", "ธาตุ",
                       "เมือง", "ประเทศ", "วรรณคดี", "ผู้แต่ง", "หัวใจ", "บรรยากาศ", "ผิวหนัง",
                       "ปฏิบัติการ", "ดิน", "หิน", "เชื่อม", "เครือข่าย", "อินเทอร์เน็ต", "เว็บ",
                       "จัดเป็น", "คืออะไร", "ข้อใด", "หมายถึง", "ตัวอักษรย่อ"]
-    if any(sw in title_lower for sw in exam_stopwords):
-        return None
+    if any(sw in title_lower for sw in exam_stopwords): return None
 
     if my_name and any(k in title_lower for k in ["ชื่อ", "นามสกุล", "สกุล", "name"]):
         return (q_title, my_name, "ชื่อ-นามสกุล")
@@ -64,35 +62,21 @@ def check_personal_info(q_title, choices, my_name, my_student_id, my_no, my_clas
 
 
 def extract_image_url(obj_data):
-    """สแกนกวาด URL รูปภาพทั้งหมดจากข้อมูล JSON แบบ 100% ไม่พลาดแน่นอน"""
+    """ฟังก์ชันสำรอง: สแกน JSON กวาด URL เผื่อกรณี HTML Extraction พลาด"""
     try:
         data_str = json.dumps(obj_data, ensure_ascii=False)
-        
-        # หา URL ทั้งหมดที่ซ่อนอยู่ (รองรับ http, https)
         urls = re.findall(r'https?://[^\s"\'\[\]<>]+', data_str)
-        
-        # เพิ่มการดักจับแบบไม่มี http (ขึ้นต้นด้วย //)
-        urls_no_http = re.findall(r'(?<!https:)(?<!http:)//[^\s"\'\[\]<>]+', data_str)
-        for u in urls_no_http:
+        for u in re.findall(r'(?<!https:)(?<!http:)//[^\s"\'\[\]<>]+', data_str):
             urls.append("https:" + u)
         
-        valid_urls = []
         for u in urls:
             u = u.replace('\\/', '/')
-            # คัดกรองลิงก์ที่ไม่ใช่รูปภาพออก
             if any(skip in u for skip in ["viewform", "formResponse", "forms.gle", "w3.org", "gstatic.com"]):
                 continue
-            valid_urls.append(u)
-        
-        # ให้ความสำคัญกับโดเมนรูปภาพของ Google ก่อน
-        for u in valid_urls:
             if any(domain in u for domain in ["googleusercontent.com", "ggpht.com", "drive.google.com"]):
                 return u
-                
-        # ถ้าไม่มีโดเมนคุ้นเคย ให้ใช้ URL แรกที่พบ
-        return valid_urls[0] if valid_urls else None
-    except Exception:
-        return None
+    except Exception: pass
+    return None
 
 
 def compress_image(raw_bytes, max_dim=1024, quality=82):
@@ -110,22 +94,17 @@ def compress_image(raw_bytes, max_dim=1024, quality=82):
 def match_choice(ai_answer, choices):
     ai_answer = str(ai_answer).strip()
     clean_choices = [str(c).strip() for c in choices]
-    if not ai_answer or not clean_choices:
-        return 0, False
+    if not ai_answer or not clean_choices: return 0, False
 
     for i, c in enumerate(clean_choices):
-        if c == ai_answer:
-            return i, True
+        if c == ai_answer: return i, True
     for i, c in enumerate(clean_choices):
-        if c and (c in ai_answer or ai_answer in c):
-            return i, True
+        if c and (c in ai_answer or ai_answer in c): return i, True
     for i, c in enumerate(clean_choices):
-        if c.lower() == ai_answer.lower():
-            return i, True
+        if c.lower() == ai_answer.lower(): return i, True
 
     close = difflib.get_close_matches(ai_answer, clean_choices, n=1, cutoff=0.55)
-    if close:
-        return clean_choices.index(close[0]), True
+    if close: return clean_choices.index(close[0]), True
 
     return 0, False
 
@@ -173,17 +152,29 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
 
                 match = re.search(r'FB_PUBLIC_LOAD_DATA_\s*=\s*(.*?);\s*</script>', html, re.DOTALL)
                 if not match:
-                    status.update(label="อ่านฟอร์มไม่ได้ (ฟอร์มอาจปิด หรือต้องล็อกอิน)", state="error")
+                    status.update(label="อ่านฟอร์มไม่ได้", state="error")
                     st.stop()
 
                 form_data = json.loads(match.group(1))
                 questions_data = form_data[1][1] if len(form_data) > 1 and form_data[1] else []
 
+                # --- NEW METHOD: สกัด URL รูปภาพจากแท็ก HTML โดยตรง แล้วจับคู่กับ ID ---
+                html_image_map = {}
+                html_parts = html.split('data-item-id="')
+                for part in html_parts[1:]:
+                    end_quote = part.find('"')
+                    if end_quote != -1:
+                        i_id = part[:end_quote]
+                        img_match = re.search(r'<img[^>]+src="([^"]+)"', part)
+                        if img_match:
+                            src = html_lib.unescape(img_match.group(1))
+                            if "cleardot.gif" not in src and not src.startswith("data:"):
+                                if src.startswith("//"): src = "https:" + src
+                                html_image_map[i_id] = src
+
                 parsed_questions = []
                 personal_data_map = {}
                 page_count = 0
-                
-                # --- พระเอกของงานนี้: ตัวแปรจำรูปภาพกล่องแยกที่อยู่ก่อนหน้า ---
                 last_seen_standalone_image = None
 
                 fbzx = ""
@@ -196,17 +187,16 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                     if not item or len(item) < 4:
                         continue
                         
-                    # 1. สแกนหารูปภาพในกล่องนี้ก่อน เผื่อเป็น "กล่องรูปภาพลอยๆ"
-                    found_img = extract_image_url(item)
-                    if found_img:
-                        last_seen_standalone_image = found_img
-                        
-                    if item[3] == 8:
-                        page_count += 1
-                        continue
-                        
-                    # ถ้าไม่ใช่คำถาม (เช่น กล่องคำอธิบาย หรือ กล่องรูปภาพลอย) ให้ข้ามไป
-                    if len(item) < 5 or not item[4]:
+                    item_id_str = str(item[0])
+                    # 1. ค้นหารูปจาก HTML Map ก่อน ถ้าไม่เจอให้ใช้ระบบค้นหา JSON สำรอง
+                    found_img = html_image_map.get(item_id_str) or extract_image_url(item)
+                    
+                    # 2. ถ้านี่ไม่ใช่คำถาม (เช่น เป็นกล่องรูปภาพลอย, หัวข้อ) ให้เก็บรูปไว้รอเชื่อมกับข้อถัดไป
+                    if item[3] in [1, 8, 11] or len(item) < 5 or not item[4]:
+                        if found_img:
+                            last_seen_standalone_image = found_img
+                        if item[3] == 8:
+                            page_count += 1
                         continue
 
                     q_title = item[1]
@@ -220,12 +210,11 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                         personal_data_map[entry_id] = p_info
                         continue
                     
-                    # 2. ผูกรูปเข้ากับคำถาม ถ้าคำถามไม่มีรูป ให้ดึงรูปลอยก่อนหน้ามาใช้
-                    q_img = extract_image_url(item)
+                    # 3. ผูกรูปเข้ากับข้อสอบ
+                    q_img = found_img
                     if not q_img and last_seen_standalone_image:
                         q_img = last_seen_standalone_image
                         
-                    # ล้างความจำรูปภาพลอยทิ้ง เพื่อไม่ให้เอาไปตอบข้ออื่นซ้ำ
                     if q_img:
                         last_seen_standalone_image = None
 
@@ -247,8 +236,9 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                         "1. คิดทบทวนคำตอบให้รอบคอบก่อนสรุป โดยเฉพาะข้อที่ต้องคำนวณ\n"
                         "2. ถ้ามีตัวเลือกให้ ต้อง copy ข้อความตัวเลือกมาเป๊ะ ๆ ตัวต่อตัว ห้ามแต่งคำตอบขึ้นเอง\n"
                         "3. ถ้าข้อไหนมีป้าย [เลือกได้หลายข้อ] ให้ตอบ answer เป็น array\n"
-                        "4. ถ้าไม่มั่นใจให้ตั้ง confidence ต่ำ\n"
-                        "5. ตอบเป็น JSON เท่านั้น: {\"entry.123\": {\"answer\": \"...\", \"confidence\": 90, \"reasoning\": \"...\"}}\n\n"
+                        "4. สำคัญมาก: หากโจทย์ระบุว่า 'จากรูป', 'ในภาพ' หรือจำเป็นต้องใช้รูปภาพ แต่ระบบไม่มีรูปแนบไปให้ ห้ามเดาคำตอบเด็ดขาด! ให้ตอบว่า 'ไม่สามารถระบุได้เนื่องจากไม่มีรูปภาพ' และบังคับตั้ง confidence เป็น 0\n"
+                        "5. ถ้าไม่มั่นใจในคำตอบ ให้ตั้ง confidence ต่ำตามจริง\n"
+                        "6. ตอบเป็น JSON เท่านั้น: {\"entry.123\": {\"answer\": \"...\", \"confidence\": 90, \"reasoning\": \"...\"}}\n\n"
                         "Questions:"
                     ]
 
@@ -285,8 +275,7 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                         for attempt in range(MAX_RETRIES_PER_MODEL):
                             try:
                                 response = client.models.generate_content(model=model_name, contents=contents_payload, config=gen_config)
-                                if response and response.text:
-                                    break
+                                if response and response.text: break
                             except Exception as err:
                                 last_err = err
                                 response = None
@@ -302,12 +291,10 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                         if response and response.text:
                             break
 
-                    if not response:
-                        raise last_err if last_err else RuntimeError("AI ไม่ตอบกลับ")
+                    if not response: raise last_err if last_err else RuntimeError("AI ไม่ตอบกลับ")
 
                     raw_ans = re.sub(r'`{3}(?:json)?', '', response.text.strip()).strip()
-                    try:
-                        ai_answers = json.loads(raw_ans)
+                    try: ai_answers = json.loads(raw_ans)
                     except json.JSONDecodeError:
                         m = re.search(r'\{.*\}', raw_ans, re.DOTALL)
                         ai_answers = json.loads(m.group(0)) if m else {}
