@@ -64,33 +64,45 @@ def check_personal_info(q_title, choices, my_name, my_student_id, my_no, my_clas
 
 
 def extract_image_url(item):
-    """แกะ URL รูปภาพด้วยวิธีแปลงเป็น Text ทั้งหมดแล้วสแกน (Regex) กวาดรวบ"""
-    # 1. แปลงข้อมูลข้อนี้เป็น String ทั้งหมดเพื่อแก้ปัญหาลิงก์ซ่อนในโครงสร้างลึก
-    item_str = json.dumps(item, ensure_ascii=False)
+    """เจาะลึกโครงสร้าง Array/Dict เพื่อหาลิงก์รูปภาพโดยไม่สนใจโดเมนและหลบหลีกอักขระพิเศษ"""
+    found_urls = []
     
-    # ล้างเครื่องหมาย escape (เช่น \/) ออกก่อนเพื่อให้ Regex จับข้อความได้แม่นยำ
-    item_str = item_str.replace('\\/', '/')
-    
-    # 2. ค้นหา URL ที่เป็นโดเมนเก็บรูปของ Google ทั้งหมด (ครอบคลุม http, https, //)
-    pattern = r'(?:https?:)?//[^"\'\s\\]*(?:googleusercontent\.com|ggpht\.com|drive\.google\.com|docs\.google\.com)[^"\'\s\\]*'
-    matches = re.findall(pattern, item_str)
-    
-    for url in matches:
-        # กรองลิงก์ที่เป็นแค่ตัวระบบฟอร์มออกไป
-        if not any(skip in url for skip in ["/viewform", "/formResponse", "forms.gle"]):
-            if url.startswith("//"):
-                return "https:" + url
-            return url
+    def find_urls(obj):
+        if isinstance(obj, str):
+            val = obj.strip()
             
-    # 3. หากหาโดเมนกูเกิลไม่เจอ ให้ลองหาลิงก์ทั่วไปที่ลงท้ายด้วยสกุลไฟล์รูปภาพ (เผื่อกูเกิลเปลี่ยนระบบ)
-    pattern_ext = r'https?://[^"\'\s\\]*\.(?:jpg|jpeg|png|gif|webp)'
-    matches_ext = re.findall(pattern_ext, item_str, re.IGNORECASE)
+            # 1. ดักจับกรณีที่ Google ซ่อน URL ไว้เป็นส่วนหนึ่งของข้อความ (ใช้ Regex ดึงออกมา)
+            # มองหาโดเมนที่มักใช้เก็บรูปภาพของ Google
+            matches = re.findall(r'(https?://[^"\s\\]*(?:googleusercontent\.com|ggpht\.com|drive\.google\.com)[^"\s\\]*)', val)
+            if matches:
+                for m in matches:
+                    if "viewform" not in m and "formResponse" not in m:
+                        found_urls.append(m)
+            
+            # 2. กรณีที่ String นั้นเป็น URL แบบเพียวๆ
+            elif val.startswith("http://") or val.startswith("https://") or val.startswith("//"):
+                if not any(skip in val for skip in ["/viewform", "/formResponse", "forms.gle"]):
+                    clean_url = "https:" + val if val.startswith("//") else val
+                    found_urls.append(clean_url)
+
+        elif isinstance(obj, list):
+            for sub in obj:
+                find_urls(sub)
+        elif isinstance(obj, dict):
+            for v in obj.values():
+                find_urls(v)
+
+    find_urls(item)
     
-    if matches_ext:
-        return matches_ext[0]
+    if found_urls:
+        # จัดลำดับความสำคัญ: เลือกลิงก์ที่มาจาก Content Server ของ Google เป็นอันดับแรก
+        for u in found_urls:
+            if "googleusercontent.com" in u or "ggpht.com" in u:
+                return u
+        # ถ้าไม่มี ให้คืนค่าลิงก์แรกสุดที่หาเจอ
+        return found_urls[0]
         
     return None
-
 
 
 def compress_image(raw_bytes, max_dim=1024, quality=82):
@@ -240,7 +252,7 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                         "Questions:"
                     ]
 
-                    # 2. วนลูปเพื่อประกอบ Text คำถาม และตามด้วย Object รูปภาพของข้อนั้นทันที
+                    # 2. วนลูปเพื่อประกอบ Text คำถาม และตามด้วย Object รูปภาพของข้อนั้นทันทีแบบ Interleaved
                     for idx, q in enumerate(parsed_questions, 1):
                         q_info = "\nข้อ " + str(idx) + " (ID: " + q["entry_id"] + ")"
                         if q.get("is_multi"):
@@ -249,10 +261,8 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                         if q["choices"]:
                             q_info += "\nตัวเลือก: " + json.dumps(q["choices"], ensure_ascii=False)
                         
-                        # ใส่ข้อความโจทย์เข้าไปใน Payload
                         contents_payload.append(q_info)
 
-                        # ถ้าระบุว่ามีรูป ให้โหลดและแทรกรูปต่อท้ายข้อความโจทย์ทันที
                         if q.get("image_url"):
                             try:
                                 img_res = requests.get(q["image_url"], headers=UA, timeout=8)
@@ -261,8 +271,8 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                                     contents_payload.append(
                                         types.Part.from_bytes(data=small_bytes, mime_type=mime_type)
                                     )
-                            except Exception as e:
-                                print(f"Image load failed for {q['entry_id']}: {e}")
+                            except Exception:
+                                pass
 
                     gen_config = types.GenerateContentConfig(
                         thinking_config=types.ThinkingConfig(thinking_budget=2048),
@@ -270,7 +280,7 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                         max_output_tokens=3072,
                     )
 
-                    models_to_try = ["gemini-flash-latest", "gemini-3.6-flash", "gemini-3.1-flash-lite"]
+                    models_to_try = ["gemini-flash-latest", "gemini-1.5-flash", "gemini-1.5-flash-8b"]
                     MAX_RETRIES_PER_MODEL = 2
                     response = None
                     last_err = None
