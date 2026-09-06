@@ -62,15 +62,41 @@ def check_personal_info(q_title, choices, my_name, my_student_id, my_no, my_clas
 
 
 def extract_image_url(item):
-    """สแกนหารูปภาพจากโครงสร้าง JSON ของ Google Forms โดยตรง (แม่นยำ ไม่ทำโค้ดพัง)"""
+    """
+    เจาะลึกฐานข้อมูล JSON เพื่อหารูปภาพในทุกหน้าของ Google Forms
+    """
     item_str = json.dumps(item, ensure_ascii=False).replace('\\/', '/')
-    matches = re.findall(r'(?:https?:)?//[^"\'\s<>\[\]]+(?:googleusercontent\.com|ggpht\.com)[^"\'\s<>\[\]]*', item_str)
-    for u in matches:
-        if u.startswith("//"): u = "https:" + u
-        # กรองรูปขยะทิ้ง
-        if not any(skip in u.lower() for skip in ['/a/', 'avatar', 'cleardot', 'favicon']):
+    
+    # 1. ค้นหา URL ที่อยู่ในเครื่องหมายคำพูด (โครงสร้างปกติของ JSON)
+    urls = re.findall(r'"(https?://[^"\']+)"', item_str)
+    urls += ["https:" + u for u in re.findall(r'"(?<!https:)(?<!http:)(//[^"\']+)"', item_str)]
+    
+    # 2. ถ้าไม่เจอ ให้กวาดแบบหยาบเผื่อมีซ่อนไว้
+    if not urls:
+        urls = re.findall(r'https?://[^\s"\'\\]+', item_str)
+        
+    valid_urls = []
+    for u in urls:
+        u_lower = u.lower()
+        # กรองลิงก์ขยะและลิงก์ของระบบทิ้ง
+        if any(x in u_lower for x in ["viewform", "formresponse", "forms.gle", "w3.org", "cleardot", "avatar", "favicon", "/a/"]):
+            continue
+        valid_urls.append(u)
+        
+    if not valid_urls:
+        return None
+        
+    # ให้ความสำคัญกับเซิร์ฟเวอร์รูปภาพของ Google เป็นอันดับ 1
+    for u in valid_urls:
+        if "googleusercontent.com" in u or "ggpht.com" in u:
             return u
-    return None
+            
+    # รองรับการแนบภาพผ่าน Google Drive เป็นอันดับ 2
+    for u in valid_urls:
+        if "drive.google.com" in u:
+            return u
+            
+    return valid_urls[0]
 
 
 def compress_image(raw_bytes, max_dim=1024, quality=82):
@@ -82,7 +108,7 @@ def compress_image(raw_bytes, max_dim=1024, quality=82):
         img.save(buf, "JPEG", quality=quality, optimize=True)
         return buf.getvalue(), "image/jpeg"
     except Exception:
-        return raw_bytes, "image/jpeg"
+        return None, None
 
 
 def match_choice(ai_answer, choices):
@@ -151,7 +177,7 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                 parsed_questions = []
                 personal_data_map = {}
                 page_count = 0
-                last_standalone_img = None # ตัวแปรจำรูปลอยแบบดั้งเดิมที่ถูกต้อง
+                last_standalone_img = None 
 
                 fbzx = ""
                 fbzx_match = re.search(r'name="fbzx" value="([^"]*)"', html)
@@ -162,17 +188,17 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                     if not item or len(item) < 4: continue
                     q_type = item[3]
                     
-                    if q_type == 8: # ขึ้นหน้าใหม่
+                    if q_type == 8: 
                         page_count += 1
                         continue
                         
-                    # ดักจับ Item Type 11 (รูปภาพลอย) หรือกล่องที่ไม่มีให้ตอบคำถาม
+                    # หากเป็นกล่องประเภทรูปภาพลอย (Item Type 11)
                     if q_type == 11 or len(item) < 5 or not item[4]:
                         found_img = extract_image_url(item)
                         if found_img: last_standalone_img = found_img
                         continue
 
-                    # ถ้าหลุดลงมาตรงนี้แปลว่าเป็นกล่องคำถาม
+                    # ประมวลผลกล่องคำถาม
                     q_title = item[1]
                     entry_id = "entry." + str(item[4][0][0])
                     choices_raw = item[4][0][1] if len(item[4][0]) > 1 else None
@@ -183,13 +209,13 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                         personal_data_map[entry_id] = p_info
                         continue
                         
-                    # จับคู่รูปให้ข้อสอบ (ดูในกล่องตัวเองก่อน ถ้าไม่มีค่อยไปยืมรูปลอยก่อนหน้า)
+                    # ดึงรูปภาพประจำข้อ
                     q_img = extract_image_url(item)
                     if not q_img and last_standalone_img:
                         q_img = last_standalone_img
                         
                     if q_img:
-                        last_standalone_img = None # เคลียร์ความจำป้องกันข้ออื่นยืมไปใช้ซ้ำ
+                        last_standalone_img = None 
 
                     parsed_questions.append({
                         "entry_id": entry_id,
@@ -227,12 +253,17 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                                 img_res = requests.get(q["image_url"], headers=UA, timeout=10)
                                 if img_res.status_code == 200:
                                     small_bytes, mime_type = compress_image(img_res.content)
-                                    contents_payload.append(types.Part.from_bytes(data=small_bytes, mime_type=mime_type))
+                                    if small_bytes:
+                                        contents_payload.append(types.Part.from_bytes(data=small_bytes, mime_type=mime_type))
+                                    else:
+                                        contents_payload.append("\n[SYSTEM NOTE: ไฟล์ภาพเสียหาย ไม่สามารถวิเคราะห์ได้]\n")
+                                else:
+                                    contents_payload.append(f"\n[SYSTEM NOTE: โหลดรูปไม่สำเร็จ (HTTP {img_res.status_code})]\n")
                             except Exception:
-                                contents_payload.append("\n[SYSTEM NOTE: โหลดรูปภาพไม่สำเร็จ]\n")
+                                contents_payload.append("\n[SYSTEM NOTE: เกิดปัญหาการเชื่อมต่อขณะโหลดรูปภาพ]\n")
                         else:
                             if "รูป" in str(q["title"]) or "ภาพ" in str(q["title"]):
-                                contents_payload.append("\n[SYSTEM NOTE: ไม่มีรูปภาพแนบในข้อนี้]\n")
+                                contents_payload.append("\n[SYSTEM NOTE: ไม่มีรูปภาพแนบในระบบสำหรับข้อนี้]\n")
 
                     gen_config = types.GenerateContentConfig(
                         thinking_config=types.ThinkingConfig(thinking_budget=2048),
@@ -256,7 +287,7 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                                 is_overload = ("503" in err_text or "UNAVAILABLE" in err_text or "429" in err_text or "RESOURCE_EXHAUSTED" in err_text or "504" in err_text)
                                 if is_overload and attempt < MAX_RETRIES_PER_MODEL - 1:
                                     wait_time = (2 ** attempt) * 2 + random.uniform(0, 1)
-                                    st.write("โมเดลช้ากำลังลองใหม่ใน " + str(round(wait_time, 1)) + " วิ...")
+                                    st.write(f"โมเดลหน่วง กำลังลองใหม่ใน {round(wait_time, 1)} วิ...")
                                     time.sleep(wait_time)
                                     continue
                                 else: break
@@ -332,9 +363,10 @@ if "parsed_questions" in st.session_state:
             )
             st.markdown(bar_html, unsafe_allow_html=True)
 
-            # คืนชีพ UI โชว์รูปให้กลับมาอยู่ใต้คำถามเหมือนเดิม
+            # แสดงรูปภาพและข้อความยืนยันสถานะ
             if img_url:
                 st.image(img_url, use_container_width=True)
+                st.caption("✅ ระบบดึงรูปภาพสำเร็จและส่งให้ AI วิเคราะห์แล้ว")
 
             if is_multi and choices:
                 default_list = [str(v).strip().lower() for v in default_val] if isinstance(default_val, list) else [str(default_val).strip().lower()] if default_val else []
