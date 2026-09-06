@@ -3,6 +3,7 @@ import re
 import time
 import random
 import io
+import difflib
 import html as html_lib
 
 import requests
@@ -91,6 +92,32 @@ def compress_image(raw_bytes, max_dim=1024, quality=82):
         return buf.getvalue(), "image/jpeg"
     except Exception:
         return raw_bytes, "image/jpeg"
+
+
+def match_choice(ai_answer, choices):
+    """จับคู่คำตอบ AI กับตัวเลือกจริงให้แม่นที่สุด คืนค่า (index, จับคู่ได้มั่นใจไหม)"""
+    ai_answer = str(ai_answer).strip()
+    clean_choices = [str(c).strip() for c in choices]
+    if not ai_answer or not clean_choices:
+        return 0, False
+
+    for i, c in enumerate(clean_choices):
+        if c == ai_answer:
+            return i, True
+
+    for i, c in enumerate(clean_choices):
+        if c and (c in ai_answer or ai_answer in c):
+            return i, True
+
+    for i, c in enumerate(clean_choices):
+        if c.lower() == ai_answer.lower():
+            return i, True
+
+    close = difflib.get_close_matches(ai_answer, clean_choices, n=1, cutoff=0.55)
+    if close:
+        return clean_choices.index(close[0]), True
+
+    return 0, False
 
 
 render_header()
@@ -205,11 +232,14 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                         "Context: " + (exam_context if exam_context else "None") + "\n"
                         "Questions:\n" + questions_block + "\n"
                         "Instructions:\n"
-                        "1. ตอบให้แม่นยำที่สุด\n"
-                        "2. ข้อช้อยส์ ต้องเลือกตรงตามช้อยส์เป๊ะๆ\n"
+                        "1. คิดทบทวนคำตอบให้รอบคอบก่อนสรุป โดยเฉพาะข้อที่ต้องคำนวณ\n"
+                        "2. ถ้ามีตัวเลือกให้ ต้อง copy ข้อความตัวเลือกมาเป๊ะ ๆ ตัวต่อตัว ห้ามแต่งคำตอบขึ้นเอง "
+                        "หรือสรุปย่อเอง\n"
                         "3. ถ้าข้อไหนมีป้าย [เลือกได้หลายข้อ] ให้ตอบ answer เป็น array ของตัวเลือกที่ถูกทั้งหมด "
                         'เช่น ["ตัวเลือก A","ตัวเลือก C"] ถ้าไม่มีป้ายนี้ให้ตอบ answer เป็น string เดียว\n'
-                        '4. ตอบเป็น JSON เท่านั้น: '
+                        "4. ถ้าไม่มั่นใจในคำตอบจริง ๆ ให้ตั้ง confidence ต่ำ (ต่ำกว่า 60) ตามความเป็นจริง "
+                        "ห้ามให้ confidence สูงเกินจริง\n"
+                        '5. ตอบเป็น JSON เท่านั้น: '
                         '{"entry.123": {"answer": "..." (หรือ array ถ้าเลือกได้หลายข้อ), '
                         '"confidence": 90, "reasoning": "..."}}'
                     )
@@ -228,7 +258,7 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                                 pass
 
                     gen_config = types.GenerateContentConfig(
-                        thinking_config=types.ThinkingConfig(thinking_budget=1024),
+                        thinking_config=types.ThinkingConfig(thinking_budget=2048),
                         temperature=0.1,
                         max_output_tokens=3072,
                     )
@@ -355,22 +385,20 @@ if "parsed_questions" in st.session_state:
 
             if is_multi and choices:
                 if isinstance(default_val, list):
-                    default_list = [str(v).strip() for v in default_val]
+                    default_list = [str(v).strip().lower() for v in default_val]
                 elif default_val:
-                    default_list = [str(default_val).strip()]
+                    default_list = [str(default_val).strip().lower()]
                 else:
                     default_list = []
-                default_selected = [c for c in choices if str(c).strip() in default_list]
+                default_selected = [c for c in choices if str(c).strip().lower() in default_list]
                 final_payload[entry_id] = st.multiselect(
                     "ANSWER", options=choices, default=default_selected,
                     key="ans_" + entry_id, label_visibility="collapsed"
                 )
             elif choices:
-                default_idx = 0
-                for i, c in enumerate(choices):
-                    if str(c).strip() == str(default_val).strip() or str(c) in str(default_val):
-                        default_idx = i
-                        break
+                default_idx, matched_ok = match_choice(default_val, choices)
+                if not matched_ok:
+                    st.warning("⚠️ คำตอบ AI ไม่ตรงกับตัวเลือกเป๊ะ ๆ กรุณาตรวจสอบข้อนี้เอง")
                 final_payload[entry_id] = st.selectbox(
                     "ANSWER", options=choices, index=default_idx,
                     key="ans_" + entry_id, label_visibility="collapsed"
