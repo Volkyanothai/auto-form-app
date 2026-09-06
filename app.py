@@ -138,10 +138,6 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
 
                 st.write("กำลังสกัดคำถามและค้นหารูปภาพ (Claude's Engine)...")
                 for item in questions_data:
-                    if q_type != 8:  # ข้ามพวก page break
-                       st.write(f"DEBUG ข้อ: {item[1]}")
-                       st.json(item)
-                        
                     if not item or len(item) < 4: continue
                     q_type = item[3]
                     
@@ -151,7 +147,11 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                         
                     if q_type == 11 or len(item) < 5 or not item[4]:
                         continue
-
+                        
+                    if q_type != 8:  # ข้ามพวก page break
+                       st.write(f"DEBUG ข้อ: {item[1]}")
+                       st.json(item)
+                        
                     q_title = item[1]
                     try: entry_id = "entry." + str(item[4][0][0])
                     except: continue
