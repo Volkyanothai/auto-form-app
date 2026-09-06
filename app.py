@@ -115,7 +115,7 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                 res = requests.get(form_url, allow_redirects=True, headers=UA, timeout=15)
                 html = res.text
                 img_urls_found = re.findall(r'https://lh\d?\.?googleusercontent\.com/[^\s"\'<>]+', html)
-                st.write("รูปที่เจอใน HTML ทั้งหมด:", img_urls_found)
+                img_counter = 0   # ตัวนับว่าใช้รูปตัวที่เท่าไหร่ไปแล้ว
 
                 action_match = re.search(r'<form action="([^"]+)"', html)
                 if action_match: submit_url = action_match.group(1)
@@ -151,8 +151,11 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                         continue
                         
                     if q_type != 8:  # ข้ามพวก page break
-                       st.write(f"DEBUG ข้อ: {item[1]}")
-                       st.json(item)
+                       image_url = None
+                       has_media = len(item) > 9 and item[9]
+                       if has_media and img_counter < len(img_urls_found):
+                          image_url = img_urls_found[img_counter]
+                          img_counter += 1
                         
                     q_title = item[1]
                     try: entry_id = "entry." + str(item[4][0][0])
@@ -224,7 +227,14 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                         if q["choices"]: q_info += f"\nตัวเลือก: {json.dumps(q['choices'], ensure_ascii=False)}"
                         
                         contents_payload.append(types.Part.from_text(text=q_info))
-                        
+                        if q.get("image_url"):
+                           try:
+                             img_res = requests.get(q["image_url"], headers=UA, timeout=10)
+                             img_res.raise_for_status()
+                             content_type = img_res.headers.get("Content-Type", "image/jpeg")
+                             contents_payload.append(types.Part.from_bytes(data=img_res.content, mime_type=content_type))
+                           except Exception:
+                             pass
                         # --- จุดที่ 3: โหลดรูปและแนบเข้า AI ตามที่ Claude แนะนำ ---
                         if q.get("image_url"):
                             try:
