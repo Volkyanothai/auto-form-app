@@ -61,44 +61,37 @@ def check_personal_info(q_title, choices, my_name, my_student_id, my_no, my_clas
     return None
 
 
-def extract_image_near_id(html_text, q_id):
+def extract_all_potential_images(item):
     """
-    วิชาสไนเปอร์: หาพิกัด ID ของข้อนี้ใน HTML แล้วดูดลิงก์รูปรอบๆ มันออกมาดื้อๆ เลย
-    ทะลุการเข้ารหัสและข้อจำกัด JSON ทุกรูปแบบ!
+    พลังถึก: กวาดทุก URL ในข้อมูลของข้อสอบข้อนี้โดยไม่สนโดเมน
+    และใช้การแปลงอักขระให้ถูกต้องทั้งหมด
     """
-    # คลีนโค้ดหลังบ้านให้เป็นข้อความปกติก่อน
-    clean_html = html_text.replace('\\/', '/').replace('\\u003d', '=').replace('\\u0026', '&')
+    s = json.dumps(item, ensure_ascii=False).replace('\\/', '/').replace('\\u003d', '=').replace('\\u0026', '&')
     
-    # เล็งพิกัด ID ของข้อสอบ
-    target_str = f'[{q_id},'
-    idx = clean_html.find(target_str)
+    # ดึงทุกอย่างที่อยู่ในเครื่องหมาย " " และขึ้นต้นด้วย http
+    urls = re.findall(r'"(https?://[^"\\]+)"', s)
     
-    if idx == -1:
-        # เผื่อหาไม่เจอ ลองหาแบบตัวเลขเพียวๆ
-        idx = clean_html.find(str(q_id))
-        if idx == -1: return None
+    # เผื่อ Google ใช้ลิงก์แบบ //
+    for u in re.findall(r'"(//[^"\\]+)"', s):
+        urls.append("https:" + u)
         
-    # สโคปพื้นที่รอบๆ ID ข้อนี้ (4,000 ตัวอักษร เพียงพอคลุมทั้งข้อ)
-    chunk = clean_html[idx:idx+4000]
-    
-    # คว้าทุก URL ที่โผล่มาในโซนนี้
-    urls = re.findall(r'(https?://[^\s"\'\\]+)', chunk)
-    
+    valid = []
     for u in urls:
         ul = u.lower()
-        # เช็คว่าเป็นโดเมนรูปภาพหรือไฟล์ของ Google (ครอบคลุมหมดทั้งรูปปกติและรูปจาก Drive)
-        is_google_host = any(h in ul for h in ['googleusercontent.com', 'ggpht.com', 'drive.google.com/file', 'drive.google.com/open'])
-        
-        # ตัดพวกลิงก์ขยะและไอคอนระบบทิ้ง
-        is_junk = any(bad in ul for bad in ['avatar', 'cleardot', 'favicon', 'gstatic.com', 'docs.google.com', 'schema.org'])
-        
-        if is_google_host and not is_junk:
-            return u  # คืนค่ารูปแรกสุดที่หาเจอในโซนข้อสอบนี้ทันที!
+        # กรองเฉพาะของที่รู้แน่ๆ ว่าไม่ใช่รูปภาพทิ้ง
+        if any(bad in ul for bad in ['gstatic.com', 'youtube', 'youtu.be', 'schema.org']):
+            continue
+        if u not in valid:
+            valid.append(u)
             
-    return None
+    return valid
 
 
 def compress_image(raw_bytes, max_dim=1024, quality=82):
+    """
+    ตัวคัดกรองขั้นเด็ดขาด: โหลดมาแล้วลองเปิดดู ถ้าไม่ใช่รูปภาพ (เช่นเป็นลิงก์เว็บ)
+    มันจะพังและ return None ทันที ทำให้เราได้เฉพาะรูปภาพของแท้!
+    """
     try:
         img = Image.open(io.BytesIO(raw_bytes)).convert("RGB")
         if max(img.size) > max_dim:
@@ -176,32 +169,27 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                 parsed_questions = []
                 personal_data_map = {}
                 page_count = 0
-                last_standalone_img = None 
+                last_standalone_imgs = []
 
                 fbzx = ""
                 fbzx_match = re.search(r'name="fbzx" value="([^"]*)"', html)
                 if fbzx_match: fbzx = fbzx_match.group(1)
 
-                st.write("กำลังใช้สไนเปอร์เจาะหารูปภาพทีละข้อ...")
+                st.write("กำลังกวาดล้างลิงก์รูปภาพทั้งหมดในข้อสอบ...")
                 for item in questions_data:
                     if not item or len(item) < 4: continue
-                    
-                    q_id = item[0]
                     q_type = item[3]
                     
                     if q_type == 8: 
                         page_count += 1
                         continue
                         
-                    # ดักจับกล่องรูปลอย (Standalone Image)
+                    # ถ้าเป็นรูปภาพลอยๆ กวาด URL เก็บไว้ก่อน
                     if q_type == 11 or len(item) < 5 or not item[4]:
-                        found_img = extract_image_near_id(html, q_id)
-                        if found_img: last_standalone_img = found_img
+                        last_standalone_imgs = extract_all_potential_images(item)
                         continue
 
                     q_title = item[1]
-                    
-                    # เลี่ยงข้อผิดพลาดหากโจทย์ไม่มี ID ของฟอร์มตอบกลับ
                     try: entry_id = "entry." + str(item[4][0][0])
                     except: continue
                     
@@ -213,28 +201,25 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                         personal_data_map[entry_id] = p_info
                         continue
                         
-                    # เรียกสไนเปอร์ส่องหารูปที่ติดมากับข้อนี้
-                    q_img = extract_image_near_id(html, q_id)
-                    
-                    # ถ้าข้อนี้ไม่มีรูป แต่มีรูปแทรกอยู่ก่อนหน้า ก็ให้ดึงมาใช้
-                    if not q_img and last_standalone_img:
-                        q_img = last_standalone_img
+                    # กวาด URL ทุกเส้นที่อยู่ในข้อนี้
+                    q_imgs = extract_all_potential_images(item)
+                    if not q_imgs and last_standalone_imgs:
+                        q_imgs = last_standalone_imgs
                         
-                    if q_img:
-                        last_standalone_img = None 
+                    last_standalone_imgs = [] 
 
                     parsed_questions.append({
                         "entry_id": entry_id,
                         "title": q_title,
                         "choices": choices,
-                        "image_url": q_img,
+                        "image_urls": q_imgs, # เก็บรายชื่อ URL ทั้งหมดไว้
                         "is_multi": q_type == CHECKBOX_TYPE,
                     })
 
                 generated_page_history = ",".join(str(i) for i in range(page_count + 1))
 
                 if parsed_questions:
-                    st.write("AI กำลังวิเคราะห์โจทย์และรูปภาพ...")
+                    st.write("กำลังดาวน์โหลดรูปภาพและส่งให้ AI วิเคราะห์...")
                     contents_payload = [
                         "Context: " + (exam_context if exam_context else "None") + "\n"
                         "Instructions:\n"
@@ -254,22 +239,26 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                         
                         contents_payload.append(q_info)
 
-                        if q.get("image_url"):
-                            try:
-                                img_res = requests.get(q["image_url"], headers=UA, timeout=10)
-                                if img_res.status_code == 200:
-                                    small_bytes, mime_type = compress_image(img_res.content)
-                                    if small_bytes:
-                                        contents_payload.append(types.Part.from_bytes(data=small_bytes, mime_type=mime_type))
-                                    else:
-                                        contents_payload.append("\n[SYSTEM NOTE: ไฟล์ภาพเสียหาย]\n")
-                                else:
-                                    contents_payload.append(f"\n[SYSTEM NOTE: โหลดรูปไม่สำเร็จ HTTP {img_res.status_code}]\n")
-                            except Exception:
-                                contents_payload.append("\n[SYSTEM NOTE: เกิดปัญหาเชื่อมต่อโหลดรูป]\n")
-                        else:
-                            if "รูป" in str(q["title"]) or "ภาพ" in str(q["title"]):
-                                contents_payload.append("\n[SYSTEM NOTE: ตรวจไม่พบรูประหว่างการสแกนโค้ดสำหรับข้อนี้]\n")
+                        q_valid_images = []
+                        if q.get("image_urls"):
+                            for img_url in q["image_urls"]:
+                                try:
+                                    # ลองดาวน์โหลดทุก URL ที่หาเจอ
+                                    img_res = requests.get(img_url, headers=UA, timeout=10)
+                                    if img_res.status_code == 200:
+                                        # ส่งเข้าเครื่องคัดกรอง ถ้าเป็นรูปภาพจริงๆ จะได้ไฟล์กลับมา
+                                        small_bytes, mime_type = compress_image(img_res.content)
+                                        if small_bytes:
+                                            contents_payload.append(types.Part.from_bytes(data=small_bytes, mime_type=mime_type))
+                                            q_valid_images.append(small_bytes) # เก็บรูปไว้โชว์ในแอป
+                                except Exception:
+                                    pass
+                        
+                        q["valid_images"] = q_valid_images # บันทึกรูปของจริงที่โหลดได้
+
+                        if not q_valid_images:
+                            if any(kw in str(q["title"]) for kw in ["รูป", "ภาพ"]):
+                                contents_payload.append("\n[SYSTEM NOTE: ค้นหารูปภาพไม่พบในระบบ]\n")
 
                     gen_config = types.GenerateContentConfig(
                         thinking_config=types.ThinkingConfig(thinking_budget=2048),
@@ -340,7 +329,7 @@ if "parsed_questions" in st.session_state:
         entry_id = q["entry_id"]
         title = html_lib.escape(str(q["title"]))
         choices = q["choices"]
-        img_url = q.get("image_url")
+        valid_images = q.get("valid_images", [])
         is_multi = q.get("is_multi", False)
 
         q_data = st.session_state["ai_answers"].get(entry_id, {})
@@ -369,10 +358,11 @@ if "parsed_questions" in st.session_state:
             )
             st.markdown(bar_html, unsafe_allow_html=True)
 
-            # โชว์รูปภาพในแอปเลย ถ้าดึงมาได้สำเร็จ
-            if img_url:
-                st.image(img_url, use_container_width=True)
-                st.caption("✅ เล็งเป้าและดึงรูปภาพประจำข้อสำเร็จ!")
+            # โชว์รูปภาพของจริงที่ดึงและคัดกรองมาแล้ว
+            if valid_images:
+                for img_bytes in valid_images:
+                    st.image(img_bytes, use_container_width=True)
+                    st.caption("✅ ดึงไฟล์รูปภาพที่แนบสำเร็จ")
 
             if is_multi and choices:
                 default_list = [str(v).strip().lower() for v in default_val] if isinstance(default_val, list) else [str(default_val).strip().lower()] if default_val else []
