@@ -63,27 +63,33 @@ def check_personal_info(q_title, choices, my_name, my_student_id, my_no, my_clas
 
 def extract_image_url(item):
     """
-    ค้นหารูปเฉพาะในขอบเขตของโจทย์ข้อนั้น ป้องกันการดึงปกฟอร์มมามั่วซั่ว
+    ปลดล็อคขีดจำกัด: ดำน้ำค้นหา URL ใน Object ทุกชั้น
+    เจอลิงก์ไหนที่ขึ้นต้นด้วย http ดูดออกมาให้หมดโดยไม่สนโดเมน
     """
-    s = json.dumps(item, ensure_ascii=False).replace('\\/', '/').replace('\\u003d', '=').replace('\\u0026', '&')
+    found_urls = []
     
-    # ดึงทุกลิงก์ที่อยู่ในก้อนข้อมูลของข้อสอบข้อนี้
-    urls = re.findall(r'(?:https?:)?//[^\s"\'<>\[\]]+', s)
+    def walk(obj):
+        if isinstance(obj, str):
+            s = obj.strip()
+            # ขอแค่เป็น URL ก็เก็บเข้ากระเป๋าทันที
+            if s.startswith('http://') or s.startswith('https://') or s.startswith('//'):
+                found_urls.append(s)
+        elif isinstance(obj, list):
+            for x in obj: walk(x)
+        elif isinstance(obj, dict):
+            for x in obj.values(): walk(x)
+            
+    walk(item) # เริ่มดำน้ำสแกนข้อมูล
     
-    valid_urls = []
-    for u in urls:
+    for u in found_urls:
         if u.startswith('//'): u = 'https:' + u
         ul = u.lower()
-        
-        # เช็คว่าเป็นโดเมนที่เกี่ยวข้องกับรูปภาพของ Google หรือมีนามสกุลรูป
-        is_google_img = any(domain in ul for domain in ["googleusercontent.com", "ggpht.com", "drive.google.com/file", "docs.google.com"])
-        is_ext = re.search(r'\.(jpg|jpeg|png|webp|gif)($|\?)', ul)
-        
-        # ห้ามดึงรูประบบ (ไอคอน/อวตาร) และลิงก์ฟอร์ม
-        if (is_google_img or is_ext) and not any(bad in ul for bad in ['/a/', 'avatar', 'cleardot', 'favicon', 'w3.org', 'viewform', 'formresponse']):
-            valid_urls.append(u)
+        # กรองเฉพาะพวกลิงก์ระบบที่รู้แน่ๆ ว่าไม่ใช่โจทย์ทิ้งไป
+        bad_words = ['/a/', 'avatar', 'cleardot', 'favicon', 'w3.org', 'viewform', 'formresponse', 'youtube.com', 'youtu.be', 'gstatic.com']
+        if not any(bad in ul for bad in bad_words):
+            return u # คืนค่าลิงก์รูปภาพตัวแรกที่รอดจากการกรองทันที
             
-    return valid_urls[0] if valid_urls else None
+    return None
 
 
 def compress_image(raw_bytes, max_dim=1024, quality=82):
@@ -179,6 +185,7 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                         page_count += 1
                         continue
                         
+                    # ดักจับกล่องรูปภาพลอยเดี่ยวๆ
                     if q_type == 11 or len(item) < 5 or not item[4]:
                         found_img = extract_image_url(item)
                         if found_img: last_standalone_img = found_img
@@ -194,7 +201,7 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                         personal_data_map[entry_id] = p_info
                         continue
                         
-                    # จับคู่รูปเฉพาะในขอบเขตข้อสอบ
+                    # ดึงรูปภาพฝังในข้อสอบด้วยระบบใหม่
                     q_img = extract_image_url(item)
                     if not q_img and last_standalone_img:
                         q_img = last_standalone_img
@@ -220,7 +227,7 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                         "1. คิดทบทวนคำตอบให้รอบคอบก่อนสรุป\n"
                         "2. ถ้ามีตัวเลือกให้ copy ข้อความตัวเลือกมาเป๊ะ ๆ ห้ามแต่งคำตอบขึ้นเอง\n"
                         "3. ถ้าข้อไหนมีป้าย [เลือกได้หลายข้อ] ให้ตอบ answer เป็น array\n"
-                        "4. หากโจทย์ระบุว่า 'จากรูป' แต่มี [SYSTEM NOTE] กำกับว่าโหลดรูปไม่สำเร็จ ห้ามเดาคำตอบเด็ดขาด ให้ตอบว่า 'ไม่พบรูปภาพ' และบังคับตั้ง confidence เป็น 0\n"
+                        "4. หากโจทย์อ้างอิงรูปภาพ แต่มี [SYSTEM NOTE] กำกับว่าค้นหารูปไม่พบ ให้ตอบว่า 'ไม่พบรูปภาพ' และตั้ง confidence เป็น 0\n"
                         "5. ตอบเป็น JSON รูปแบบ: {\"entry.123\": {\"answer\": \"...\", \"confidence\": 90, \"reasoning\": \"...\"}}\n\n"
                         "Questions:"
                     ]
@@ -241,14 +248,14 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                                     if small_bytes:
                                         contents_payload.append(types.Part.from_bytes(data=small_bytes, mime_type=mime_type))
                                     else:
-                                        contents_payload.append("\n[SYSTEM NOTE: ไฟล์ภาพเสียหาย]\n")
+                                        contents_payload.append("\n[SYSTEM NOTE: ไฟล์ภาพเสียหาย ไม่สามารถวิเคราะห์ได้]\n")
                                 else:
-                                    contents_payload.append(f"\n[SYSTEM NOTE: โหลดรูปไม่สำเร็จ HTTP {img_res.status_code}]\n")
+                                    contents_payload.append(f"\n[SYSTEM NOTE: โหลดรูปไม่สำเร็จ (HTTP {img_res.status_code})]\n")
                             except Exception:
-                                contents_payload.append("\n[SYSTEM NOTE: เกิดปัญหาเชื่อมต่อโหลดรูป]\n")
+                                contents_payload.append("\n[SYSTEM NOTE: เกิดปัญหาการเชื่อมต่อขณะโหลดรูปภาพ]\n")
                         else:
                             if "รูป" in str(q["title"]) or "ภาพ" in str(q["title"]):
-                                contents_payload.append("\n[SYSTEM NOTE: ตรวจไม่พบรูปในระบบฐานข้อมูลสำหรับข้อนี้]\n")
+                                contents_payload.append("\n[SYSTEM NOTE: ค้นหารูปภาพไม่พบในฐานข้อมูล JSON สำหรับข้อนี้]\n")
 
                     gen_config = types.GenerateContentConfig(
                         thinking_config=types.ThinkingConfig(thinking_budget=2048),
