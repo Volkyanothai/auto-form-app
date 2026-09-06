@@ -61,56 +61,35 @@ def check_personal_info(q_title, choices, my_name, my_student_id, my_no, my_clas
     return None
 
 
-def get_image_url_from_question(item, html_text):
+def get_all_possible_image_urls(html_text):
     """
-    นักสืบ Blob ID: ดึงรหัสอ้างอิงจาก JSON แล้วไปขุดหา URL ของจริงที่ซ่อนอยู่!
+    วิชาเครื่องดูดฝุ่น: สแกนหา URL ที่เป็นโดเมนรูปภาพทั้งหมดในหน้าเว็บโดยไม่สนใจโครงสร้าง JSON
     """
-    found_urls = set()
-    found_ids = set()
+    clean_html = html_text.replace('\\/', '/').replace('\\u003d', '=').replace('\\u0026', '&')
+    urls = set()
     
-    # 1. งัดข้อมูลใน JSON เฉพาะข้อนี้
-    def walk(obj):
-        if isinstance(obj, str):
-            s = obj.strip()
-            # ถ้าใจดีแจกลิงก์มาตรงๆ ก็รับไว้
-            if s.startswith('http://') or s.startswith('https://'):
-                found_urls.add(s)
-            elif s.startswith('//'):
-                found_urls.add('https:' + s)
-            
-            # 🎯 พระเอกของเรา: ควานหารหัส Blob ID แบบที่คุณแคปมาให้ดู!
-            m = re.search(r'IMAGE-([a-zA-Z0-9_\-]+)', s)
-            if m:
-                blob_id = m.group(1)
-                found_ids.add(blob_id)
-                # สร้างลิงก์ดาวน์โหลดตรงเผื่อไว้เลย
-                found_urls.add(f"https://lh3.googleusercontent.com/d/{blob_id}")
-                found_urls.add(f"https://drive.google.com/uc?id={blob_id}")
-                
-        elif isinstance(obj, list):
-            for x in obj: walk(x)
-        elif isinstance(obj, dict):
-            for x in obj.values(): walk(x)
-            
-    walk(item)
+    # 1. ดึงทุกลิงก์ที่มีคำว่า googleusercontent หรือ drive
+    pattern = r'(https?://[a-zA-Z0-9_\-\.]+(?:googleusercontent\.com|ggpht\.com|drive\.google\.com)[^\s"\'<>\[\]\{\}\\]+)'
+    for m in re.findall(pattern, clean_html): 
+        urls.add(m)
     
-    # 2. นำรหัส Blob ID ไปกวาดหา URL ของจริงที่อาจจะซ่อนใน HTML
-    clean_html = html_text.replace('\\/', '/')
-    for b_id in found_ids:
-        # หา URL ทุกเส้นที่มีรหัสนี้ซ่อนอยู่
-        html_urls = re.findall(r'(https?://[^\s"\'<>\[\]\{\}\\]*' + re.escape(b_id) + r'[^\s"\'<>\[\]\{\}\\]*)', clean_html)
-        for hu in html_urls: found_urls.add(hu)
+    # 2. ดึงลิงก์แบบไร้หัว http (//lh3...)
+    pattern2 = r'(//[a-zA-Z0-9_\-\.]+(?:googleusercontent\.com|ggpht\.com)[^\s"\'<>\[\]\{\}\\]+)'
+    for m in re.findall(pattern2, clean_html): 
+        urls.add('https:' + m)
         
-        html_urls_rel = re.findall(r'(//[^\s"\'<>\[\]\{\}\\]*' + re.escape(b_id) + r'[^\s"\'<>\[\]\{\}\\]*)', clean_html)
-        for hu in html_urls_rel: found_urls.add('https:' + hu)
-
-    # 3. คัดกรองเอาเฉพาะรูปภาพของแท้
+    # 3. ดึงจากแท็ก <img src="..."> เผื่อไว้
+    for src in re.findall(r'<img[^>]+src=["\'](.*?)["\']', clean_html):
+        if src.startswith('//'): src = 'https:' + src
+        if src.startswith('http'): urls.add(src)
+        
     valid_urls = []
-    bad_words = ['avatar', 'favicon', 'cleardot', 'gstatic.com', 'youtube.com', 'schema.org']
+    # กรองเฉพาะลิงก์ระบบที่รู้แน่ๆ ว่าเป็นขยะทิ้งไป
+    bad_words = ['avatar', 'favicon', 'cleardot', '/images/branding/']
     
-    for u in found_urls:
-        ul = u.lower()
-        if not any(bad in ul for bad in bad_words):
+    for u in urls:
+        u = u.strip(',. ')
+        if not any(bw in u.lower() for bw in bad_words):
             valid_urls.append(u)
             
     return valid_urls
@@ -118,7 +97,7 @@ def get_image_url_from_question(item, html_text):
 
 def compress_and_verify_image(raw_bytes, max_dim=1024, quality=82):
     try:
-        # กันเหนียว: ไฟล์เล็กเกินไปมักจะเป็นไอคอนขยะ
+        # ด่านตรวจคนเข้าเมือง: ถ้าไฟล์เล็กกว่า 3KB ให้เตะทิ้ง (กันพวกรูปไอคอนจุดเล็กๆ)
         if len(raw_bytes) < 3000:
             return None, None
         img = Image.open(io.BytesIO(raw_bytes)).convert("RGB")
@@ -197,13 +176,12 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                 parsed_questions = []
                 personal_data_map = {}
                 page_count = 0
-                last_standalone_imgs = []
 
                 fbzx = ""
                 fbzx_match = re.search(r'name="fbzx" value="([^"]*)"', html)
                 if fbzx_match: fbzx = fbzx_match.group(1)
 
-                st.write("กำลังใช้ Blob Sniper ควานหารูปภาพ...")
+                st.write("กำลังสกัดคำถามทั้งหมด...")
                 for item in questions_data:
                     if not item or len(item) < 4: continue
                     q_type = item[3]
@@ -213,8 +191,6 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                         continue
                         
                     if q_type == 11 or len(item) < 5 or not item[4]:
-                        imgs = get_image_url_from_question(item, html)
-                        if imgs: last_standalone_imgs.extend(imgs)
                         continue
 
                     q_title = item[1]
@@ -229,24 +205,31 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                         personal_data_map[entry_id] = p_info
                         continue
                         
-                    q_imgs = get_image_url_from_question(item, html)
-                    if not q_imgs and last_standalone_imgs:
-                        q_imgs = last_standalone_imgs
-                        
-                    last_standalone_imgs = [] 
-
                     parsed_questions.append({
                         "entry_id": entry_id,
                         "title": q_title,
                         "choices": choices,
-                        "image_urls": q_imgs,
                         "is_multi": q_type == CHECKBOX_TYPE,
                     })
 
+                st.write("กำลังใช้เครื่องดูดฝุ่นกวาดรูปภาพทั้งหมดในระบบ...")
+                all_raw_urls = get_all_possible_image_urls(html)
+                
+                downloaded_images = []
+                for url in set(all_raw_urls):
+                    try:
+                        img_res = requests.get(url, headers=UA, timeout=10)
+                        if img_res.status_code == 200:
+                            valid_bytes, mime = compress_and_verify_image(img_res.content)
+                            if valid_bytes:
+                                downloaded_images.append(valid_bytes)
+                    except Exception:
+                        pass
+                
                 generated_page_history = ",".join(str(i) for i in range(page_count + 1))
 
                 if parsed_questions:
-                    st.write("AI กำลังวิเคราะห์ข้อมูล...")
+                    st.write("AI กำลังวิเคราะห์ข้อมูลและแยกแยะรูปภาพทั้งหมด...")
                     contents_payload = []
                     
                     main_prompt = (
@@ -255,10 +238,16 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                         "1. คิดทบทวนคำตอบให้รอบคอบก่อนสรุป\n"
                         "2. ถ้ามีตัวเลือกให้ copy ข้อความตัวเลือกมาเป๊ะ ๆ ห้ามแต่งคำตอบขึ้นเอง\n"
                         "3. ถ้าข้อไหนมีป้าย [เลือกได้หลายข้อ] ให้ตอบ answer เป็น array\n"
-                        "4. หากโจทย์ระบุว่า 'จากรูป' ให้ดูรูปที่แนบมาประกอบในข้อนั้นๆ ทันที\n"
-                        "5. ตอบเป็น JSON รูปแบบ: {\"entry.123\": {\"answer\": \"...\", \"confidence\": 90, \"reasoning\": \"...\"}}\n"
+                        "4. ตอบเป็น JSON รูปแบบ: {\"entry.123\": {\"answer\": \"...\", \"confidence\": 90, \"reasoning\": \"...\"}}\n"
                     )
                     contents_payload.append(types.Part.from_text(text=main_prompt))
+                    
+                    # โยนรูปทั้งหมดที่ดูดมาได้ให้ AI ดูล่วงหน้า
+                    if downloaded_images:
+                        contents_payload.append(types.Part.from_text(text="\n--- 📸 แกลเลอรีรูปภาพทั้งหมดที่พบในข้อสอบ ---\nฉันได้แนบรูปภาพทั้งหมดที่ปรากฏในข้อสอบมาให้คุณแล้ว หากโจทย์ข้อไหนระบุว่า 'จากรูป' ให้คุณพิจารณาเลือกใช้รูปที่เกี่ยวข้องจากรายการภาพด้านล่างนี้ได้เลย:\n"))
+                        for idx, img_bytes in enumerate(downloaded_images):
+                            contents_payload.append(types.Part.from_text(text=f"รูปที่ {idx+1}:"))
+                            contents_payload.append(types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg"))
                     
                     contents_payload.append(types.Part.from_text(text="\nQuestions:\n"))
                     for idx, q in enumerate(parsed_questions, 1):
@@ -268,22 +257,6 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                         if q["choices"]: q_info += f"\nตัวเลือก: {json.dumps(q['choices'], ensure_ascii=False)}"
                         
                         contents_payload.append(types.Part.from_text(text=q_info))
-                        
-                        # พยายามโหลดรูปที่ไขรหัสมาได้
-                        q_valid_images = []
-                        if q.get("image_urls"):
-                            for img_url in q["image_urls"]:
-                                try:
-                                    img_res = requests.get(img_url, headers=UA, timeout=10)
-                                    if img_res.status_code == 200:
-                                        small_bytes, mime_type = compress_and_verify_image(img_res.content)
-                                        if small_bytes:
-                                            contents_payload.append(types.Part.from_bytes(data=small_bytes, mime_type=mime_type))
-                                            q_valid_images.append(small_bytes)
-                                            break # ถ้ารูปไหนโหลดติดก่อน ให้หยุดโหลดรูปรองทันที ป้องกันซ้ำซ้อน
-                                except Exception:
-                                    pass
-                        q["valid_images"] = q_valid_images
 
                     gen_config = types.GenerateContentConfig(
                         thinking_config=types.ThinkingConfig(thinking_budget=2048),
@@ -329,6 +302,7 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                 st.session_state["ai_answers"] = ai_answers
                 st.session_state["pageHistory"] = generated_page_history
                 st.session_state["fbzx"] = fbzx
+                st.session_state["downloaded_images"] = downloaded_images
 
                 status.update(label="ANALYSIS COMPLETE", state="complete", expanded=False)
 
@@ -339,6 +313,14 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
 if "parsed_questions" in st.session_state:
     st.markdown('<div class="section-title">REVIEW & SUBMIT</div>', unsafe_allow_html=True)
     final_payload = {}
+
+    # ถ้าระบบดูดรูปมาได้ มันจะต้องโชว์แกลเลอรีตรงนี้แน่นอน!
+    if st.session_state.get("downloaded_images"):
+        with st.container(border=True):
+            st.markdown('<div class="glass-header">📸 รูปภาพทั้งหมดที่ดูดมาได้จากข้อสอบ</div>', unsafe_allow_html=True)
+            cols = st.columns(min(len(st.session_state["downloaded_images"]), 4))
+            for idx, img_bytes in enumerate(st.session_state["downloaded_images"]):
+                cols[idx % 4].image(img_bytes, use_container_width=True, caption=f"รูปที่ {idx+1}")
 
     if st.session_state["personal_data_map"]:
         with st.container(border=True):
@@ -354,7 +336,6 @@ if "parsed_questions" in st.session_state:
         entry_id = q["entry_id"]
         title = html_lib.escape(str(q["title"]))
         choices = q["choices"]
-        valid_images = q.get("valid_images", [])
         is_multi = q.get("is_multi", False)
 
         q_data = st.session_state["ai_answers"].get(entry_id, {})
@@ -382,12 +363,6 @@ if "parsed_questions" in st.session_state:
                 '<div class="reasoning-text"><b>AI REASON:</b> ' + html_lib.escape(str(reason)) + '</div>'
             )
             st.markdown(bar_html, unsafe_allow_html=True)
-
-            # ถ้าระบบเจาะไข่แดง Blob ID สำเร็จ รูปภาพจะโชว์ตรงนี้!
-            if valid_images:
-                for img_bytes in valid_images:
-                    st.image(img_bytes, use_container_width=True)
-                    st.caption("🎯 ตามล่าและถอดรหัสรูปภาพสำเร็จ!")
 
             if is_multi and choices:
                 default_list = [str(v).strip().lower() for v in default_val] if isinstance(default_val, list) else [str(default_val).strip().lower()] if default_val else []
