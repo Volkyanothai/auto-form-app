@@ -14,7 +14,7 @@ from google.genai import types
 
 from style import inject_css, render_header
 
-st.set_page_config(page_title="EZEXAM | Auto Form System", page_icon="⚡", layout="centered")
+st.set_page_config(page_title="EZEXAM | Hybrid Mode", page_icon="⚡", layout="centered")
 inject_css()
 
 UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -61,55 +61,6 @@ def check_personal_info(q_title, choices, my_name, my_student_id, my_no, my_clas
     return None
 
 
-def get_all_possible_image_urls(html_text):
-    """
-    วิชาเครื่องดูดฝุ่น: สแกนหา URL ที่เป็นโดเมนรูปภาพทั้งหมดในหน้าเว็บโดยไม่สนใจโครงสร้าง JSON
-    """
-    clean_html = html_text.replace('\\/', '/').replace('\\u003d', '=').replace('\\u0026', '&')
-    urls = set()
-    
-    # 1. ดึงทุกลิงก์ที่มีคำว่า googleusercontent หรือ drive
-    pattern = r'(https?://[a-zA-Z0-9_\-\.]+(?:googleusercontent\.com|ggpht\.com|drive\.google\.com)[^\s"\'<>\[\]\{\}\\]+)'
-    for m in re.findall(pattern, clean_html): 
-        urls.add(m)
-    
-    # 2. ดึงลิงก์แบบไร้หัว http (//lh3...)
-    pattern2 = r'(//[a-zA-Z0-9_\-\.]+(?:googleusercontent\.com|ggpht\.com)[^\s"\'<>\[\]\{\}\\]+)'
-    for m in re.findall(pattern2, clean_html): 
-        urls.add('https:' + m)
-        
-    # 3. ดึงจากแท็ก <img src="..."> เผื่อไว้
-    for src in re.findall(r'<img[^>]+src=["\'](.*?)["\']', clean_html):
-        if src.startswith('//'): src = 'https:' + src
-        if src.startswith('http'): urls.add(src)
-        
-    valid_urls = []
-    # กรองเฉพาะลิงก์ระบบที่รู้แน่ๆ ว่าเป็นขยะทิ้งไป
-    bad_words = ['avatar', 'favicon', 'cleardot', '/images/branding/']
-    
-    for u in urls:
-        u = u.strip(',. ')
-        if not any(bw in u.lower() for bw in bad_words):
-            valid_urls.append(u)
-            
-    return valid_urls
-
-
-def compress_and_verify_image(raw_bytes, max_dim=1024, quality=82):
-    try:
-        # ด่านตรวจคนเข้าเมือง: ถ้าไฟล์เล็กกว่า 3KB ให้เตะทิ้ง (กันพวกรูปไอคอนจุดเล็กๆ)
-        if len(raw_bytes) < 3000:
-            return None, None
-        img = Image.open(io.BytesIO(raw_bytes)).convert("RGB")
-        if max(img.size) > max_dim:
-            img.thumbnail((max_dim, max_dim), Image.LANCZOS)
-        buf = io.BytesIO()
-        img.save(buf, "JPEG", quality=quality, optimize=True)
-        return buf.getvalue(), "image/jpeg"
-    except Exception:
-        return None, None
-
-
 def match_choice(ai_answer, choices):
     ai_answer = str(ai_answer).strip()
     clean_choices = [str(c).strip() for c in choices]
@@ -132,6 +83,14 @@ render_header()
 with st.container(border=True):
     st.markdown('<div class="glass-header">TARGET FORM LINK</div>', unsafe_allow_html=True)
     form_url = st.text_input("Form URL", placeholder="วางลิงก์ Google Form ที่นี่...", label_visibility="collapsed")
+
+st.write("")
+
+# --- เพิ่มช่องอัปโหลดรูปภาพแบบ Manual (Bypass ทะลวงกำแพง JS) ---
+with st.container(border=True):
+    st.markdown('<div class="glass-header">📸 รูปภาพประกอบข้อสอบ (ข้ามระบบป้องกัน)</div>', unsafe_allow_html=True)
+    st.caption("Google ปิดกั้นไม่ให้ AI ดึงรูปภาพอัตโนมัติ หากโจทย์ข้อไหนอ้างอิงถึงรูป ให้คุณแคปหน้าจอรูปนั้นมาวางที่นี่ได้เลยครับ")
+    uploaded_files = st.file_uploader("ลากรูปภาพมาวางที่นี่", type=["png", "jpg", "jpeg"], accept_multiple_files=True, label_visibility="collapsed")
 
 st.write("")
 
@@ -211,25 +170,11 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                         "choices": choices,
                         "is_multi": q_type == CHECKBOX_TYPE,
                     })
-
-                st.write("กำลังใช้เครื่องดูดฝุ่นกวาดรูปภาพทั้งหมดในระบบ...")
-                all_raw_urls = get_all_possible_image_urls(html)
-                
-                downloaded_images = []
-                for url in set(all_raw_urls):
-                    try:
-                        img_res = requests.get(url, headers=UA, timeout=10)
-                        if img_res.status_code == 200:
-                            valid_bytes, mime = compress_and_verify_image(img_res.content)
-                            if valid_bytes:
-                                downloaded_images.append(valid_bytes)
-                    except Exception:
-                        pass
                 
                 generated_page_history = ",".join(str(i) for i in range(page_count + 1))
 
                 if parsed_questions:
-                    st.write("AI กำลังวิเคราะห์ข้อมูลและแยกแยะรูปภาพทั้งหมด...")
+                    st.write("AI กำลังวิเคราะห์ข้อมูลและรูปภาพ...")
                     contents_payload = []
                     
                     main_prompt = (
@@ -238,16 +183,17 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                         "1. คิดทบทวนคำตอบให้รอบคอบก่อนสรุป\n"
                         "2. ถ้ามีตัวเลือกให้ copy ข้อความตัวเลือกมาเป๊ะ ๆ ห้ามแต่งคำตอบขึ้นเอง\n"
                         "3. ถ้าข้อไหนมีป้าย [เลือกได้หลายข้อ] ให้ตอบ answer เป็น array\n"
-                        "4. ตอบเป็น JSON รูปแบบ: {\"entry.123\": {\"answer\": \"...\", \"confidence\": 90, \"reasoning\": \"...\"}}\n"
+                        "4. หากโจทย์ระบุว่า 'จากรูป' ให้วิเคราะห์จากชุดรูปภาพที่ผู้ใช้อัปโหลดแนบมาให้ด้านล่างนี้ได้เลย\n"
+                        "5. ตอบเป็น JSON รูปแบบ: {\"entry.123\": {\"answer\": \"...\", \"confidence\": 90, \"reasoning\": \"...\"}}\n"
                     )
                     contents_payload.append(types.Part.from_text(text=main_prompt))
                     
-                    # โยนรูปทั้งหมดที่ดูดมาได้ให้ AI ดูล่วงหน้า
-                    if downloaded_images:
-                        contents_payload.append(types.Part.from_text(text="\n--- 📸 แกลเลอรีรูปภาพทั้งหมดที่พบในข้อสอบ ---\nฉันได้แนบรูปภาพทั้งหมดที่ปรากฏในข้อสอบมาให้คุณแล้ว หากโจทย์ข้อไหนระบุว่า 'จากรูป' ให้คุณพิจารณาเลือกใช้รูปที่เกี่ยวข้องจากรายการภาพด้านล่างนี้ได้เลย:\n"))
-                        for idx, img_bytes in enumerate(downloaded_images):
+                    # ถ้าระบบเจอรูปที่ผู้ใช้อัปโหลดมา ให้ส่งไปให้ AI ทันที!
+                    if uploaded_files:
+                        contents_payload.append(types.Part.from_text(text="\n--- 📸 แกลเลอรีรูปภาพที่อัปโหลด (ใช้สำหรับตอบคำถามที่อ้างอิงถึงรูปภาพ) ---\n"))
+                        for idx, f in enumerate(uploaded_files):
                             contents_payload.append(types.Part.from_text(text=f"รูปที่ {idx+1}:"))
-                            contents_payload.append(types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg"))
+                            contents_payload.append(types.Part.from_bytes(data=f.getvalue(), mime_type="image/jpeg"))
                     
                     contents_payload.append(types.Part.from_text(text="\nQuestions:\n"))
                     for idx, q in enumerate(parsed_questions, 1):
@@ -302,7 +248,6 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                 st.session_state["ai_answers"] = ai_answers
                 st.session_state["pageHistory"] = generated_page_history
                 st.session_state["fbzx"] = fbzx
-                st.session_state["downloaded_images"] = downloaded_images
 
                 status.update(label="ANALYSIS COMPLETE", state="complete", expanded=False)
 
@@ -313,14 +258,6 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
 if "parsed_questions" in st.session_state:
     st.markdown('<div class="section-title">REVIEW & SUBMIT</div>', unsafe_allow_html=True)
     final_payload = {}
-
-    # ถ้าระบบดูดรูปมาได้ มันจะต้องโชว์แกลเลอรีตรงนี้แน่นอน!
-    if st.session_state.get("downloaded_images"):
-        with st.container(border=True):
-            st.markdown('<div class="glass-header">📸 รูปภาพทั้งหมดที่ดูดมาได้จากข้อสอบ</div>', unsafe_allow_html=True)
-            cols = st.columns(min(len(st.session_state["downloaded_images"]), 4))
-            for idx, img_bytes in enumerate(st.session_state["downloaded_images"]):
-                cols[idx % 4].image(img_bytes, use_container_width=True, caption=f"รูปที่ {idx+1}")
 
     if st.session_state["personal_data_map"]:
         with st.container(border=True):
