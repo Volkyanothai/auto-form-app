@@ -233,8 +233,8 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                         max_output_tokens=3072,
                     )
 
-                    models_to_try = ["gemini-flash-latest", "gemini-3.6-flash"]
-                    MAX_RETRIES_PER_MODEL = 3
+                    models_to_try = ["gemini-flash-latest", "gemini-3.6-flash", "gemini-3.1-flash-lite"]
+                    MAX_RETRIES_PER_MODEL = 2
                     response = None
                     last_err = None
                     for model_name in models_to_try:
