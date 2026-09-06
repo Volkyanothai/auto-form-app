@@ -5,6 +5,7 @@ import random
 import io
 import difflib
 import html as html_lib
+import base64
 
 import requests
 import streamlit as st
@@ -61,47 +62,39 @@ def check_personal_info(q_title, choices, my_name, my_student_id, my_no, my_clas
     return None
 
 
-def get_image_urls_from_item(item):
-    """
-    แกะรอยรูปภาพระดับลึก: ตรวจสอบ URL ทุกรูปแบบ แม้จะไม่มี http:// นำหน้าก็ตาม
-    และค้นหาเฉพาะในขอบเขตของข้อมูล "ข้อนี้" เท่านั้น!
-    """
-    found = set()
+def get_all_possible_image_sources(html_text):
+    """ ค้นหารูปภาพทุกรูปแบบ ทั้งลิงก์ URL และ Base64 ที่ฝังในโค้ด """
+    b64_list = []
+    # หารูปที่ฝังมาเป็นรหัส Base64 โดยตรง
+    matches = re.findall(r'data:image/([a-zA-Z]+);base64,([a-zA-Z0-9+/=]+)', html_text)
+    for ext, data in matches:
+        try:
+            raw = base64.b64decode(data)
+            b64_list.append(raw)
+        except:
+            pass
+
+    urls = set()
+    clean = html_text.replace('\\/', '/').replace('\\u003d', '=').replace('\\u0026', '&')
     
-    def walk(obj):
-        if isinstance(obj, str):
-            # พลังกวาดล้าง: ดึงข้อความที่ขึ้นต้นด้วย http://, https:// หรือ // (ไฟล์แนบมักจะใช้ตัวนี้)
-            urls = re.findall(r'(https?://[^\s"\'<>\[\]]+|//[^\s"\'<>\[\]]+)', obj)
-            for u in urls:
-                u = u.rstrip('.,;!?')
-                # ถ้าเจอลิงก์ไร้หัว ให้เติม https: เข้าไป
-                if u.startswith('//'): u = 'https:' + u
-                found.add(u)
-        elif isinstance(obj, list):
-            for x in obj: walk(x)
-        elif isinstance(obj, dict):
-            for x in obj.values(): walk(x)
+    # ดึงทุกลิงก์ที่น่าจะเป็นไฟล์รูปภาพจาก Google
+    url_matches = re.findall(r'(https?://[a-zA-Z0-9_\-\.]+(?:googleusercontent\.com|ggpht\.com|drive\.google\.com)[^\s"\'<>\[\]\{\}\\]+)', clean)
+    for m in url_matches: urls.add(m)
+    
+    # ดึงลิงก์แบบไร้หัว (Protocol-relative)
+    url_matches2 = re.findall(r'(//[a-zA-Z0-9_\-\.]+(?:googleusercontent\.com|ggpht\.com)[^\s"\'<>\[\]\{\}\\]+)', clean)
+    for m in url_matches2: urls.add("https:" + m)
+    
+    valid_urls = []
+    bad = ['avatar', 'favicon', 'cleardot', 'gstatic.com', 'youtube.com', 'schema.org', '/images/branding/']
+    for u in urls:
+        if not any(b in u.lower() for b in bad):
+            valid_urls.append(u)
             
-    walk(item) # เริ่มค้นหาเจาะจงเฉพาะข้อนี้
-    
-    valid = []
-    seen = set()
-    # กรองพวกลิงก์ขยะและโลโก้ระบบทิ้ง
-    bad_words = ['avatar', 'favicon', 'cleardot', 'gstatic.com', 'youtube.com', 'schema.org', 'w3.org']
-    
-    for u in found:
-        ul = u.lower()
-        if not any(bad in ul for bad in bad_words):
-            if 'googleusercontent.com' in ul or 'ggpht.com' in ul or 'drive.google.com' in ul:
-                # ป้องกันการดึงรูปเดียวกันซ้ำซ้อน
-                base = u.split('=')[0] if ('googleusercontent' in ul or 'ggpht' in ul) else u
-                if base not in seen:
-                    seen.add(base)
-                    valid.append(u)
-    return valid
+    return b64_list, valid_urls
 
 
-def compress_image(raw_bytes, max_dim=1024, quality=82):
+def compress_and_verify_image(raw_bytes, max_dim=1024, quality=82):
     try:
         img = Image.open(io.BytesIO(raw_bytes)).convert("RGB")
         if max(img.size) > max_dim:
@@ -179,13 +172,12 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                 parsed_questions = []
                 personal_data_map = {}
                 page_count = 0
-                last_standalone_imgs = []
 
                 fbzx = ""
                 fbzx_match = re.search(r'name="fbzx" value="([^"]*)"', html)
                 if fbzx_match: fbzx = fbzx_match.group(1)
 
-                st.write("กำลังแกะรอยรูปภาพประจำข้อ...")
+                st.write("กำลังสกัดคำถามทั้งหมด...")
                 for item in questions_data:
                     if not item or len(item) < 4: continue
                     q_type = item[3]
@@ -194,10 +186,7 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                         page_count += 1
                         continue
                         
-                    # ดักจับกล่องรูปภาพ Type 11
                     if q_type == 11 or len(item) < 5 or not item[4]:
-                        imgs = get_image_urls_from_item(item)
-                        if imgs: last_standalone_imgs.extend(imgs)
                         continue
 
                     q_title = item[1]
@@ -212,63 +201,71 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                         personal_data_map[entry_id] = p_info
                         continue
                         
-                    # ค้นหารูปภาพที่ซ่อนอยู่ในข้อมูลข้อสอบข้อนี้โดยตรง!
-                    q_imgs = get_image_urls_from_item(item)
-                    if not q_imgs and last_standalone_imgs:
-                        q_imgs = last_standalone_imgs
-                        
-                    last_standalone_imgs = [] 
-
                     parsed_questions.append({
                         "entry_id": entry_id,
                         "title": q_title,
                         "choices": choices,
-                        "image_urls": q_imgs, # เก็บ URL ที่หาเจอผูกติดกับข้อนี้
                         "is_multi": q_type == CHECKBOX_TYPE,
                     })
+
+                st.write("กำลังประมวลผลไฟล์รูปภาพที่แนบมา...")
+                b64_images, image_urls = get_all_possible_image_sources(html)
+                
+                downloaded_images = []
+                failed_downloads = []
+                
+                # โหลดรูปจาก Base64 (ถ้ามี)
+                for b_raw in b64_images:
+                    vb, _ = compress_and_verify_image(b_raw)
+                    if vb: downloaded_images.append(vb)
+                        
+                # โหลดรูปจาก URL
+                for url in image_urls:
+                    try:
+                        img_res = requests.get(url, headers=UA, timeout=10)
+                        if img_res.status_code == 200:
+                            valid_bytes, mime = compress_and_verify_image(img_res.content)
+                            if valid_bytes:
+                                downloaded_images.append(valid_bytes)
+                            else:
+                                failed_downloads.append(f"โดน Google รีไดเรคหน้าเว็บ: {url[:30]}...")
+                        else:
+                            failed_downloads.append(f"ติดสิทธิ์ Private (HTTP {img_res.status_code}): {url[:30]}...")
+                    except Exception as e:
+                        failed_downloads.append(f"เชื่อมต่อล้มเหลว: {url[:30]}...")
 
                 generated_page_history = ",".join(str(i) for i in range(page_count + 1))
 
                 if parsed_questions:
-                    st.write("กำลังส่งข้อสอบและรูปให้ AI วิเคราะห์...")
-                    contents_payload = [
-                        "Context: " + (exam_context if exam_context else "None") + "\n"
+                    st.write("AI กำลังวิเคราะห์ข้อมูล...")
+                    # บังคับจัดโครงสร้าง Payload ใหม่ตามคลาสของ SDK ป้องกันการถูกจำกัดเป็นข้อความ
+                    contents_payload = []
+                    
+                    main_prompt = (
+                        f"Context: {exam_context if exam_context else 'None'}\n"
                         "Instructions:\n"
                         "1. คิดทบทวนคำตอบให้รอบคอบก่อนสรุป\n"
                         "2. ถ้ามีตัวเลือกให้ copy ข้อความตัวเลือกมาเป๊ะ ๆ ห้ามแต่งคำตอบขึ้นเอง\n"
                         "3. ถ้าข้อไหนมีป้าย [เลือกได้หลายข้อ] ให้ตอบ answer เป็น array\n"
-                        "4. หากโจทย์ระบุว่า 'จากรูป' แต่มี [SYSTEM NOTE] กำกับว่าค้นหารูปไม่พบ ให้ตอบว่า 'ไม่พบรูปภาพ' และตั้ง confidence เป็น 0\n"
-                        "5. ตอบเป็น JSON รูปแบบ: {\"entry.123\": {\"answer\": \"...\", \"confidence\": 90, \"reasoning\": \"...\"}}\n\n"
-                        "Questions:"
-                    ]
-
+                        "4. หากโจทย์ระบุว่า 'จากรูป' ให้วิเคราะห์จากรูปภาพที่แนบมาด้านล่างนี้ได้เลย\n"
+                        "5. ตอบเป็น JSON รูปแบบ: {\"entry.123\": {\"answer\": \"...\", \"confidence\": 90, \"reasoning\": \"...\"}}\n"
+                    )
+                    contents_payload.append(types.Part.from_text(text=main_prompt))
+                    
+                    if downloaded_images:
+                        contents_payload.append(types.Part.from_text(text="\n--- 📸 ไฟล์รูปภาพที่แนบมาในข้อสอบ ---\n"))
+                        for idx, img_bytes in enumerate(downloaded_images):
+                            contents_payload.append(types.Part.from_text(text=f"รูปที่ {idx+1}:"))
+                            contents_payload.append(types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg"))
+                    
+                    contents_payload.append(types.Part.from_text(text="\nQuestions:\n"))
                     for idx, q in enumerate(parsed_questions, 1):
-                        q_info = "\nข้อ " + str(idx) + " (ID: " + q["entry_id"] + ")"
+                        q_info = f"\nข้อ {idx} (ID: {q['entry_id']})"
                         if q.get("is_multi"): q_info += " [เลือกได้หลายข้อ]"
-                        q_info += ": " + str(q["title"])
-                        if q["choices"]: q_info += "\nตัวเลือก: " + json.dumps(q["choices"], ensure_ascii=False)
+                        q_info += f": {q['title']}"
+                        if q["choices"]: q_info += f"\nตัวเลือก: {json.dumps(q['choices'], ensure_ascii=False)}"
                         
-                        contents_payload.append(q_info)
-
-                        q_valid_images = []
-                        if q.get("image_urls"):
-                            for img_url in q["image_urls"]:
-                                try:
-                                    img_res = requests.get(img_url, headers=UA, timeout=10)
-                                    if img_res.status_code == 200:
-                                        small_bytes, mime_type = compress_image(img_res.content)
-                                        if small_bytes:
-                                            # แนบรูปที่ดาวน์โหลดได้ ส่งให้ AI ดูต่อจากโจทย์ข้อนี้เลย
-                                            contents_payload.append(types.Part.from_bytes(data=small_bytes, mime_type=mime_type))
-                                            q_valid_images.append(small_bytes)
-                                except Exception:
-                                    pass
-                        
-                        q["valid_images"] = q_valid_images # บันทึกเพื่อเอาไปแสดงหน้า UI
-
-                        if not q_valid_images:
-                            if any(kw in str(q["title"]) for kw in ["รูป", "ภาพ"]):
-                                contents_payload.append("\n[SYSTEM NOTE: ค้นหารูปภาพที่ผูกกับคำถามไม่พบ]\n")
+                        contents_payload.append(types.Part.from_text(text=q_info))
 
                     gen_config = types.GenerateContentConfig(
                         thinking_config=types.ThinkingConfig(thinking_budget=2048),
@@ -314,6 +311,8 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                 st.session_state["ai_answers"] = ai_answers
                 st.session_state["pageHistory"] = generated_page_history
                 st.session_state["fbzx"] = fbzx
+                st.session_state["downloaded_images"] = downloaded_images
+                st.session_state["failed_downloads"] = failed_downloads # เก็บประวัติไฟล์ที่โหลดไม่ขึ้น
 
                 status.update(label="ANALYSIS COMPLETE", state="complete", expanded=False)
 
@@ -324,6 +323,21 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
 if "parsed_questions" in st.session_state:
     st.markdown('<div class="section-title">REVIEW & SUBMIT</div>', unsafe_allow_html=True)
     final_payload = {}
+
+    # โชว์รูปภาพที่ดูดมาได้สำเร็จ
+    if st.session_state.get("downloaded_images"):
+        with st.container(border=True):
+            st.markdown('<div class="glass-header">📸 รูปภาพที่ระบบสกัดได้และส่งให้ AI</div>', unsafe_allow_html=True)
+            cols = st.columns(min(len(st.session_state["downloaded_images"]), 4))
+            for idx, img_bytes in enumerate(st.session_state["downloaded_images"]):
+                cols[idx % 4].image(img_bytes, use_container_width=True, caption=f"รูปที่ {idx+1}")
+                
+    # โชว์แจ้งเตือนถ้าระบบหารูปเจอ แต่โหลดไม่ได้เพราะติดสิทธิ์ (นี่คือตัวชี้วัดสำคัญเลยครับ)
+    if st.session_state.get("failed_downloads"):
+        with st.expander("🚨 พบปัญหาการเข้าถึงไฟล์รูปภาพบางส่วน (ดูรายละเอียด)"):
+            st.warning("ระบบตรวจพบลิงก์รูปภาพแนบ แต่ไม่สามารถดาวน์โหลดได้เนื่องจากถูกบล็อกสิทธิ์การเข้าถึงจากฝั่งเซิร์ฟเวอร์ (เช่น รูปถูกเก็บใน Google Drive ส่วนตัว) AI จึงไม่เห็นรูปเหล่านี้ครับ")
+            for fail_msg in st.session_state["failed_downloads"]:
+                st.write(f"- {fail_msg}")
 
     if st.session_state["personal_data_map"]:
         with st.container(border=True):
@@ -339,7 +353,6 @@ if "parsed_questions" in st.session_state:
         entry_id = q["entry_id"]
         title = html_lib.escape(str(q["title"]))
         choices = q["choices"]
-        valid_images = q.get("valid_images", [])
         is_multi = q.get("is_multi", False)
 
         q_data = st.session_state["ai_answers"].get(entry_id, {})
@@ -367,12 +380,6 @@ if "parsed_questions" in st.session_state:
                 '<div class="reasoning-text"><b>AI REASON:</b> ' + html_lib.escape(str(reason)) + '</div>'
             )
             st.markdown(bar_html, unsafe_allow_html=True)
-
-            # แสดงรูปภาพที่ผูกติดกับข้อนี้แบบเป๊ะๆ
-            if valid_images:
-                for img_bytes in valid_images:
-                    st.image(img_bytes, use_container_width=True)
-                    st.caption("✅ ระบบสกัดไฟล์รูปภาพที่แนบมาสำเร็จ")
 
             if is_multi and choices:
                 default_list = [str(v).strip().lower() for v in default_val] if isinstance(default_val, list) else [str(default_val).strip().lower()] if default_val else []
