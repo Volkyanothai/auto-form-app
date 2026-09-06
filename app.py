@@ -70,7 +70,7 @@ def compress_image(raw_bytes, max_dim=1024, quality=82):
         img.save(buf, "JPEG", quality=quality, optimize=True)
         return buf.getvalue(), "image/jpeg"
     except Exception:
-        return raw_bytes, "image/jpeg"
+        return None, None
 
 
 def match_choice(ai_answer, choices):
@@ -123,26 +123,6 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                 res = requests.get(form_url, allow_redirects=True, headers=UA, timeout=20)
                 html = res.text
 
-                # --- NEW LOGIC: เหวี่ยงแหกวาดรูปภาพทั้งหมดแบบดื้อๆ ---
-                st.write("กำลังสกัดรูปภาพที่แนบมาทั้งหมด...")
-                clean_html = html.replace('\\/', '/').replace('\\u003d', '=').replace('\\u0026', '&')
-                
-                # หา URL ทุกชนิดที่หน้าตาเหมือนเซิร์ฟเวอร์รูปของ Google
-                url_pattern = r'(?:https?:)?//([a-zA-Z0-9-]+\.googleusercontent\.com/[^\s"\'\\]+|[a-zA-Z0-9-]+\.ggpht\.com/[^\s"\'\\]+|drive\.google\.com/file/d/[^\s"\'\\]+|drive\.google\.com/open\?id=[^\s"\'\\]+)'
-                raw_matches = re.findall(url_pattern, clean_html)
-                
-                unique_images = {}
-                for match in raw_matches:
-                    full_url = "https://" + match
-                    ul = full_url.lower()
-                    # กรองพวกไอคอนจุกจิกของระบบทิ้ง
-                    if not any(bad in ul for bad in ['/a/', 'avatar', 'cleardot', 'favicon', 'w3.org']):
-                        base_url = full_url.split('=')[0] # ป้องกันรูปซ้ำจากการเข้ารหัสขนาด
-                        if base_url not in unique_images:
-                            unique_images[base_url] = full_url
-                            
-                global_images = list(unique_images.values())
-
                 action_match = re.search(r'<form action="([^"]+)"', html)
                 if action_match: submit_url = action_match.group(1)
                 elif "/viewform" in res.url: submit_url = res.url.replace("/viewform", "/formResponse")
@@ -153,8 +133,32 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                     status.update(label="อ่านฟอร์มไม่ได้", state="error")
                     st.stop()
 
+                # แปลงข้อมูลทั้งหมดเป็น JSON Object ที่อ่านง่าย
                 form_data = json.loads(match.group(1))
                 questions_data = form_data[1][1] if len(form_data) > 1 and form_data[1] else []
+
+                # --- NEW LOGIC: ทะลวงหา URL จากข้างในเนื้อหาข้อสอบเท่านั้น ---
+                st.write("กำลังสกัดรูปภาพจากเนื้อหาข้อสอบ...")
+                global_images = []
+                
+                # ฟังก์ชันนี้จะดำน้ำค้นหาทุกตัวอักษรที่เป็นลิงก์ภาพในโจทย์
+                def walk_and_find_images(obj):
+                    if isinstance(obj, str):
+                        if obj.startswith('http://') or obj.startswith('https://') or obj.startswith('//'):
+                            u = obj if not obj.startswith('//') else 'https:' + obj
+                            ul = u.lower()
+                            # เอาเฉพาะลิงก์ที่ถูกฝากไว้ในเซิร์ฟเวอร์เก็บไฟล์ของ Google
+                            if 'googleusercontent.com' in ul or 'ggpht.com' in ul or 'drive.google.com' in ul:
+                                if not any(bad in ul for bad in ['/a/', 'avatar', 'cleardot', 'favicon']):
+                                    if u not in global_images:
+                                        global_images.append(u)
+                    elif isinstance(obj, list):
+                        for x in obj: walk_and_find_images(x)
+                    elif isinstance(obj, dict):
+                        for x in obj.values(): walk_and_find_images(x)
+                
+                # ส่งเฉพาะข้อมูลที่เป็นโจทย์ลงไปค้นหา (ตัดปัญหารูปปกมั่วซั่ว)
+                walk_and_find_images(questions_data)
 
                 parsed_questions = []
                 personal_data_map = {}
@@ -209,7 +213,6 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                         "6. ตอบเป็น JSON รูปแบบ: {\"entry.123\": {\"answer\": \"...\", \"confidence\": 90, \"reasoning\": \"...\"}}\n\n"
                     ]
                     
-                    # โหลดรูปทั้งหมดส่งให้ AI ดูก่อนอ่านโจทย์
                     for img_url in global_images:
                         try:
                             img_res = requests.get(img_url, headers=UA, timeout=10)
@@ -284,7 +287,6 @@ if "parsed_questions" in st.session_state:
     st.markdown('<div class="section-title">REVIEW & SUBMIT</div>', unsafe_allow_html=True)
     final_payload = {}
     
-    # โชว์รูปภาพทั้งหมดที่ดูดมาได้ให้เห็นก่อนเลย
     if st.session_state.get("global_images"):
         with st.container(border=True):
             st.markdown('<div class="glass-header">📸 ภาพทั้งหมดในข้อสอบ (ส่งให้ AI ดูแล้ว)</div>', unsafe_allow_html=True)
