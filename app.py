@@ -53,16 +53,6 @@ def check_personal_info(q_title, choices, my_name, my_student_id, my_no, my_clas
         return (q_title, best_val, "ชั้น/ห้อง")
     return None
 
-def compress_and_verify_image(raw_bytes, max_dim=1024, quality=82):
-    try:
-        if len(raw_bytes) < 3000: return None, None
-        img = Image.open(io.BytesIO(raw_bytes)).convert("RGB")
-        if max(img.size) > max_dim: img.thumbnail((max_dim, max_dim), Image.LANCZOS)
-        buf = io.BytesIO()
-        img.save(buf, "JPEG", quality=quality, optimize=True)
-        return buf.getvalue(), "image/jpeg"
-    except Exception: return None, None
-
 def match_choice(ai_answer, choices):
     ai_answer = str(ai_answer).strip()
     clean_choices = [str(c).strip() for c in choices]
@@ -105,7 +95,6 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
             try:
                 st.write("กำลังหลบหลีกระบบป้องกันและจำลองเบราว์เซอร์...")
                 
-                # --- พรางตัวเบราว์เซอร์ให้เหมือนมนุษย์ ---
                 chrome_options = Options()
                 chrome_options.add_argument("--headless=new")
                 chrome_options.add_argument("--disable-gpu")
@@ -119,47 +108,33 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                 
                 driver.get(form_url)
                 
-                # --- จำลองการเลื่อนหน้าจอเพื่อโหลดรูปภาพ (Lazy Loading) ---
-                st.write("กำลังเลื่อนหน้าจอเพื่อดึงรูปภาพที่ซ่อนอยู่...")
-                driver.execute_script("window.scrollTo(0, document.body.scrollHeight/3);")
-                time.sleep(1.5)
-                driver.execute_script("window.scrollTo(0, document.body.scrollHeight/1.5);")
-                time.sleep(1.5)
+                st.write("รอให้หน้าเว็บโหลดเต็มที่ (10 วินาที)...")
+                time.sleep(5)
+                driver.execute_script("window.scrollTo(0, document.body.scrollHeight/2);")
+                time.sleep(3)
                 driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
                 time.sleep(2)
                 
+                # โชว์ภาพที่บอทเห็นให้ผู้ใช้ดู เพื่อการ Debug
+                st.write("📸 ถ่ายภาพหน้าจอของบอท...")
+                bot_screenshot = driver.get_screenshot_as_png()
+                
                 html = driver.page_source
                 
-                st.write("กำลังสกัดรูปภาพของจริง...")
-                raw_image_urls = []
-                
-                # กวาดจากแท็ก img
+                st.write("กำลังสกัดรูปภาพแบบแคปหน้าจอ (Bypass Download)...")
+                downloaded_images = []
                 image_elements = driver.find_elements(By.TAG_NAME, 'img')
                 for img in image_elements:
-                    src = img.get_attribute('src')
-                    if src and ('googleusercontent' in src or 'drive.google' in src):
-                        if 'avatar' not in src.lower(): raw_image_urls.append(src)
-                
-                # กวาดจากพื้นหลัง (เผื่อ Google ซ่อนไว้ใน CSS)
-                divs = driver.find_elements(By.TAG_NAME, 'div')
-                for div in divs:
-                    bg = div.value_of_css_property('background-image')
-                    if bg and 'url(' in bg and ('googleusercontent' in bg or 'drive.google' in bg):
-                        try:
-                            clean_url = bg.split('url("')[1].split('")')[0]
-                            if 'avatar' not in clean_url.lower(): raw_image_urls.append(clean_url)
-                        except: pass
+                    try:
+                        # ข้ามพวกไอคอนเล็กๆ (ขนาดน้อยกว่า 50x50)
+                        if img.size['width'] > 50 and img.size['height'] > 50:
+                            # ขโมยพิกเซลรูปออกมาจากหน้าจอตรงๆ เลย!
+                            img_bytes = img.screenshot_as_png
+                            downloaded_images.append(img_bytes)
+                    except:
+                        pass
                 
                 driver.quit() 
-                
-                downloaded_images = []
-                for url in set(raw_image_urls):
-                    try:
-                        img_res = requests.get(url, headers=UA, timeout=10)
-                        if img_res.status_code == 200:
-                            valid_bytes, mime = compress_and_verify_image(img_res.content)
-                            if valid_bytes: downloaded_images.append(valid_bytes)
-                    except: pass
 
                 st.write("กำลังวิเคราะห์โครงสร้างข้อสอบ...")
                 action_match = re.search(r'<form action="([^"]+)"', html)
@@ -229,7 +204,7 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                         contents_payload.append(types.Part.from_text(text="\n--- 📸 รูปภาพประกอบจากหน้าจอข้อสอบ ---\nหากโจทย์ระบุว่า 'จากรูป' ให้ใช้รูปจากรายการด้านล่างนี้:\n"))
                         for idx, img_bytes in enumerate(downloaded_images):
                             contents_payload.append(types.Part.from_text(text=f"รูปที่ {idx+1}:"))
-                            contents_payload.append(types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg"))
+                            contents_payload.append(types.Part.from_bytes(data=img_bytes, mime_type="image/png"))
                     
                     contents_payload.append(types.Part.from_text(text="\nQuestions:\n"))
                     for idx, q in enumerate(parsed_questions, 1):
@@ -276,6 +251,7 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                 else:
                     ai_answers = {}
 
+                st.session_state["bot_screenshot"] = bot_screenshot
                 st.session_state["submit_url"] = submit_url
                 st.session_state["parsed_questions"] = parsed_questions
                 st.session_state["personal_data_map"] = personal_data_map
@@ -293,10 +269,15 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
 if "parsed_questions" in st.session_state:
     st.markdown('<div class="section-title">REVIEW & SUBMIT</div>', unsafe_allow_html=True)
     final_payload = {}
+    
+    # ดูสายตาบอท (Debug)
+    if st.session_state.get("bot_screenshot"):
+        with st.expander("👁️ ดูสิ่งที่ระบบเบราว์เซอร์มองเห็น (Debug)"):
+            st.image(st.session_state["bot_screenshot"], caption="หน้าจอจำลองตอนสกัดข้อมูล", use_container_width=True)
 
     if st.session_state.get("downloaded_images"):
         with st.container(border=True):
-            st.markdown('<div class="glass-header">📸 รูปภาพที่ระบบสกัดได้</div>', unsafe_allow_html=True)
+            st.markdown('<div class="glass-header">📸 รูปภาพที่ระบบสกัดได้ด้วยการแคปจอ</div>', unsafe_allow_html=True)
             cols = st.columns(min(len(st.session_state["downloaded_images"]), 4))
             for idx, img_bytes in enumerate(st.session_state["downloaded_images"]):
                 cols[idx % 4].image(img_bytes, use_container_width=True, caption=f"รูปที่ {idx+1}")
