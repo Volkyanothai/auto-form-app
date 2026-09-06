@@ -1,7 +1,6 @@
 import json
 import re
 import time
-import random
 import io
 import difflib
 import html as html_lib
@@ -12,9 +11,16 @@ from PIL import Image
 from google import genai
 from google.genai import types
 
+# --- อาวุธใหม่: Selenium สำหรับเรนเดอร์ JavaScript ---
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
+from webdriver_manager.chrome import ChromeDriverManager
+from selenium.webdriver.common.by import By
+
 from style import inject_css, render_header
 
-st.set_page_config(page_title="EZEXAM | Hybrid Mode", page_icon="⚡", layout="centered")
+st.set_page_config(page_title="EZEXAM | Auto Form System", page_icon="⚡", layout="centered")
 inject_css()
 
 UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -35,21 +41,13 @@ def check_personal_info(q_title, choices, my_name, my_student_id, my_no, my_clas
     title_lower = clean_title.lower()
 
     if len(clean_title) > 25: return None
-
-    exam_stopwords = ["สาร", "เคมี", "ดาว", "วิทยาศาสตร์", "โรค", "องค์กร", "กษัตริย์", "ธาตุ",
-                      "เมือง", "ประเทศ", "วรรณคดี", "ผู้แต่ง", "หัวใจ", "บรรยากาศ", "ผิวหนัง",
-                      "ปฏิบัติการ", "ดิน", "หิน", "เชื่อม", "เครือข่าย", "อินเทอร์เน็ต", "เว็บ",
-                      "จัดเป็น", "คืออะไร", "ข้อใด", "หมายถึง", "ตัวอักษรย่อ"]
+    exam_stopwords = ["สาร", "เคมี", "ดาว", "วิทยาศาสตร์", "โรค", "องค์กร", "กษัตริย์", "ธาตุ", "เมือง", "ประเทศ", "จัดเป็น", "คืออะไร", "ข้อใด"]
     if any(sw in title_lower for sw in exam_stopwords): return None
 
-    if my_name and any(k in title_lower for k in ["ชื่อ", "นามสกุล", "สกุล", "name"]):
-        return (q_title, my_name, "ชื่อ-นามสกุล")
-    if my_student_id and any(k in title_lower for k in ["เลขประจำตัว", "รหัส", "student id", "id"]):
-        return (q_title, my_student_id, "เลขประจำตัว")
-    if my_no and (any(k in title_lower for k in ["เลขที่", "no.", "number"]) or title_lower == "no"):
-        return (q_title, my_no, "เลขที่")
-
-    if my_class and any(k in title_lower for k in ["ชั้น", "ห้อง", "ม.", "มัธยม", "class", "grade", "room"]):
+    if my_name and any(k in title_lower for k in ["ชื่อ", "นามสกุล", "สกุล", "name"]): return (q_title, my_name, "ชื่อ-นามสกุล")
+    if my_student_id and any(k in title_lower for k in ["เลขประจำตัว", "รหัส", "student id", "id"]): return (q_title, my_student_id, "เลขประจำตัว")
+    if my_no and (any(k in title_lower for k in ["เลขที่", "no.", "number"]) or title_lower == "no"): return (q_title, my_no, "เลขที่")
+    if my_class and any(k in title_lower for k in ["ชั้น", "ห้อง", "ม.", "มัธยม", "class"]):
         best_val = my_class
         if choices:
             for c in choices:
@@ -61,18 +59,29 @@ def check_personal_info(q_title, choices, my_name, my_student_id, my_no, my_clas
     return None
 
 
+def compress_and_verify_image(raw_bytes, max_dim=1024, quality=82):
+    try:
+        if len(raw_bytes) < 3000: return None, None
+        img = Image.open(io.BytesIO(raw_bytes)).convert("RGB")
+        if max(img.size) > max_dim:
+            img.thumbnail((max_dim, max_dim), Image.LANCZOS)
+        buf = io.BytesIO()
+        img.save(buf, "JPEG", quality=quality, optimize=True)
+        return buf.getvalue(), "image/jpeg"
+    except Exception:
+        return None, None
+
+
 def match_choice(ai_answer, choices):
     ai_answer = str(ai_answer).strip()
     clean_choices = [str(c).strip() for c in choices]
     if not ai_answer or not clean_choices: return 0, False
-
     for i, c in enumerate(clean_choices):
         if c == ai_answer: return i, True
     for i, c in enumerate(clean_choices):
         if c and (c in ai_answer or ai_answer in c): return i, True
     for i, c in enumerate(clean_choices):
         if c.lower() == ai_answer.lower(): return i, True
-
     close = difflib.get_close_matches(ai_answer, clean_choices, n=1, cutoff=0.55)
     if close: return clean_choices.index(close[0]), True
     return 0, False
@@ -85,15 +94,6 @@ with st.container(border=True):
     form_url = st.text_input("Form URL", placeholder="วางลิงก์ Google Form ที่นี่...", label_visibility="collapsed")
 
 st.write("")
-
-# --- เพิ่มช่องอัปโหลดรูปภาพแบบ Manual (Bypass ทะลวงกำแพง JS) ---
-with st.container(border=True):
-    st.markdown('<div class="glass-header">📸 รูปภาพประกอบข้อสอบ (ข้ามระบบป้องกัน)</div>', unsafe_allow_html=True)
-    st.caption("Google ปิดกั้นไม่ให้ AI ดึงรูปภาพอัตโนมัติ หากโจทย์ข้อไหนอ้างอิงถึงรูป ให้คุณแคปหน้าจอรูปนั้นมาวางที่นี่ได้เลยครับ")
-    uploaded_files = st.file_uploader("ลากรูปภาพมาวางที่นี่", type=["png", "jpg", "jpeg"], accept_multiple_files=True, label_visibility="collapsed")
-
-st.write("")
-
 with st.container(border=True):
     st.markdown('<div class="glass-header">PERSONAL DATA & CONTEXT</div>', unsafe_allow_html=True)
     exam_context = st.text_area("EXAM CONTEXT", placeholder="เช่น ฟิสิกส์ ม.6 บทคลื่น...", height=68)
@@ -114,15 +114,51 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
     else:
         with st.status("SYSTEM PROCESSING...", expanded=True) as status:
             try:
-                st.write("กำลังอ่านโครงสร้างฟอร์ม...")
-                client = genai.Client(api_key=gemini_key, http_options=types.HttpOptions(timeout=30000))
-                res = requests.get(form_url, allow_redirects=True, headers=UA, timeout=20)
-                html = res.text
+                st.write("กำลังจำลองเบราว์เซอร์เพื่อเรนเดอร์ภาพ (อาจใช้เวลา 5-10 วินาที)...")
+                
+                # --- เปิดเบราว์เซอร์จำลอง (Headless Chrome) ---
+                chrome_options = Options()
+                chrome_options.add_argument("--headless") # ซ่อนหน้าต่าง
+                chrome_options.add_argument("--disable-gpu")
+                chrome_options.add_argument("--no-sandbox")
+                
+                # ใช้ webdriver_manager เพื่อโหลด Driver อัตโนมัติ
+                service = Service(ChromeDriverManager().install())
+                driver = webdriver.Chrome(service=service, options=chrome_options)
+                
+                driver.get(form_url)
+                time.sleep(3) # รอให้ JavaScript โหลดรูปภาพให้เสร็จ
+                
+                html = driver.page_source
+                
+                # กวาดรูปภาพจากหน้าเว็บที่เรนเดอร์เสร็จแล้ว
+                st.write("กำลังสกัดรูปภาพของจริง...")
+                image_elements = driver.find_elements(By.TAG_NAME, 'img')
+                raw_image_urls = []
+                for img in image_elements:
+                    src = img.get_attribute('src')
+                    if src and ('googleusercontent' in src or 'drive.google' in src):
+                        if 'avatar' not in src.lower(): # ตัดรูปโปรไฟล์ทิ้ง
+                            raw_image_urls.append(src)
+                
+                driver.quit() # ปิดเบราว์เซอร์จำลอง
+                
+                # โหลดรูปภาพเก็บไว้
+                downloaded_images = []
+                for url in set(raw_image_urls):
+                    try:
+                        img_res = requests.get(url, headers=UA, timeout=10)
+                        if img_res.status_code == 200:
+                            valid_bytes, mime = compress_and_verify_image(img_res.content)
+                            if valid_bytes:
+                                downloaded_images.append(valid_bytes)
+                    except: pass
 
+                st.write("กำลังวิเคราะห์โครงสร้างข้อสอบ...")
                 action_match = re.search(r'<form action="([^"]+)"', html)
                 if action_match: submit_url = action_match.group(1)
-                elif "/viewform" in res.url: submit_url = res.url.replace("/viewform", "/formResponse")
-                else: submit_url = res.url.rstrip("/") + "/formResponse"
+                elif "/viewform" in form_url: submit_url = form_url.replace("/viewform", "/formResponse")
+                else: submit_url = form_url.rstrip("/") + "/formResponse"
 
                 match = re.search(r'FB_PUBLIC_LOAD_DATA_\s*=\s*(.*?);\s*</script>', html, re.DOTALL)
                 if not match:
@@ -135,20 +171,16 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                 parsed_questions = []
                 personal_data_map = {}
                 page_count = 0
-
                 fbzx = ""
                 fbzx_match = re.search(r'name="fbzx" value="([^"]*)"', html)
                 if fbzx_match: fbzx = fbzx_match.group(1)
 
-                st.write("กำลังสกัดคำถามทั้งหมด...")
                 for item in questions_data:
                     if not item or len(item) < 4: continue
                     q_type = item[3]
-                    
                     if q_type == 8: 
                         page_count += 1
                         continue
-                        
                     if q_type == 11 or len(item) < 5 or not item[4]:
                         continue
 
@@ -170,30 +202,28 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                         "choices": choices,
                         "is_multi": q_type == CHECKBOX_TYPE,
                     })
-                
+
                 generated_page_history = ",".join(str(i) for i in range(page_count + 1))
 
                 if parsed_questions:
-                    st.write("AI กำลังวิเคราะห์ข้อมูลและรูปภาพ...")
+                    st.write("AI กำลังวิเคราะห์ข้อมูลและรูปภาพที่ระบบจำลองดึงมาได้...")
+                    client = genai.Client(api_key=gemini_key, http_options=types.HttpOptions(timeout=30000))
                     contents_payload = []
                     
                     main_prompt = (
                         f"Context: {exam_context if exam_context else 'None'}\n"
                         "Instructions:\n"
-                        "1. คิดทบทวนคำตอบให้รอบคอบก่อนสรุป\n"
+                        "1. คิดทบทวนคำตอบให้รอบคอบ\n"
                         "2. ถ้ามีตัวเลือกให้ copy ข้อความตัวเลือกมาเป๊ะ ๆ ห้ามแต่งคำตอบขึ้นเอง\n"
-                        "3. ถ้าข้อไหนมีป้าย [เลือกได้หลายข้อ] ให้ตอบ answer เป็น array\n"
-                        "4. หากโจทย์ระบุว่า 'จากรูป' ให้วิเคราะห์จากชุดรูปภาพที่ผู้ใช้อัปโหลดแนบมาให้ด้านล่างนี้ได้เลย\n"
-                        "5. ตอบเป็น JSON รูปแบบ: {\"entry.123\": {\"answer\": \"...\", \"confidence\": 90, \"reasoning\": \"...\"}}\n"
+                        "3. ตอบเป็น JSON รูปแบบ: {{\"entry.123\": {{\"answer\": \"...\", \"confidence\": 90, \"reasoning\": \"...\"}}}}\n"
                     )
                     contents_payload.append(types.Part.from_text(text=main_prompt))
                     
-                    # ถ้าระบบเจอรูปที่ผู้ใช้อัปโหลดมา ให้ส่งไปให้ AI ทันที!
-                    if uploaded_files:
-                        contents_payload.append(types.Part.from_text(text="\n--- 📸 แกลเลอรีรูปภาพที่อัปโหลด (ใช้สำหรับตอบคำถามที่อ้างอิงถึงรูปภาพ) ---\n"))
-                        for idx, f in enumerate(uploaded_files):
+                    if downloaded_images:
+                        contents_payload.append(types.Part.from_text(text="\n--- 📸 รูปภาพที่สกัดได้จากหน้าจอข้อสอบ ---\nหากโจทย์ข้อไหนระบุว่า 'จากรูป' ให้พิจารณาเลือกใช้รูปที่เกี่ยวข้องจากรายการภาพด้านล่างนี้:\n"))
+                        for idx, img_bytes in enumerate(downloaded_images):
                             contents_payload.append(types.Part.from_text(text=f"รูปที่ {idx+1}:"))
-                            contents_payload.append(types.Part.from_bytes(data=f.getvalue(), mime_type="image/jpeg"))
+                            contents_payload.append(types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg"))
                     
                     contents_payload.append(types.Part.from_text(text="\nQuestions:\n"))
                     for idx, q in enumerate(parsed_questions, 1):
@@ -201,38 +231,10 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                         if q.get("is_multi"): q_info += " [เลือกได้หลายข้อ]"
                         q_info += f": {q['title']}"
                         if q["choices"]: q_info += f"\nตัวเลือก: {json.dumps(q['choices'], ensure_ascii=False)}"
-                        
                         contents_payload.append(types.Part.from_text(text=q_info))
 
-                    gen_config = types.GenerateContentConfig(
-                        thinking_config=types.ThinkingConfig(thinking_budget=2048),
-                        temperature=0.1,
-                        max_output_tokens=3072,
-                    )
-
-                    models_to_try = ["gemini-flash-latest", "gemini-3.6-flash", "gemini-3.1-flash-lite"]
-                    MAX_RETRIES_PER_MODEL = 2
-                    response = None
-                    last_err = None
-                    for model_name in models_to_try:
-                        for attempt in range(MAX_RETRIES_PER_MODEL):
-                            try:
-                                response = client.models.generate_content(model=model_name, contents=contents_payload, config=gen_config)
-                                if response and response.text: break
-                            except Exception as err:
-                                last_err = err
-                                response = None
-                                err_text = str(err)
-                                is_overload = ("503" in err_text or "UNAVAILABLE" in err_text or "429" in err_text or "RESOURCE_EXHAUSTED" in err_text or "504" in err_text)
-                                if is_overload and attempt < MAX_RETRIES_PER_MODEL - 1:
-                                    wait_time = (2 ** attempt) * 2 + random.uniform(0, 1)
-                                    st.write(f"โมเดลหน่วง กำลังลองใหม่ใน {round(wait_time, 1)} วิ...")
-                                    time.sleep(wait_time)
-                                    continue
-                                else: break
-                        if response and response.text: break
-
-                    if not response: raise last_err if last_err else RuntimeError("AI ไม่ตอบกลับ")
+                    gen_config = types.GenerateContentConfig(thinking_config=types.ThinkingConfig(thinking_budget=2048), temperature=0.1, max_output_tokens=3072)
+                    response = client.models.generate_content(model="gemini-flash-latest", contents=contents_payload, config=gen_config)
 
                     raw_ans = re.sub(r'`{3}(?:json)?', '', response.text.strip()).strip()
                     try: ai_answers = json.loads(raw_ans)
@@ -248,16 +250,24 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                 st.session_state["ai_answers"] = ai_answers
                 st.session_state["pageHistory"] = generated_page_history
                 st.session_state["fbzx"] = fbzx
+                st.session_state["downloaded_images"] = downloaded_images
 
                 status.update(label="ANALYSIS COMPLETE", state="complete", expanded=False)
 
             except Exception as e:
                 status.update(label="ERROR", state="error")
-                st.error("รายละเอียด: " + str(e))
+                st.error(f"รายละเอียด: {str(e)}")
 
 if "parsed_questions" in st.session_state:
     st.markdown('<div class="section-title">REVIEW & SUBMIT</div>', unsafe_allow_html=True)
     final_payload = {}
+
+    if st.session_state.get("downloaded_images"):
+        with st.container(border=True):
+            st.markdown('<div class="glass-header">📸 รูปภาพที่ระบบจำลองหน้าจอดึงมาได้</div>', unsafe_allow_html=True)
+            cols = st.columns(min(len(st.session_state["downloaded_images"]), 4))
+            for idx, img_bytes in enumerate(st.session_state["downloaded_images"]):
+                cols[idx % 4].image(img_bytes, use_container_width=True, caption=f"รูปที่ {idx+1}")
 
     if st.session_state["personal_data_map"]:
         with st.container(border=True):
@@ -274,8 +284,8 @@ if "parsed_questions" in st.session_state:
         title = html_lib.escape(str(q["title"]))
         choices = q["choices"]
         is_multi = q.get("is_multi", False)
-
         q_data = st.session_state["ai_answers"].get(entry_id, {})
+        
         if isinstance(q_data, dict):
             default_val = q_data.get("answer", "")
             score = q_data.get("confidence", 70)
@@ -286,13 +296,11 @@ if "parsed_questions" in st.session_state:
             reason = "ประมวลผลอัตโนมัติ"
 
         try: score = int(score)
-        except Exception: score = 70
-
+        except: score = 70
         color = "#5fe3d0" if score >= 85 else "#e8c98a" if score >= 60 else "#ff7a8a"
 
         with st.container(border=True):
             st.markdown('<div class="q-title">' + str(idx) + '. ' + title + '</div>', unsafe_allow_html=True)
-
             bar_html = (
                 '<div class="confidence-track">'
                 '<div class="confidence-fill" style="width:' + str(score) + '%;background:' + color + ';box-shadow:0 0 12px ' + color + ';"></div></div>'
@@ -321,24 +329,10 @@ if "parsed_questions" in st.session_state:
         with st.spinner("กำลังส่งข้อมูล..."):
             try:
                 res_submit = requests.post(st.session_state["submit_url"], data=final_payload, headers=UA, timeout=25)
+                if res_submit.status_code == 200:
+                    st.balloons()
+                    st.success("ส่งข้อมูลสำเร็จ")
+                else:
+                    st.error("Error Code: " + str(res_submit.status_code))
             except Exception as e:
                 st.error("ส่งไม่สำเร็จ: " + str(e))
-                st.stop()
-
-        if res_submit.status_code == 200:
-            st.balloons()
-            st.success("ส่งข้อมูลสำเร็จ")
-            link_match = re.search(r'href="([^"]*?viewscore\?[^"]*)"', res_submit.text)
-            if link_match:
-                score_url = html_lib.unescape(link_match.group(1))
-                try:
-                    score_page = requests.get(score_url, headers=UA, timeout=8).text
-                    score_match = re.search(r'<span[^>]*>\s*([0-9]+)\s*</span>\s*<span[^>]*>\s*(?:/|&#47;|จาก)\s*([0-9]+)\s*</span>', score_page)
-                    if not score_match: score_match = re.search(r'([0-9]+)\s*(?:/|&#47;|จาก)\s*([0-9]+)\s*(?:คะแนน|points)', score_page)
-                    if score_match: st.markdown('<div class="score-box"><div class="score-val">' + score_match.group(1) + ' / ' + score_match.group(2) + '</div><div class="score-lb">Score Secured</div></div>', unsafe_allow_html=True)
-                except Exception: pass
-                st.markdown('<a href="' + score_url + '" target="_blank" class="score-link">เปิดหน้ายืนยันคะแนน</a>', unsafe_allow_html=True)
-            else:
-                st.warning("ส่งสำเร็จแล้ว แต่ฟอร์มนี้ไม่ปล่อยคะแนนอัตโนมัติ")
-        else:
-            st.error("Error Code: " + str(res_submit.status_code))
