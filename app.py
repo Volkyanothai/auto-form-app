@@ -63,23 +63,30 @@ def check_personal_info(q_title, choices, my_name, my_student_id, my_no, my_clas
 
 def get_image_url_from_question(item, html_text):
     """
-    แกะรอยขั้นสุดยอด: ค้นหาทั้ง URL และ 's-blob' ID
-    ถ้าเจอ Blob ID ให้วิ่งไปขุดหา URL ของจริงจาก HTML!
+    นักสืบ Blob ID: ดึงรหัสอ้างอิงจาก JSON แล้วไปขุดหา URL ของจริงที่ซ่อนอยู่!
     """
     found_urls = set()
-    found_blobs = set()
+    found_ids = set()
     
+    # 1. งัดข้อมูลใน JSON เฉพาะข้อนี้
     def walk(obj):
         if isinstance(obj, str):
             s = obj.strip()
-            # 1. ถ้าเจอ URL ปกติ ก็เก็บไว้
+            # ถ้าใจดีแจกลิงก์มาตรงๆ ก็รับไว้
             if s.startswith('http://') or s.startswith('https://'):
                 found_urls.add(s)
             elif s.startswith('//'):
                 found_urls.add('https:' + s)
-            # 2. พระเอกของเรา! ถ้าเจอคำว่า s-blob ให้เก็บรหัสไว้ตามล่าต่อ
-            elif 's-blob' in s:
-                found_blobs.add(s)
+            
+            # 🎯 พระเอกของเรา: ควานหารหัส Blob ID แบบที่คุณแคปมาให้ดู!
+            m = re.search(r'IMAGE-([a-zA-Z0-9_\-]+)', s)
+            if m:
+                blob_id = m.group(1)
+                found_ids.add(blob_id)
+                # สร้างลิงก์ดาวน์โหลดตรงเผื่อไว้เลย
+                found_urls.add(f"https://lh3.googleusercontent.com/d/{blob_id}")
+                found_urls.add(f"https://drive.google.com/uc?id={blob_id}")
+                
         elif isinstance(obj, list):
             for x in obj: walk(x)
         elif isinstance(obj, dict):
@@ -87,6 +94,17 @@ def get_image_url_from_question(item, html_text):
             
     walk(item)
     
+    # 2. นำรหัส Blob ID ไปกวาดหา URL ของจริงที่อาจจะซ่อนใน HTML
+    clean_html = html_text.replace('\\/', '/')
+    for b_id in found_ids:
+        # หา URL ทุกเส้นที่มีรหัสนี้ซ่อนอยู่
+        html_urls = re.findall(r'(https?://[^\s"\'<>\[\]\{\}\\]*' + re.escape(b_id) + r'[^\s"\'<>\[\]\{\}\\]*)', clean_html)
+        for hu in html_urls: found_urls.add(hu)
+        
+        html_urls_rel = re.findall(r'(//[^\s"\'<>\[\]\{\}\\]*' + re.escape(b_id) + r'[^\s"\'<>\[\]\{\}\\]*)', clean_html)
+        for hu in html_urls_rel: found_urls.add('https:' + hu)
+
+    # 3. คัดกรองเอาเฉพาะรูปภาพของแท้
     valid_urls = []
     bad_words = ['avatar', 'favicon', 'cleardot', 'gstatic.com', 'youtube.com', 'schema.org']
     
@@ -95,27 +113,12 @@ def get_image_url_from_question(item, html_text):
         if not any(bad in ul for bad in bad_words):
             valid_urls.append(u)
             
-    # ปฏิบัติการล่า Blob: เอารหัส s-blob ไปค้นหา URL ของจริงใน HTML
-    for blob_id in found_blobs:
-        matches = re.finditer(re.escape(blob_id), html_text)
-        for m in matches:
-            # ตีกรอบค้นหารอบๆ รหัส (หน้า/หลัง 800 ตัวอักษร)
-            start = max(0, m.start() - 800)
-            end = min(len(html_text), m.end() + 800)
-            chunk = html_text[start:end].replace('\\/', '/')
-            
-            # กวาดหา URL ที่ซ่อนอยู่ใกล้ๆ รหัส Blob
-            chunk_urls = re.findall(r'(https?://[^\s"\'<>\[\]\{\}\\]+)', chunk)
-            for cu in chunk_urls:
-                if ('googleusercontent.com' in cu or 'ggpht.com' in cu) and cu not in valid_urls:
-                    if not any(bad in cu.lower() for bad in bad_words):
-                        valid_urls.append(cu)
-                        
     return valid_urls
 
 
 def compress_and_verify_image(raw_bytes, max_dim=1024, quality=82):
     try:
+        # กันเหนียว: ไฟล์เล็กเกินไปมักจะเป็นไอคอนขยะ
         if len(raw_bytes) < 3000:
             return None, None
         img = Image.open(io.BytesIO(raw_bytes)).convert("RGB")
@@ -200,7 +203,7 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                 fbzx_match = re.search(r'name="fbzx" value="([^"]*)"', html)
                 if fbzx_match: fbzx = fbzx_match.group(1)
 
-                st.write("กำลังแกะรอยตามล่ารูปภาพจากรหัส Blob...")
+                st.write("กำลังใช้ Blob Sniper ควานหารูปภาพ...")
                 for item in questions_data:
                     if not item or len(item) < 4: continue
                     q_type = item[3]
@@ -243,7 +246,7 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                 generated_page_history = ",".join(str(i) for i in range(page_count + 1))
 
                 if parsed_questions:
-                    st.write("AI กำลังวิเคราะห์ข้อมูลและรูปภาพที่ค้นพบ...")
+                    st.write("AI กำลังวิเคราะห์ข้อมูล...")
                     contents_payload = []
                     
                     main_prompt = (
@@ -252,7 +255,7 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                         "1. คิดทบทวนคำตอบให้รอบคอบก่อนสรุป\n"
                         "2. ถ้ามีตัวเลือกให้ copy ข้อความตัวเลือกมาเป๊ะ ๆ ห้ามแต่งคำตอบขึ้นเอง\n"
                         "3. ถ้าข้อไหนมีป้าย [เลือกได้หลายข้อ] ให้ตอบ answer เป็น array\n"
-                        "4. หากโจทย์ระบุว่า 'จากรูป' ให้วิเคราะห์จากรูปภาพประกอบในแต่ละข้อ หรือรูปที่แนบมาด้านล่าง\n"
+                        "4. หากโจทย์ระบุว่า 'จากรูป' ให้ดูรูปที่แนบมาประกอบในข้อนั้นๆ ทันที\n"
                         "5. ตอบเป็น JSON รูปแบบ: {\"entry.123\": {\"answer\": \"...\", \"confidence\": 90, \"reasoning\": \"...\"}}\n"
                     )
                     contents_payload.append(types.Part.from_text(text=main_prompt))
@@ -266,7 +269,7 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                         
                         contents_payload.append(types.Part.from_text(text=q_info))
                         
-                        # โหลดและแนบรูปภาพที่เจาะมาได้ใต้โจทย์แต่ละข้อโดยตรง
+                        # พยายามโหลดรูปที่ไขรหัสมาได้
                         q_valid_images = []
                         if q.get("image_urls"):
                             for img_url in q["image_urls"]:
@@ -277,6 +280,7 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                                         if small_bytes:
                                             contents_payload.append(types.Part.from_bytes(data=small_bytes, mime_type=mime_type))
                                             q_valid_images.append(small_bytes)
+                                            break # ถ้ารูปไหนโหลดติดก่อน ให้หยุดโหลดรูปรองทันที ป้องกันซ้ำซ้อน
                                 except Exception:
                                     pass
                         q["valid_images"] = q_valid_images
@@ -379,11 +383,11 @@ if "parsed_questions" in st.session_state:
             )
             st.markdown(bar_html, unsafe_allow_html=True)
 
-            # ถ้าระบบแกะ Blob ID ไปดูดรูปลงมาได้สำเร็จ มันจะโชว์ตรงนี้!
+            # ถ้าระบบเจาะไข่แดง Blob ID สำเร็จ รูปภาพจะโชว์ตรงนี้!
             if valid_images:
                 for img_bytes in valid_images:
                     st.image(img_bytes, use_container_width=True)
-                    st.caption("🎯 ตามล่ารูปภาพจาก Blob ID สำเร็จ!")
+                    st.caption("🎯 ตามล่าและถอดรหัสรูปภาพสำเร็จ!")
 
             if is_multi and choices:
                 default_list = [str(v).strip().lower() for v in default_val] if isinstance(default_val, list) else [str(default_val).strip().lower()] if default_val else []
