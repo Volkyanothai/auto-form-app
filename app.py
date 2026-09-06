@@ -2,10 +2,12 @@ import json
 import re
 import time
 import random
+import io
 import html as html_lib
 
 import requests
 import streamlit as st
+from PIL import Image
 from google import genai
 from google.genai import types
 
@@ -78,6 +80,19 @@ def extract_image_url(item):
     return found_urls[0] if found_urls else None
 
 
+def compress_image(raw_bytes, max_dim=1024, quality=82):
+    """ย่อรูปให้เล็กลงก่อนส่งให้ AI — เร็วขึ้นจริง ไม่ใช่แค่รอทน"""
+    try:
+        img = Image.open(io.BytesIO(raw_bytes)).convert("RGB")
+        if max(img.size) > max_dim:
+            img.thumbnail((max_dim, max_dim), Image.LANCZOS)
+        buf = io.BytesIO()
+        img.save(buf, "JPEG", quality=quality, optimize=True)
+        return buf.getvalue(), "image/jpeg"
+    except Exception:
+        return raw_bytes, "image/jpeg"
+
+
 render_header()
 
 with st.container(border=True):
@@ -110,7 +125,7 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                 st.write("กำลังอ่านโครงสร้างฟอร์ม...")
                 client = genai.Client(
                     api_key=gemini_key,
-                    http_options=types.HttpOptions(timeout=15000),
+                    http_options=types.HttpOptions(timeout=30000),
                 )
                 res = requests.get(form_url, allow_redirects=True, headers=UA, timeout=20)
                 html = res.text
@@ -205,14 +220,18 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                             try:
                                 img_res = requests.get(q["image_url"], headers=UA, timeout=8)
                                 if img_res.status_code == 200:
-                                    mime_type = img_res.headers.get("Content-Type", "image/jpeg")
-                                    if "image" not in mime_type:
-                                        mime_type = "image/jpeg"
+                                    small_bytes, mime_type = compress_image(img_res.content)
                                     contents_payload.append(
-                                        types.Part.from_bytes(data=img_res.content, mime_type=mime_type)
+                                        types.Part.from_bytes(data=small_bytes, mime_type=mime_type)
                                     )
                             except Exception:
                                 pass
+
+                    gen_config = types.GenerateContentConfig(
+                        thinking_config=types.ThinkingConfig(thinking_budget=1024),
+                        temperature=0.1,
+                        max_output_tokens=3072,
+                    )
 
                     models_to_try = ["gemini-flash-latest", "gemini-3.6-flash"]
                     MAX_RETRIES_PER_MODEL = 3
@@ -222,7 +241,8 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                         for attempt in range(MAX_RETRIES_PER_MODEL):
                             try:
                                 response = client.models.generate_content(
-                                    model=model_name, contents=contents_payload
+                                    model=model_name, contents=contents_payload,
+                                    config=gen_config,
                                 )
                                 if response and response.text:
                                     break
@@ -231,10 +251,11 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                                 response = None
                                 err_text = str(err)
                                 is_overload = ("503" in err_text or "UNAVAILABLE" in err_text
-                                               or "429" in err_text or "RESOURCE_EXHAUSTED" in err_text)
+                                               or "429" in err_text or "RESOURCE_EXHAUSTED" in err_text
+                                               or "504" in err_text or "DEADLINE_EXCEEDED" in err_text)
                                 if is_overload and attempt < MAX_RETRIES_PER_MODEL - 1:
                                     wait_time = (2 ** attempt) * 2 + random.uniform(0, 1)
-                                    st.write("โมเดล " + model_name + " ไม่ว่าง กำลังลองใหม่ใน "
+                                    st.write("โมเดล " + model_name + " ช้า/ไม่ว่าง กำลังลองใหม่ใน "
                                              + str(round(wait_time, 1)) + " วิ... (ครั้งที่ "
                                              + str(attempt + 2) + "/" + str(MAX_RETRIES_PER_MODEL) + ")")
                                     time.sleep(wait_time)
