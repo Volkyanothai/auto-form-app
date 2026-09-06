@@ -61,50 +61,47 @@ def check_personal_info(q_title, choices, my_name, my_student_id, my_no, my_clas
     return None
 
 
-def get_all_form_images(html_text, questions_data):
+def extract_every_single_url_from_json(data_obj):
     """
-    ไม้ตายก้นหีบ: สแกนดึงรูปภาพแบบที่เบราว์เซอร์เห็น! (ไม่สนใจการเข้ารหัส JSON อีกต่อไป)
+    วิชาระเบิดเหมือง: เดินสแกนทีละตัวอักษรใน JSON Object 
+    ถ้าเจอข้อความไหนเป็นลิงก์ ดูดเก็บหมด!
     """
-    found_urls = []
+    found_urls = set()
     
-    # 1. งัดแท็ก <img> จากโค้ดหน้าเว็บโดยตรง (เพราะไฟล์แนบจากคอมฯ มักถูกแปลงเป็นแท็กนี้)
-    img_tags = re.findall(r'<img[^>]+src=["\'](.*?)["\']', html_text)
-    for src in img_tags:
-        src = html_lib.unescape(src)
-        if src.startswith('//'): src = 'https:' + src
-        if src.startswith('http'): found_urls.append(src)
-            
-    # 2. ล้วงข้อมูลแบบตรงๆ จาก JSON Dict (กันพลาดเผื่อบางรูปซ่อนอยู่)
     def walk(obj):
         if isinstance(obj, str):
             s = obj.strip()
-            if s.startswith('http://') or s.startswith('https://') or s.startswith('//'):
-                u = s if not s.startswith('//') else 'https:' + s
-                found_urls.append(u)
+            if s.startswith('http://') or s.startswith('https://'):
+                found_urls.add(s)
         elif isinstance(obj, list):
-            for x in obj: walk(x)
+            for item in obj: walk(item)
         elif isinstance(obj, dict):
-            for x in obj.values(): walk(x)
-    walk(questions_data)
+            for val in obj.values(): walk(val)
+            
+    # เดินตะลุยค้นหาข้อมูลทั้งหมด
+    walk(data_obj)
     
-    # 3. คัดกรองเอาเฉพาะรูปภาพจริงๆ ตัดพวกไอคอนระบบ Google ทิ้งให้เกลี้ยง
-    valid_images = []
-    bad_keywords = ['avatar', 'favicon', 'cleardot', 'gstatic.com', '/images/branding/', 'youtube.com', 'schema.org']
-    
+    valid_urls = set()
+    # รายชื่อขยะระบบที่จะต้องตัดทิ้ง เพื่อไม่ให้ AI งง
+    bad_words = ['/a/', 'avatar', 'cleardot', 'favicon', 'gstatic.com', 
+                 'youtube.com', 'youtu.be', 'schema.org', 'w3.org', 
+                 'fonts.googleapis.com', '/images/branding/', 'google.com/jsapi', 
+                 'docs.google.com', '/forms/', 'googlegroups.com']
+                 
     for u in found_urls:
         ul = u.lower()
-        if any(bad in ul for bad in bad_keywords):
-            continue
-        if 'googleusercontent.com' in ul or 'ggpht.com' in ul or 'drive.google.com' in ul:
-            # ตัด parameter ขนาดรูปภาพออก เพื่อไม่ให้ดึงรูปเดียวกันมาซ้ำซ้อน
-            base_url = u.split('=')[0] if ('=' in u and ('googleusercontent' in ul or 'ggpht' in ul)) else u
-            if not any(base_url in v for v in valid_images):
-                valid_images.append(u)
-                
-    return valid_images
+        if not any(bad in ul for bad in bad_words):
+            # ตัด parameter ขนาดรูปทิ้ง เพื่อให้ได้รูปต้นฉบับ
+            base_url = u.split('=')[0] if 'googleusercontent' in ul or 'ggpht' in ul else u
+            valid_urls.add(base_url)
+            
+    return list(valid_urls)
 
 
-def compress_image(raw_bytes, max_dim=1024, quality=82):
+def compress_and_verify_image(raw_bytes, max_dim=1024, quality=82):
+    """
+    ตัวกรองขั้นเด็ดขาด: ลองเปิดไฟล์ดู ถ้าไม่ใช่รูปภาพ จะถูกเตะทิ้งทันที
+    """
     try:
         img = Image.open(io.BytesIO(raw_bytes)).convert("RGB")
         if max(img.size) > max_dim:
@@ -187,7 +184,7 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                 fbzx_match = re.search(r'name="fbzx" value="([^"]*)"', html)
                 if fbzx_match: fbzx = fbzx_match.group(1)
 
-                st.write("กำลังสแกนคำถาม...")
+                st.write("กำลังสกัดคำถามทั้งหมด...")
                 for item in questions_data:
                     if not item or len(item) < 4: continue
                     q_type = item[3]
@@ -196,6 +193,7 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                         page_count += 1
                         continue
                         
+                    # ข้ามกล่องรูปภาพ Type 11 ไปก่อน เพราะเราจะกวาดทีเดียว
                     if q_type == 11 or len(item) < 5 or not item[4]:
                         continue
 
@@ -218,18 +216,19 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                         "is_multi": q_type == CHECKBOX_TYPE,
                     })
 
-                # เรียกใช้งานไม้ตายก้นหีบ กวาดรูปทุกใบในหน้าข้อสอบ!
-                st.write("กำลังกวาดรูปภาพที่แนบไฟล์มาทั้งหมด...")
-                global_image_urls = get_all_form_images(html, questions_data)
+                # --- THE ULTIMATE IMAGE EXTRACTOR ---
+                st.write("กำลังระเบิดเหมือง JSON ค้นหารูปภาพที่ซ่อนอยู่...")
+                all_urls = extract_every_single_url_from_json(questions_data)
                 
                 downloaded_images = []
-                for url in global_image_urls:
+                for url in all_urls:
                     try:
                         img_res = requests.get(url, headers=UA, timeout=10)
                         if img_res.status_code == 200:
-                            small_bytes, mime = compress_image(img_res.content)
-                            if small_bytes:
-                                downloaded_images.append((url, small_bytes, mime))
+                            # ถ้าเปิดไฟล์ได้แปลว่าเป็นรูปภาพของแท้!
+                            valid_bytes, mime = compress_and_verify_image(img_res.content)
+                            if valid_bytes:
+                                downloaded_images.append(valid_bytes)
                     except Exception:
                         pass
 
@@ -243,16 +242,15 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                         "1. คิดทบทวนคำตอบให้รอบคอบก่อนสรุป\n"
                         "2. ถ้ามีตัวเลือกให้ copy ข้อความตัวเลือกมาเป๊ะ ๆ ห้ามแต่งคำตอบขึ้นเอง\n"
                         "3. ถ้าข้อไหนมีป้าย [เลือกได้หลายข้อ] ให้ตอบ answer เป็น array\n"
-                        "4. หากโจทย์อ้างอิงถึงรูปภาพ ให้ดูจากชุดรูปภาพที่แนบมาด้านล่างนี้ และวิเคราะห์ว่ารูปไหนตรงกับข้อไหน\n"
+                        "4. สำคัญมาก: ฉันได้แนบรูปภาพ 'ทั้งหมด' ที่พบในหน้าข้อสอบมาให้ด้านล่าง หากโจทย์ข้อไหนระบุว่า 'จากรูป' ให้คุณวิเคราะห์จากชุดรูปภาพที่แนบมาได้เลย\n"
                         "5. ตอบเป็น JSON รูปแบบ: {\"entry.123\": {\"answer\": \"...\", \"confidence\": 90, \"reasoning\": \"...\"}}\n\n"
                     ]
                     
-                    # หอบรูปทั้งหมดส่งให้ AI ดูก่อน
                     if downloaded_images:
-                        contents_payload.append("--- 📸 รูปภาพประกอบทั้งหมดที่พบในข้อสอบ ---")
-                        for idx, (u, b, m) in enumerate(downloaded_images):
-                            contents_payload.append(f"ภาพที่ {idx+1}:")
-                            contents_payload.append(types.Part.from_bytes(data=b, mime_type=m))
+                        contents_payload.append("--- 📸 แกลเลอรีรูปภาพประกอบข้อสอบ ---")
+                        for idx, img_bytes in enumerate(downloaded_images):
+                            contents_payload.append(f"ภาพหมายเลข {idx+1}:")
+                            contents_payload.append(types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg"))
                         contents_payload.append("----------------------------------\n")
 
                     contents_payload.append("Questions:")
@@ -318,14 +316,14 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
 if "parsed_questions" in st.session_state:
     st.markdown('<div class="section-title">REVIEW & SUBMIT</div>', unsafe_allow_html=True)
     final_payload = {}
-    
-    # โชว์รูปภาพที่ดูดมาได้ให้คุณเห็นกับตาตรงนี้เลย!
+
+    # โชว์รูปภาพทั้งหมดที่หาเจอในหน้าข้อสอบ!
     if st.session_state.get("downloaded_images"):
         with st.container(border=True):
-            st.markdown('<div class="glass-header">📸 ภาพที่ระบบค้นพบ (ส่งให้ AI ดูเรียบร้อย)</div>', unsafe_allow_html=True)
+            st.markdown('<div class="glass-header">📸 รูปภาพทั้งหมดที่สกัดได้จากข้อสอบ</div>', unsafe_allow_html=True)
             cols = st.columns(min(len(st.session_state["downloaded_images"]), 4))
-            for idx, (url, b, m) in enumerate(st.session_state["downloaded_images"]):
-                cols[idx % 4].image(b, use_container_width=True, caption=f"ภาพที่ {idx+1}")
+            for idx, img_bytes in enumerate(st.session_state["downloaded_images"]):
+                cols[idx % 4].image(img_bytes, use_container_width=True, caption=f"รูปที่ {idx+1}")
 
     if st.session_state["personal_data_map"]:
         with st.container(border=True):
