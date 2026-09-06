@@ -108,7 +108,10 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
         with st.status("SYSTEM PROCESSING...", expanded=True) as status:
             try:
                 st.write("กำลังอ่านโครงสร้างฟอร์ม...")
-                client = genai.Client(api_key=gemini_key)
+                client = genai.Client(
+                    api_key=gemini_key,
+                    http_options=types.HttpOptions(timeout=15000),
+                )
                 res = requests.get(form_url, allow_redirects=True, headers=UA, timeout=20)
                 html = res.text
 
