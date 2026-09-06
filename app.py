@@ -63,50 +63,39 @@ def check_personal_info(q_title, choices, my_name, my_student_id, my_no, my_clas
     return None
 
 
-def extract_image_url(item):
-    """เจาะลึกโครงสร้าง Array/Dict เพื่อหาลิงก์รูปภาพโดยไม่สนใจโดเมนและหลบหลีกอักขระพิเศษ"""
-    found_urls = []
-    
-    def find_urls(obj):
-        if isinstance(obj, str):
-            val = obj.strip()
-            
-            # 1. ดักจับกรณีที่ Google ซ่อน URL ไว้เป็นส่วนหนึ่งของข้อความ (ใช้ Regex ดึงออกมา)
-            # มองหาโดเมนที่มักใช้เก็บรูปภาพของ Google
-            matches = re.findall(r'(https?://[^"\s\\]*(?:googleusercontent\.com|ggpht\.com|drive\.google\.com)[^"\s\\]*)', val)
-            if matches:
-                for m in matches:
-                    if "viewform" not in m and "formResponse" not in m:
-                        found_urls.append(m)
-            
-            # 2. กรณีที่ String นั้นเป็น URL แบบเพียวๆ
-            elif val.startswith("http://") or val.startswith("https://") or val.startswith("//"):
-                if not any(skip in val for skip in ["/viewform", "/formResponse", "forms.gle"]):
-                    clean_url = "https:" + val if val.startswith("//") else val
-                    found_urls.append(clean_url)
-
-        elif isinstance(obj, list):
-            for sub in obj:
-                find_urls(sub)
-        elif isinstance(obj, dict):
-            for v in obj.values():
-                find_urls(v)
-
-    find_urls(item)
-    
-    if found_urls:
-        # จัดลำดับความสำคัญ: เลือกลิงก์ที่มาจาก Content Server ของ Google เป็นอันดับแรก
-        for u in found_urls:
-            if "googleusercontent.com" in u or "ggpht.com" in u:
-                return u
-        # ถ้าไม่มี ให้คืนค่าลิงก์แรกสุดที่หาเจอ
-        return found_urls[0]
+def extract_image_url(obj_data):
+    """สแกนกวาด URL รูปภาพทั้งหมดจากข้อมูล JSON แบบ 100% ไม่พลาดแน่นอน"""
+    try:
+        data_str = json.dumps(obj_data, ensure_ascii=False)
         
-    return None
+        # หา URL ทั้งหมดที่ซ่อนอยู่ (รองรับ http, https)
+        urls = re.findall(r'https?://[^\s"\'\[\]<>]+', data_str)
+        
+        # เพิ่มการดักจับแบบไม่มี http (ขึ้นต้นด้วย //)
+        urls_no_http = re.findall(r'(?<!https:)(?<!http:)//[^\s"\'\[\]<>]+', data_str)
+        for u in urls_no_http:
+            urls.append("https:" + u)
+        
+        valid_urls = []
+        for u in urls:
+            u = u.replace('\\/', '/')
+            # คัดกรองลิงก์ที่ไม่ใช่รูปภาพออก
+            if any(skip in u for skip in ["viewform", "formResponse", "forms.gle", "w3.org", "gstatic.com"]):
+                continue
+            valid_urls.append(u)
+        
+        # ให้ความสำคัญกับโดเมนรูปภาพของ Google ก่อน
+        for u in valid_urls:
+            if any(domain in u for domain in ["googleusercontent.com", "ggpht.com", "drive.google.com"]):
+                return u
+                
+        # ถ้าไม่มีโดเมนคุ้นเคย ให้ใช้ URL แรกที่พบ
+        return valid_urls[0] if valid_urls else None
+    except Exception:
+        return None
 
 
 def compress_image(raw_bytes, max_dim=1024, quality=82):
-    """ย่อรูปให้เล็กลงก่อนส่งให้ AI — เร็วขึ้นจริง ไม่ใช่แค่รอทน"""
     try:
         img = Image.open(io.BytesIO(raw_bytes)).convert("RGB")
         if max(img.size) > max_dim:
@@ -119,7 +108,6 @@ def compress_image(raw_bytes, max_dim=1024, quality=82):
 
 
 def match_choice(ai_answer, choices):
-    """จับคู่คำตอบ AI กับตัวเลือกจริงให้แม่นที่สุด คืนค่า (index, จับคู่ได้มั่นใจไหม)"""
     ai_answer = str(ai_answer).strip()
     clean_choices = [str(c).strip() for c in choices]
     if not ai_answer or not clean_choices:
@@ -128,11 +116,9 @@ def match_choice(ai_answer, choices):
     for i, c in enumerate(clean_choices):
         if c == ai_answer:
             return i, True
-
     for i, c in enumerate(clean_choices):
         if c and (c in ai_answer or ai_answer in c):
             return i, True
-
     for i, c in enumerate(clean_choices):
         if c.lower() == ai_answer.lower():
             return i, True
@@ -148,8 +134,7 @@ render_header()
 
 with st.container(border=True):
     st.markdown('<div class="glass-header">TARGET FORM LINK</div>', unsafe_allow_html=True)
-    form_url = st.text_input("Form URL", placeholder="วางลิงก์ Google Form ที่นี่...",
-                             label_visibility="collapsed")
+    form_url = st.text_input("Form URL", placeholder="วางลิงก์ Google Form ที่นี่...", label_visibility="collapsed")
 
 st.write("")
 
@@ -174,10 +159,7 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
         with st.status("SYSTEM PROCESSING...", expanded=True) as status:
             try:
                 st.write("กำลังอ่านโครงสร้างฟอร์ม...")
-                client = genai.Client(
-                    api_key=gemini_key,
-                    http_options=types.HttpOptions(timeout=30000),
-                )
+                client = genai.Client(api_key=gemini_key, http_options=types.HttpOptions(timeout=30000))
                 res = requests.get(form_url, allow_redirects=True, headers=UA, timeout=20)
                 html = res.text
 
@@ -200,6 +182,9 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                 parsed_questions = []
                 personal_data_map = {}
                 page_count = 0
+                
+                # --- พระเอกของงานนี้: ตัวแปรจำรูปภาพกล่องแยกที่อยู่ก่อนหน้า ---
+                last_seen_standalone_image = None
 
                 fbzx = ""
                 fbzx_match = re.search(r'name="fbzx" value="([^"]*)"', html)
@@ -210,9 +195,17 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                 for item in questions_data:
                     if not item or len(item) < 4:
                         continue
+                        
+                    # 1. สแกนหารูปภาพในกล่องนี้ก่อน เผื่อเป็น "กล่องรูปภาพลอยๆ"
+                    found_img = extract_image_url(item)
+                    if found_img:
+                        last_seen_standalone_image = found_img
+                        
                     if item[3] == 8:
                         page_count += 1
                         continue
+                        
+                    # ถ้าไม่ใช่คำถาม (เช่น กล่องคำอธิบาย หรือ กล่องรูปภาพลอย) ให้ข้ามไป
                     if len(item) < 5 or not item[4]:
                         continue
 
@@ -226,12 +219,21 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                     if p_info:
                         personal_data_map[entry_id] = p_info
                         continue
+                    
+                    # 2. ผูกรูปเข้ากับคำถาม ถ้าคำถามไม่มีรูป ให้ดึงรูปลอยก่อนหน้ามาใช้
+                    q_img = extract_image_url(item)
+                    if not q_img and last_seen_standalone_image:
+                        q_img = last_seen_standalone_image
+                        
+                    # ล้างความจำรูปภาพลอยทิ้ง เพื่อไม่ให้เอาไปตอบข้ออื่นซ้ำ
+                    if q_img:
+                        last_seen_standalone_image = None
 
                     parsed_questions.append({
                         "entry_id": entry_id,
                         "title": q_title,
                         "choices": choices,
-                        "image_url": extract_image_url(item),
+                        "image_url": q_img,
                         "is_multi": q_type == CHECKBOX_TYPE,
                     })
 
@@ -239,20 +241,17 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
 
                 if parsed_questions:
                     st.write("AI กำลังคิดคำตอบ...")
-                    
-                    # 1. ใส่คำสั่งหลัก (Instructions) เป็นชิ้นแรกสุด
                     contents_payload = [
                         "Context: " + (exam_context if exam_context else "None") + "\n"
                         "Instructions:\n"
                         "1. คิดทบทวนคำตอบให้รอบคอบก่อนสรุป โดยเฉพาะข้อที่ต้องคำนวณ\n"
-                        "2. ถ้ามีตัวเลือกให้ ต้อง copy ข้อความตัวเลือกมาเป๊ะ ๆ ตัวต่อตัว ห้ามแต่งคำตอบขึ้นเอง หรือสรุปย่อเอง\n"
-                        "3. ถ้าข้อไหนมีป้าย [เลือกได้หลายข้อ] ให้ตอบ answer เป็น array ของตัวเลือกที่ถูกทั้งหมด เช่น [\"ตัวเลือก A\",\"ตัวเลือก C\"] ถ้าไม่มีป้ายนี้ให้ตอบ answer เป็น string เดียว\n"
-                        "4. ถ้าไม่มั่นใจในคำตอบจริง ๆ ให้ตั้ง confidence ต่ำ (ต่ำกว่า 60) ตามความเป็นจริง ห้ามให้ confidence สูงเกินจริง\n"
-                        "5. ตอบเป็น JSON เท่านั้น: {\"entry.123\": {\"answer\": \"...\" (หรือ array ถ้าเลือกได้หลายข้อ), \"confidence\": 90, \"reasoning\": \"...\"}}\n\n"
+                        "2. ถ้ามีตัวเลือกให้ ต้อง copy ข้อความตัวเลือกมาเป๊ะ ๆ ตัวต่อตัว ห้ามแต่งคำตอบขึ้นเอง\n"
+                        "3. ถ้าข้อไหนมีป้าย [เลือกได้หลายข้อ] ให้ตอบ answer เป็น array\n"
+                        "4. ถ้าไม่มั่นใจให้ตั้ง confidence ต่ำ\n"
+                        "5. ตอบเป็น JSON เท่านั้น: {\"entry.123\": {\"answer\": \"...\", \"confidence\": 90, \"reasoning\": \"...\"}}\n\n"
                         "Questions:"
                     ]
 
-                    # 2. วนลูปเพื่อประกอบ Text คำถาม และตามด้วย Object รูปภาพของข้อนั้นทันทีแบบ Interleaved
                     for idx, q in enumerate(parsed_questions, 1):
                         q_info = "\nข้อ " + str(idx) + " (ID: " + q["entry_id"] + ")"
                         if q.get("is_multi"):
@@ -268,9 +267,7 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                                 img_res = requests.get(q["image_url"], headers=UA, timeout=8)
                                 if img_res.status_code == 200:
                                     small_bytes, mime_type = compress_image(img_res.content)
-                                    contents_payload.append(
-                                        types.Part.from_bytes(data=small_bytes, mime_type=mime_type)
-                                    )
+                                    contents_payload.append(types.Part.from_bytes(data=small_bytes, mime_type=mime_type))
                             except Exception:
                                 pass
 
@@ -287,24 +284,17 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                     for model_name in models_to_try:
                         for attempt in range(MAX_RETRIES_PER_MODEL):
                             try:
-                                response = client.models.generate_content(
-                                    model=model_name, contents=contents_payload,
-                                    config=gen_config,
-                                )
+                                response = client.models.generate_content(model=model_name, contents=contents_payload, config=gen_config)
                                 if response and response.text:
                                     break
                             except Exception as err:
                                 last_err = err
                                 response = None
                                 err_text = str(err)
-                                is_overload = ("503" in err_text or "UNAVAILABLE" in err_text
-                                               or "429" in err_text or "RESOURCE_EXHAUSTED" in err_text
-                                               or "504" in err_text or "DEADLINE_EXCEEDED" in err_text)
+                                is_overload = ("503" in err_text or "UNAVAILABLE" in err_text or "429" in err_text or "RESOURCE_EXHAUSTED" in err_text or "504" in err_text)
                                 if is_overload and attempt < MAX_RETRIES_PER_MODEL - 1:
                                     wait_time = (2 ** attempt) * 2 + random.uniform(0, 1)
-                                    st.write("โมเดล " + model_name + " ช้า/ไม่ว่าง กำลังลองใหม่ใน "
-                                             + str(round(wait_time, 1)) + " วิ... (ครั้งที่ "
-                                             + str(attempt + 2) + "/" + str(MAX_RETRIES_PER_MODEL) + ")")
+                                    st.write("โมเดลช้ากำลังลองใหม่ใน " + str(round(wait_time, 1)) + " วิ...")
                                     time.sleep(wait_time)
                                     continue
                                 else:
@@ -337,10 +327,8 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                 status.update(label="ERROR", state="error")
                 st.error("รายละเอียด: " + str(e))
 
-
 if "parsed_questions" in st.session_state:
     st.markdown('<div class="section-title">REVIEW & SUBMIT</div>', unsafe_allow_html=True)
-
     final_payload = {}
 
     if st.session_state["personal_data_map"]:
@@ -370,30 +358,19 @@ if "parsed_questions" in st.session_state:
             score = 80
             reason = "ประมวลผลอัตโนมัติ"
 
-        try:
-            score = int(score)
-        except Exception:
-            score = 70
+        try: score = int(score)
+        except Exception: score = 70
 
-        if score >= 85:
-            color = "#5fe3d0"
-        elif score >= 60:
-            color = "#e8c98a"
-        else:
-            color = "#ff7a8a"
+        color = "#5fe3d0" if score >= 85 else "#e8c98a" if score >= 60 else "#ff7a8a"
 
         with st.container(border=True):
-            st.markdown('<div class="q-title">' + str(idx) + '. ' + title + '</div>',
-                        unsafe_allow_html=True)
+            st.markdown('<div class="q-title">' + str(idx) + '. ' + title + '</div>', unsafe_allow_html=True)
 
             bar_html = (
                 '<div class="confidence-track">'
-                '<div class="confidence-fill" style="width:' + str(score) + '%;'
-                'background:' + color + ';box-shadow:0 0 12px ' + color + ';"></div></div>'
-                '<div style="font-size:.72rem;font-weight:700;color:' + color + ';'
-                'letter-spacing:1px;margin-bottom:10px;">CONFIDENCE ' + str(score) + '%</div>'
-                '<div class="reasoning-text"><b>AI REASON:</b> '
-                + html_lib.escape(str(reason)) + '</div>'
+                '<div class="confidence-fill" style="width:' + str(score) + '%;background:' + color + ';box-shadow:0 0 12px ' + color + ';"></div></div>'
+                '<div style="font-size:.72rem;font-weight:700;color:' + color + ';letter-spacing:1px;margin-bottom:10px;">CONFIDENCE ' + str(score) + '%</div>'
+                '<div class="reasoning-text"><b>AI REASON:</b> ' + html_lib.escape(str(reason)) + '</div>'
             )
             st.markdown(bar_html, unsafe_allow_html=True)
 
@@ -401,43 +378,25 @@ if "parsed_questions" in st.session_state:
                 st.image(img_url, use_container_width=True)
 
             if is_multi and choices:
-                if isinstance(default_val, list):
-                    default_list = [str(v).strip().lower() for v in default_val]
-                elif default_val:
-                    default_list = [str(default_val).strip().lower()]
-                else:
-                    default_list = []
+                default_list = [str(v).strip().lower() for v in default_val] if isinstance(default_val, list) else [str(default_val).strip().lower()] if default_val else []
                 default_selected = [c for c in choices if str(c).strip().lower() in default_list]
-                final_payload[entry_id] = st.multiselect(
-                    "ANSWER", options=choices, default=default_selected,
-                    key="ans_" + entry_id, label_visibility="collapsed"
-                )
+                final_payload[entry_id] = st.multiselect("ANSWER", options=choices, default=default_selected, key="ans_" + entry_id, label_visibility="collapsed")
             elif choices:
                 default_idx, matched_ok = match_choice(default_val, choices)
-                if not matched_ok:
-                    st.warning("⚠️ คำตอบ AI ไม่ตรงกับตัวเลือกเป๊ะ ๆ กรุณาตรวจสอบข้อนี้เอง")
-                final_payload[entry_id] = st.selectbox(
-                    "ANSWER", options=choices, index=default_idx,
-                    key="ans_" + entry_id, label_visibility="collapsed"
-                )
+                if not matched_ok: st.warning("⚠️ คำตอบ AI ไม่ตรงกับตัวเลือกเป๊ะ ๆ กรุณาตรวจสอบข้อนี้เอง")
+                final_payload[entry_id] = st.selectbox("ANSWER", options=choices, index=default_idx, key="ans_" + entry_id, label_visibility="collapsed")
             else:
-                final_payload[entry_id] = st.text_input(
-                    "ANSWER", value=str(default_val),
-                    key="ans_" + entry_id, label_visibility="collapsed"
-                )
+                final_payload[entry_id] = st.text_input("ANSWER", value=str(default_val), key="ans_" + entry_id, label_visibility="collapsed")
 
     st.write("")
-
     final_payload["pageHistory"] = st.session_state.get("pageHistory", "0")
-    if st.session_state.get("fbzx"):
-        final_payload["fbzx"] = st.session_state["fbzx"]
+    if st.session_state.get("fbzx"): final_payload["fbzx"] = st.session_state["fbzx"]
     final_payload["fvv"] = "1"
 
     if st.button("TRANSMIT DATA", type="primary", use_container_width=True):
         with st.spinner("กำลังส่งข้อมูล..."):
             try:
-                res_submit = requests.post(st.session_state["submit_url"],
-                                           data=final_payload, headers=UA, timeout=25)
+                res_submit = requests.post(st.session_state["submit_url"], data=final_payload, headers=UA, timeout=25)
             except Exception as e:
                 st.error("ส่งไม่สำเร็จ: " + str(e))
                 st.stop()
@@ -445,31 +404,16 @@ if "parsed_questions" in st.session_state:
         if res_submit.status_code == 200:
             st.balloons()
             st.success("ส่งข้อมูลสำเร็จ")
-
             link_match = re.search(r'href="([^"]*?viewscore\?[^"]*)"', res_submit.text)
             if link_match:
                 score_url = html_lib.unescape(link_match.group(1))
                 try:
                     score_page = requests.get(score_url, headers=UA, timeout=8).text
-                    score_match = re.search(
-                        r'<span[^>]*>\s*([0-9]+)\s*</span>\s*<span[^>]*>\s*(?:/|&#47;|จาก)\s*([0-9]+)\s*</span>',
-                        score_page)
-                    if not score_match:
-                        score_match = re.search(
-                            r'([0-9]+)\s*(?:/|&#47;|จาก)\s*([0-9]+)\s*(?:คะแนน|points)', score_page)
-                    if score_match:
-                        st.markdown(
-                            '<div class="score-box"><div class="score-val">'
-                            + score_match.group(1) + ' / ' + score_match.group(2)
-                            + '</div><div class="score-lb">Score Secured</div></div>',
-                            unsafe_allow_html=True)
-                except Exception:
-                    pass
-
-                st.markdown(
-                    '<a href="' + score_url + '" target="_blank" class="score-link">'
-                    'เปิดหน้ายืนยันคะแนน</a>',
-                    unsafe_allow_html=True)
+                    score_match = re.search(r'<span[^>]*>\s*([0-9]+)\s*</span>\s*<span[^>]*>\s*(?:/|&#47;|จาก)\s*([0-9]+)\s*</span>', score_page)
+                    if not score_match: score_match = re.search(r'([0-9]+)\s*(?:/|&#47;|จาก)\s*([0-9]+)\s*(?:คะแนน|points)', score_page)
+                    if score_match: st.markdown('<div class="score-box"><div class="score-val">' + score_match.group(1) + ' / ' + score_match.group(2) + '</div><div class="score-lb">Score Secured</div></div>', unsafe_allow_html=True)
+                except Exception: pass
+                st.markdown('<a href="' + score_url + '" target="_blank" class="score-link">เปิดหน้ายืนยันคะแนน</a>', unsafe_allow_html=True)
             else:
                 st.warning("ส่งสำเร็จแล้ว แต่ฟอร์มนี้ไม่ปล่อยคะแนนอัตโนมัติ")
         else:
