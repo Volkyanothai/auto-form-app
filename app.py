@@ -61,40 +61,41 @@ def check_personal_info(q_title, choices, my_name, my_student_id, my_no, my_clas
     return None
 
 
-def extract_image_url_from_item(item):
+def extract_image_near_id(html_text, q_id):
     """
-    เอกซเรย์โครงสร้างข้อมูลเฉพาะข้อ เพื่อหา URL รูประยะประชิด!
-    ปลดล็อคข้อจำกัดเรื่องโดเมนทั้งหมด รองรับทั้ง lh3.google, drive.google ฯลฯ
+    วิชาสไนเปอร์: หาพิกัด ID ของข้อนี้ใน HTML แล้วดูดลิงก์รูปรอบๆ มันออกมาดื้อๆ เลย
+    ทะลุการเข้ารหัสและข้อจำกัด JSON ทุกรูปแบบ!
     """
-    found_urls = []
+    # คลีนโค้ดหลังบ้านให้เป็นข้อความปกติก่อน
+    clean_html = html_text.replace('\\/', '/').replace('\\u003d', '=').replace('\\u0026', '&')
     
-    def walk(obj):
-        if isinstance(obj, str):
-            s = obj.strip()
-            # ขอแค่เป็นข้อความที่ขึ้นต้นด้วย http ถือว่าเป็นลิงก์หมด
-            if s.startswith('http://') or s.startswith('https://') or s.startswith('//'):
-                u = s if not s.startswith('//') else 'https:' + s
-                ul = u.lower()
-                # กรองแค่ลิงก์ขยะและไอคอนระบบทิ้งไป
-                bad_words = [
-                    '/a/', 'avatar', 'cleardot', 'favicon', 'w3.org', 
-                    'youtube.com', 'youtu.be', 'gstatic.com', 
-                    '/forms/', '/docs/', 'schema.org', 'google.com/jsapi',
-                    'fonts.googleapis.com', '/images/branding/'
-                ]
-                if not any(bad in ul for bad in bad_words):
-                    if u not in found_urls:
-                        found_urls.append(u)
-        elif isinstance(obj, list):
-            for x in obj: walk(x)
-        elif isinstance(obj, dict):
-            for x in obj.values(): walk(x)
+    # เล็งพิกัด ID ของข้อสอบ
+    target_str = f'[{q_id},'
+    idx = clean_html.find(target_str)
+    
+    if idx == -1:
+        # เผื่อหาไม่เจอ ลองหาแบบตัวเลขเพียวๆ
+        idx = clean_html.find(str(q_id))
+        if idx == -1: return None
+        
+    # สโคปพื้นที่รอบๆ ID ข้อนี้ (4,000 ตัวอักษร เพียงพอคลุมทั้งข้อ)
+    chunk = clean_html[idx:idx+4000]
+    
+    # คว้าทุก URL ที่โผล่มาในโซนนี้
+    urls = re.findall(r'(https?://[^\s"\'\\]+)', chunk)
+    
+    for u in urls:
+        ul = u.lower()
+        # เช็คว่าเป็นโดเมนรูปภาพหรือไฟล์ของ Google (ครอบคลุมหมดทั้งรูปปกติและรูปจาก Drive)
+        is_google_host = any(h in ul for h in ['googleusercontent.com', 'ggpht.com', 'drive.google.com/file', 'drive.google.com/open'])
+        
+        # ตัดพวกลิงก์ขยะและไอคอนระบบทิ้ง
+        is_junk = any(bad in ul for bad in ['avatar', 'cleardot', 'favicon', 'gstatic.com', 'docs.google.com', 'schema.org'])
+        
+        if is_google_host and not is_junk:
+            return u  # คืนค่ารูปแรกสุดที่หาเจอในโซนข้อสอบนี้ทันที!
             
-    # เริ่มสแกนเข้าไปในข้อมูลของข้อสอบข้อนี้
-    walk(item)
-    
-    # ส่งลิงก์แรกที่หาเจอคืนกลับไป
-    return found_urls[0] if found_urls else None
+    return None
 
 
 def compress_image(raw_bytes, max_dim=1024, quality=82):
@@ -181,23 +182,29 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                 fbzx_match = re.search(r'name="fbzx" value="([^"]*)"', html)
                 if fbzx_match: fbzx = fbzx_match.group(1)
 
-                st.write("กำลังสแกนคำถามและรูปภาพ...")
+                st.write("กำลังใช้สไนเปอร์เจาะหารูปภาพทีละข้อ...")
                 for item in questions_data:
                     if not item or len(item) < 4: continue
+                    
+                    q_id = item[0]
                     q_type = item[3]
                     
                     if q_type == 8: 
                         page_count += 1
                         continue
                         
-                    # ดักจับกล่องรูปภาพแบบลอยเดี่ยวๆ
+                    # ดักจับกล่องรูปลอย (Standalone Image)
                     if q_type == 11 or len(item) < 5 or not item[4]:
-                        found_img = extract_image_url_from_item(item)
+                        found_img = extract_image_near_id(html, q_id)
                         if found_img: last_standalone_img = found_img
                         continue
 
                     q_title = item[1]
-                    entry_id = "entry." + str(item[4][0][0])
+                    
+                    # เลี่ยงข้อผิดพลาดหากโจทย์ไม่มี ID ของฟอร์มตอบกลับ
+                    try: entry_id = "entry." + str(item[4][0][0])
+                    except: continue
+                    
                     choices_raw = item[4][0][1] if len(item[4][0]) > 1 else None
                     choices = [c[0] for c in choices_raw if c and len(c) > 0] if choices_raw else []
 
@@ -206,8 +213,10 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                         personal_data_map[entry_id] = p_info
                         continue
                         
-                    # ค้นหารูปภาพที่ผูกติดมากับโจทย์ข้อนี้
-                    q_img = extract_image_url_from_item(item)
+                    # เรียกสไนเปอร์ส่องหารูปที่ติดมากับข้อนี้
+                    q_img = extract_image_near_id(html, q_id)
+                    
+                    # ถ้าข้อนี้ไม่มีรูป แต่มีรูปแทรกอยู่ก่อนหน้า ก็ให้ดึงมาใช้
                     if not q_img and last_standalone_img:
                         q_img = last_standalone_img
                         
@@ -225,14 +234,14 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                 generated_page_history = ",".join(str(i) for i in range(page_count + 1))
 
                 if parsed_questions:
-                    st.write("AI กำลังวิเคราะห์โจทย์...")
+                    st.write("AI กำลังวิเคราะห์โจทย์และรูปภาพ...")
                     contents_payload = [
                         "Context: " + (exam_context if exam_context else "None") + "\n"
                         "Instructions:\n"
                         "1. คิดทบทวนคำตอบให้รอบคอบก่อนสรุป\n"
                         "2. ถ้ามีตัวเลือกให้ copy ข้อความตัวเลือกมาเป๊ะ ๆ ห้ามแต่งคำตอบขึ้นเอง\n"
                         "3. ถ้าข้อไหนมีป้าย [เลือกได้หลายข้อ] ให้ตอบ answer เป็น array\n"
-                        "4. หากโจทย์ระบุว่า 'จากรูป' แต่มี [SYSTEM NOTE] กำกับว่าค้นหารูปไม่พบ ห้ามเดาคำตอบเด็ดขาด ให้ตอบว่า 'ไม่พบรูปภาพ' และบังคับตั้ง confidence เป็น 0\n"
+                        "4. หากโจทย์ระบุว่า 'จากรูป' แต่มี [SYSTEM NOTE] กำกับว่าค้นหารูปไม่พบ ให้ตอบว่า 'ไม่พบรูปภาพ' และตั้ง confidence เป็น 0\n"
                         "5. ตอบเป็น JSON รูปแบบ: {\"entry.123\": {\"answer\": \"...\", \"confidence\": 90, \"reasoning\": \"...\"}}\n\n"
                         "Questions:"
                     ]
@@ -260,7 +269,7 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                                 contents_payload.append("\n[SYSTEM NOTE: เกิดปัญหาเชื่อมต่อโหลดรูป]\n")
                         else:
                             if "รูป" in str(q["title"]) or "ภาพ" in str(q["title"]):
-                                contents_payload.append("\n[SYSTEM NOTE: ตรวจไม่พบรูปในระบบฐานข้อมูลสำหรับข้อนี้]\n")
+                                contents_payload.append("\n[SYSTEM NOTE: ตรวจไม่พบรูประหว่างการสแกนโค้ดสำหรับข้อนี้]\n")
 
                     gen_config = types.GenerateContentConfig(
                         thinking_config=types.ThinkingConfig(thinking_budget=2048),
@@ -360,10 +369,10 @@ if "parsed_questions" in st.session_state:
             )
             st.markdown(bar_html, unsafe_allow_html=True)
 
-            # โชว์รูปภาพโจทย์ทันทีถ้าระบบดึงมาได้
+            # โชว์รูปภาพในแอปเลย ถ้าดึงมาได้สำเร็จ
             if img_url:
                 st.image(img_url, use_container_width=True)
-                st.caption("✅ ระบบดึงรูปภาพประจำข้อสำเร็จ")
+                st.caption("✅ เล็งเป้าและดึงรูปภาพประจำข้อสำเร็จ!")
 
             if is_multi and choices:
                 default_list = [str(v).strip().lower() for v in default_val] if isinstance(default_val, list) else [str(default_val).strip().lower()] if default_val else []
