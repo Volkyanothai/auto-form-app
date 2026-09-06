@@ -64,33 +64,32 @@ def check_personal_info(q_title, choices, my_name, my_student_id, my_no, my_clas
 
 
 def extract_image_url(item):
-    found_urls = []
+    """แกะ URL รูปภาพด้วยวิธีแปลงเป็น Text ทั้งหมดแล้วสแกน (Regex) กวาดรวบ"""
+    # 1. แปลงข้อมูลข้อนี้เป็น String ทั้งหมดเพื่อแก้ปัญหาลิงก์ซ่อนในโครงสร้างลึก
+    item_str = json.dumps(item, ensure_ascii=False)
     
-    def find_urls(obj):
-        if isinstance(obj, str):
-            val = str(obj).strip()
-            # ดักจับทุก URL ที่ขึ้นต้นด้วย http, https หรือ //
-            if val.startswith("http://") or val.startswith("https://") or val.startswith("//"):
-                # ข้ามลิงก์ที่เป็น URL ของตัวฟอร์มเอง
-                if not any(x in val for x in ["/viewform", "/formResponse", "forms.gle"]):
-                    url = "https:" + val if val.startswith("//") else val
-                    found_urls.append(url)
-        elif isinstance(obj, list):
-            for sub in obj:
-                find_urls(sub)
-        elif isinstance(obj, dict):
-            for v in obj.values():
-                find_urls(v)
-
-    find_urls(item)
+    # ล้างเครื่องหมาย escape (เช่น \/) ออกก่อนเพื่อให้ Regex จับข้อความได้แม่นยำ
+    item_str = item_str.replace('\\/', '/')
     
-    # จัดลำดับความสำคัญ: ถ้าเจอ URL ที่มาจากเซิร์ฟเวอร์รูปของ Google ให้เลือกใช้ก่อน
-    for url in found_urls:
-        if any(domain in url for domain in ["googleusercontent", "ggpht.com", "drive.google", ".google.com/"]):
+    # 2. ค้นหา URL ที่เป็นโดเมนเก็บรูปของ Google ทั้งหมด (ครอบคลุม http, https, //)
+    pattern = r'(?:https?:)?//[^"\'\s\\]*(?:googleusercontent\.com|ggpht\.com|drive\.google\.com|docs\.google\.com)[^"\'\s\\]*'
+    matches = re.findall(pattern, item_str)
+    
+    for url in matches:
+        # กรองลิงก์ที่เป็นแค่ตัวระบบฟอร์มออกไป
+        if not any(skip in url for skip in ["/viewform", "/formResponse", "forms.gle"]):
+            if url.startswith("//"):
+                return "https:" + url
             return url
             
-    # ถ้าไม่ใช่โดเมนกูเกิลแต่เป็นลิงก์อื่น ให้คืนค่าลิงก์แรกที่หาเจอ
-    return found_urls[0] if found_urls else None
+    # 3. หากหาโดเมนกูเกิลไม่เจอ ให้ลองหาลิงก์ทั่วไปที่ลงท้ายด้วยสกุลไฟล์รูปภาพ (เผื่อกูเกิลเปลี่ยนระบบ)
+    pattern_ext = r'https?://[^"\'\s\\]*\.(?:jpg|jpeg|png|gif|webp)'
+    matches_ext = re.findall(pattern_ext, item_str, re.IGNORECASE)
+    
+    if matches_ext:
+        return matches_ext[0]
+        
+    return None
 
 
 
