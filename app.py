@@ -65,16 +65,16 @@ def check_personal_info(q_title, choices, my_name, my_student_id, my_no, my_clas
 
 def extract_image_url(item):
     found_urls = []
-
+    
     def find_urls(obj):
-        if isinstance(obj, str) and "googleusercontent.com" in obj:
-            url = obj
-            # เติม https: กรณีที่ Google Forms ส่งมาแค่ //lh3...
-            if url.startswith("//"):
-                url = "https:" + url
-            elif not url.startswith("http"):
-                return
-            found_urls.append(url)
+        if isinstance(obj, str):
+            val = str(obj).strip()
+            # ดักจับทุก URL ที่ขึ้นต้นด้วย http, https หรือ //
+            if val.startswith("http://") or val.startswith("https://") or val.startswith("//"):
+                # ข้ามลิงก์ที่เป็น URL ของตัวฟอร์มเอง
+                if not any(x in val for x in ["/viewform", "/formResponse", "forms.gle"]):
+                    url = "https:" + val if val.startswith("//") else val
+                    found_urls.append(url)
         elif isinstance(obj, list):
             for sub in obj:
                 find_urls(sub)
@@ -83,8 +83,15 @@ def extract_image_url(item):
                 find_urls(v)
 
     find_urls(item)
-    # คืนค่าเฉพาะลิงก์แรกที่เจอในข้อนั้นๆ
+    
+    # จัดลำดับความสำคัญ: ถ้าเจอ URL ที่มาจากเซิร์ฟเวอร์รูปของ Google ให้เลือกใช้ก่อน
+    for url in found_urls:
+        if any(domain in url for domain in ["googleusercontent", "ggpht.com", "drive.google", ".google.com/"]):
+            return url
+            
+    # ถ้าไม่ใช่โดเมนกูเกิลแต่เป็นลิงก์อื่น ให้คืนค่าลิงก์แรกที่หาเจอ
     return found_urls[0] if found_urls else None
+
 
 
 def compress_image(raw_bytes, max_dim=1024, quality=82):
