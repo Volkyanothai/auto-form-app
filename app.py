@@ -61,32 +61,40 @@ def check_personal_info(q_title, choices, my_name, my_student_id, my_no, my_clas
     return None
 
 
-def extract_image_url(item):
+def extract_image_url_from_item(item):
     """
-    ไม้ตายก้นหีบ: เอกซเรย์ค้นหารูปภาพ "เฉพาะในขอบเขตของข้อนี้เท่านั้น"
-    โดยค้นหาจากโครงสร้าง Array [URL, ความกว้าง, ความสูง] ซึ่งแม่นยำ 100%
+    เอกซเรย์โครงสร้างข้อมูลเฉพาะข้อ เพื่อหา URL รูประยะประชิด!
+    ปลดล็อคข้อจำกัดเรื่องโดเมนทั้งหมด รองรับทั้ง lh3.google, drive.google ฯลฯ
     """
-    # คลายการเข้ารหัสอักขระแปลกๆ ทั้งหมดให้เป็น URL ปกติ
-    s = json.dumps(item, ensure_ascii=False).replace('\\/', '/').replace('\\u003d', '=').replace('\\u0026', '&')
+    found_urls = []
     
-    # 1. ค้นหา Pattern การเก็บรูปภาพของ Google Forms ["URL", กว้าง, ยาว] (ไม่สนโดเมน)
-    m1 = re.findall(r'\[\s*"(https?://[^\"]+)"\s*,\s*\d+(?:\.\d+)?\s*,\s*\d+(?:\.\d+)?', s)
-    m1 += ["https:" + x for x in re.findall(r'\[\s*"(//[^\"]+)"\s*,\s*\d+(?:\.\d+)?\s*,\s*\d+(?:\.\d+)?', s)]
-    
-    # 2. ค้นหา URL ที่มีนามสกุลไฟล์รูปภาพ (เผื่อกรณีระบบไม่ได้เก็บความกว้างยาว)
-    m2 = re.findall(r'"(https?://[^\"]+\.(?:jpg|jpeg|png|gif|webp)(?:\?[^\"]*)?)"', s, re.IGNORECASE)
-    
-    # 3. ค้นหาโดเมนรูปภาพ Google แบบดื้อๆ 
-    m3 = re.findall(r'"(https?://[^\"]+(?:googleusercontent\.com|ggpht\.com|drive\.google\.com)[^\"]*)"', s)
-    
-    # เอามารวมกันและคัดกรองลิงก์ขยะ
-    all_matches = m1 + m2 + m3
-    for u in all_matches:
-        ul = u.lower()
-        if not any(bad in ul for bad in ['/a/', 'avatar', 'cleardot', 'favicon', 'w3.org']):
-            return u # คืนค่ารูประจำข้อนี้ทันที
+    def walk(obj):
+        if isinstance(obj, str):
+            s = obj.strip()
+            # ขอแค่เป็นข้อความที่ขึ้นต้นด้วย http ถือว่าเป็นลิงก์หมด
+            if s.startswith('http://') or s.startswith('https://') or s.startswith('//'):
+                u = s if not s.startswith('//') else 'https:' + s
+                ul = u.lower()
+                # กรองแค่ลิงก์ขยะและไอคอนระบบทิ้งไป
+                bad_words = [
+                    '/a/', 'avatar', 'cleardot', 'favicon', 'w3.org', 
+                    'youtube.com', 'youtu.be', 'gstatic.com', 
+                    '/forms/', '/docs/', 'schema.org', 'google.com/jsapi',
+                    'fonts.googleapis.com', '/images/branding/'
+                ]
+                if not any(bad in ul for bad in bad_words):
+                    if u not in found_urls:
+                        found_urls.append(u)
+        elif isinstance(obj, list):
+            for x in obj: walk(x)
+        elif isinstance(obj, dict):
+            for x in obj.values(): walk(x)
             
-    return None
+    # เริ่มสแกนเข้าไปในข้อมูลของข้อสอบข้อนี้
+    walk(item)
+    
+    # ส่งลิงก์แรกที่หาเจอคืนกลับไป
+    return found_urls[0] if found_urls else None
 
 
 def compress_image(raw_bytes, max_dim=1024, quality=82):
@@ -178,13 +186,13 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                     if not item or len(item) < 4: continue
                     q_type = item[3]
                     
-                    if q_type == 8: # เปลี่ยนหน้า
+                    if q_type == 8: 
                         page_count += 1
                         continue
                         
-                    # ดักจับกล่องรูปภาพลอยเดี่ยวๆ (Type 11)
+                    # ดักจับกล่องรูปภาพแบบลอยเดี่ยวๆ
                     if q_type == 11 or len(item) < 5 or not item[4]:
-                        found_img = extract_image_url(item)
+                        found_img = extract_image_url_from_item(item)
                         if found_img: last_standalone_img = found_img
                         continue
 
@@ -198,8 +206,8 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                         personal_data_map[entry_id] = p_info
                         continue
                         
-                    # ค้นหารูปภาพเฉพาะที่ผูกกับคำถามข้อนี้เท่านั้น
-                    q_img = extract_image_url(item)
+                    # ค้นหารูปภาพที่ผูกติดมากับโจทย์ข้อนี้
+                    q_img = extract_image_url_from_item(item)
                     if not q_img and last_standalone_img:
                         q_img = last_standalone_img
                         
@@ -352,7 +360,7 @@ if "parsed_questions" in st.session_state:
             )
             st.markdown(bar_html, unsafe_allow_html=True)
 
-            # รูปภาพน้องเสื้อส้มจะมาปรากฏโฉมอยู่ตรงนี้ใต้ข้อสอบโดยตรง!
+            # โชว์รูปภาพโจทย์ทันทีถ้าระบบดึงมาได้
             if img_url:
                 st.image(img_url, use_container_width=True)
                 st.caption("✅ ระบบดึงรูปภาพประจำข้อสำเร็จ")
