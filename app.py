@@ -61,22 +61,26 @@ def check_personal_info(q_title, choices, my_name, my_student_id, my_no, my_clas
     return None
 
 
-def extract_image_url(obj_data):
-    """ฟังก์ชันสำรอง: สแกน JSON กวาด URL เผื่อกรณี HTML Extraction พลาด"""
-    try:
-        data_str = json.dumps(obj_data, ensure_ascii=False)
-        urls = re.findall(r'https?://[^\s"\'\[\]<>]+', data_str)
-        for u in re.findall(r'(?<!https:)(?<!http:)//[^\s"\'\[\]<>]+', data_str):
-            urls.append("https:" + u)
-        
-        for u in urls:
-            u = u.replace('\\/', '/')
-            if any(skip in u for skip in ["viewform", "formResponse", "forms.gle", "w3.org", "gstatic.com"]):
-                continue
-            if any(domain in u for domain in ["googleusercontent.com", "ggpht.com", "drive.google.com"]):
-                return u
-    except Exception: pass
-    return None
+def extract_images_from_item(item):
+    """สแกนลึกทะลุทะลวง: หา URL รูปภาพทั้งหมดที่ซ่อนอยู่ใน Object ก้อนนี้"""
+    found = []
+    def search(obj):
+        if isinstance(obj, str):
+            val = obj.strip()
+            is_google = any(x in val for x in ["googleusercontent.com", "ggpht.com", "drive.google.com"])
+            is_ext = re.search(r'\.(jpg|jpeg|png|webp|gif)($|\?)', val, re.IGNORECASE)
+            
+            if (val.startswith("http://") or val.startswith("https://") or val.startswith("//")) and (is_google or is_ext):
+                if not any(skip in val for skip in ["/viewform", "/formResponse", "forms.gle"]):
+                    clean = "https:" + val if val.startswith("//") else val
+                    found.append(clean)
+        elif isinstance(obj, list):
+            for x in obj: search(x)
+        elif isinstance(obj, dict):
+            for x in obj.values(): search(x)
+            
+    search(item)
+    return list(dict.fromkeys(found))
 
 
 def compress_image(raw_bytes, max_dim=1024, quality=82):
@@ -158,44 +162,28 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                 form_data = json.loads(match.group(1))
                 questions_data = form_data[1][1] if len(form_data) > 1 and form_data[1] else []
 
-                # --- NEW METHOD: สกัด URL รูปภาพจากแท็ก HTML โดยตรง แล้วจับคู่กับ ID ---
-                html_image_map = {}
-                html_parts = html.split('data-item-id="')
-                for part in html_parts[1:]:
-                    end_quote = part.find('"')
-                    if end_quote != -1:
-                        i_id = part[:end_quote]
-                        img_match = re.search(r'<img[^>]+src="([^"]+)"', part)
-                        if img_match:
-                            src = html_lib.unescape(img_match.group(1))
-                            if "cleardot.gif" not in src and not src.startswith("data:"):
-                                if src.startswith("//"): src = "https:" + src
-                                html_image_map[i_id] = src
-
                 parsed_questions = []
                 personal_data_map = {}
                 page_count = 0
-                last_seen_standalone_image = None
+                pending_images = [] # กระเป๋าเก็บรูปลอยรอใช้งาน
 
                 fbzx = ""
                 fbzx_match = re.search(r'name="fbzx" value="([^"]*)"', html)
-                if fbzx_match:
-                    fbzx = fbzx_match.group(1)
+                if fbzx_match: fbzx = fbzx_match.group(1)
 
-                st.write("กำลังแยกหน้าและรูปภาพ...")
+                st.write("กำลังแยกหน้าและกวาดรูปภาพทั้งหมด...")
                 for item in questions_data:
-                    if not item or len(item) < 4:
-                        continue
-                        
-                    item_id_str = str(item[0])
-                    # 1. ค้นหารูปจาก HTML Map ก่อน ถ้าไม่เจอให้ใช้ระบบค้นหา JSON สำรอง
-                    found_img = html_image_map.get(item_id_str) or extract_image_url(item)
+                    if not item: continue
                     
-                    # 2. ถ้านี่ไม่ใช่คำถาม (เช่น เป็นกล่องรูปภาพลอย, หัวข้อ) ให้เก็บรูปไว้รอเชื่อมกับข้อถัดไป
-                    if item[3] in [1, 8, 11] or len(item) < 5 or not item[4]:
-                        if found_img:
-                            last_seen_standalone_image = found_img
-                        if item[3] == 8:
+                    # กวาดรูปทุกใบใน Block นี้
+                    extracted_imgs = extract_images_from_item(item)
+                    is_question = len(item) >= 5 and item[4]
+                    
+                    if not is_question:
+                        # ถ้านี่ไม่ใช่คำถาม (เช่น เป็นกล่องรูปภาพแยก) ให้ทดรูปเก็บไว้
+                        if extracted_imgs:
+                            pending_images.extend(extracted_imgs)
+                        if len(item) > 3 and item[3] == 8:
                             page_count += 1
                         continue
 
@@ -210,13 +198,12 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                         personal_data_map[entry_id] = p_info
                         continue
                     
-                    # 3. ผูกรูปเข้ากับข้อสอบ
-                    q_img = found_img
-                    if not q_img and last_seen_standalone_image:
-                        q_img = last_seen_standalone_image
-                        
-                    if q_img:
-                        last_seen_standalone_image = None
+                    # จับคู่รูปภาพให้คำถาม
+                    q_img = None
+                    if extracted_imgs:
+                        q_img = extracted_imgs[0]
+                    elif pending_images:
+                        q_img = pending_images.pop(-1) # หยิบรูปล่าสุดที่ทดไว้ออกมาใช้
 
                     parsed_questions.append({
                         "entry_id": entry_id,
@@ -236,19 +223,27 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                         "1. คิดทบทวนคำตอบให้รอบคอบก่อนสรุป โดยเฉพาะข้อที่ต้องคำนวณ\n"
                         "2. ถ้ามีตัวเลือกให้ ต้อง copy ข้อความตัวเลือกมาเป๊ะ ๆ ตัวต่อตัว ห้ามแต่งคำตอบขึ้นเอง\n"
                         "3. ถ้าข้อไหนมีป้าย [เลือกได้หลายข้อ] ให้ตอบ answer เป็น array\n"
-                        "4. สำคัญมาก: หากโจทย์ระบุว่า 'จากรูป', 'ในภาพ' หรือจำเป็นต้องใช้รูปภาพ แต่ระบบไม่มีรูปแนบไปให้ ห้ามเดาคำตอบเด็ดขาด! ให้ตอบว่า 'ไม่สามารถระบุได้เนื่องจากไม่มีรูปภาพ' และบังคับตั้ง confidence เป็น 0\n"
-                        "5. ถ้าไม่มั่นใจในคำตอบ ให้ตั้ง confidence ต่ำตามจริง\n"
-                        "6. ตอบเป็น JSON เท่านั้น: {\"entry.123\": {\"answer\": \"...\", \"confidence\": 90, \"reasoning\": \"...\"}}\n\n"
+                        "4. สำคัญมาก: หากโจทย์ระบุว่า 'จากรูป' แต่ไม่มีภาพแนบไปให้ ห้ามเดาคำตอบเด็ดขาด! ให้ตอบว่า 'ไม่สามารถระบุได้เนื่องจากไม่มีรูปภาพ' และบังคับตั้ง confidence เป็น 0\n"
+                        "5. ตอบเป็น JSON เท่านั้น: {\"entry.123\": {\"answer\": \"...\", \"confidence\": 90, \"reasoning\": \"...\"}}\n\n"
                         "Questions:"
                     ]
+                    
+                    # FAILSAFE: ถ้ารูปถูกดึงมาแต่ไม่เข้าคู่กับคำถามข้อไหนเลย ให้โยนลงกองกลางให้ AI ดูอยู่ดี
+                    if pending_images:
+                        contents_payload.append("\n[Context Images Found in Form:]")
+                        for img in pending_images:
+                            try:
+                                img_res = requests.get(img, headers=UA, timeout=8)
+                                if img_res.status_code == 200:
+                                    small_bytes, mime_type = compress_image(img_res.content)
+                                    contents_payload.append(types.Part.from_bytes(data=small_bytes, mime_type=mime_type))
+                            except Exception: pass
 
                     for idx, q in enumerate(parsed_questions, 1):
                         q_info = "\nข้อ " + str(idx) + " (ID: " + q["entry_id"] + ")"
-                        if q.get("is_multi"):
-                            q_info += " [เลือกได้หลายข้อ]"
+                        if q.get("is_multi"): q_info += " [เลือกได้หลายข้อ]"
                         q_info += ": " + str(q["title"])
-                        if q["choices"]:
-                            q_info += "\nตัวเลือก: " + json.dumps(q["choices"], ensure_ascii=False)
+                        if q["choices"]: q_info += "\nตัวเลือก: " + json.dumps(q["choices"], ensure_ascii=False)
                         
                         contents_payload.append(q_info)
 
@@ -258,8 +253,7 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                                 if img_res.status_code == 200:
                                     small_bytes, mime_type = compress_image(img_res.content)
                                     contents_payload.append(types.Part.from_bytes(data=small_bytes, mime_type=mime_type))
-                            except Exception:
-                                pass
+                            except Exception: pass
 
                     gen_config = types.GenerateContentConfig(
                         thinking_config=types.ThinkingConfig(thinking_budget=2048),
@@ -286,10 +280,8 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                                     st.write("โมเดลช้ากำลังลองใหม่ใน " + str(round(wait_time, 1)) + " วิ...")
                                     time.sleep(wait_time)
                                     continue
-                                else:
-                                    break
-                        if response and response.text:
-                            break
+                                else: break
+                        if response and response.text: break
 
                     if not response: raise last_err if last_err else RuntimeError("AI ไม่ตอบกลับ")
 
