@@ -114,6 +114,8 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                 st.write("กำลังอ่านโครงสร้างฟอร์มด้วยความเร็วสูง...")
                 res = requests.get(form_url, allow_redirects=True, headers=UA, timeout=15)
                 html = res.text
+                img_urls_found = re.findall(r'https://lh\d?\.?googleusercontent\.com/[^\s"\'<>]+', html)
+                st.write("รูปที่เจอใน HTML ทั้งหมด:", img_urls_found)
 
                 action_match = re.search(r'<form action="([^"]+)"', html)
                 if action_match: submit_url = action_match.group(1)
