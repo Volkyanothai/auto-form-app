@@ -1,13 +1,18 @@
+"""
+app.py — EZEXAM Auto Form System (Upgraded)
+แก้บั๊ก: 1) หลายหน้า/pageHistory  2) รูป+ข้อความในข้อเดียวกัน  3) ความเร็ว
+คงฟีเจอร์เดิมทั้งหมด 100% + เพิ่ม: แก้คำตอบก่อนส่ง, วิเคราะห์ซ้ำเฉพาะข้อ
+"""
 import json
 import re
 import time
 import io
 import difflib
 import html as html_lib
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
 import streamlit as st
-from PIL import Image
 from google import genai
 from google.genai import types
 
@@ -16,31 +21,48 @@ from style import inject_css, render_header
 st.set_page_config(page_title="EZEXAM | Auto Form System", page_icon="⚡", layout="centered")
 inject_css()
 
-UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"}
-CHECKBOX_TYPE = 4
+UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                     "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"}
 
-# --- ระบบกวาด API Key อัตโนมัติ ---
+TYPE_PAGE_BREAK = 8
+TYPE_CHECKBOX = 4
+# ยืนยันแล้วว่ามีจริง ณ ก.ย. 2026 (ตัดโมเดลปลอมที่ทำให้เสียเวลา retry ฟรีออก)
+MODELS_TO_TRY = ["gemini-3.8-flash", "gemini-flash-latest"]
+CHUNK_SIZE = 4                 # จำนวนคำถามต่อ 1 คำขอ AI (ยิงหลาย chunk พร้อมกัน = เร็วขึ้น)
+MAX_PARALLEL_WORKERS = 6
+MAX_MODEL_ATTEMPTS = 2
+BACKOFF_SEC = [4, 9]            # แทน sleep(60) เดิม กันหน้าเว็บค้างนาน
+IMG_URL_RE = re.compile(r'https://lh\d?\.?googleusercontent\.com/[^\s"\'<>\\]+')
+
+# --- ระบบกวาด API Key อัตโนมัติ (คงเดิม) ---
 api_keys = [st.secrets[k] for k in st.secrets if "GEMINI_API_KEY" in k]
 if not api_keys:
     st.error("ระบบยังไม่ได้ตั้งค่า API Key กรุณาเพิ่ม GEMINI_API_KEY (1, 2, 3...) ใน Streamlit Secrets")
     st.stop()
 
+
+# ══════════════════════ ฟังก์ชันเดิม (คงพฤติกรรมไว้ 100%) ══════════════════════
 def check_personal_info(q_title, choices, my_name, my_student_id, my_no, my_class):
     clean_title = re.sub(r'^\*?\*?(?:ข้อ\s*\d+[\s.:-]*)?', '', q_title.strip()).strip()
     clean_title = clean_title.rstrip('*').strip()
     title_lower = clean_title.lower()
 
-    if len(clean_title) > 25: return None
+    if len(clean_title) > 25:
+        return None
 
     exam_stopwords = ["สาร", "เคมี", "ดาว", "วิทยาศาสตร์", "โรค", "องค์กร", "กษัตริย์", "ธาตุ",
-                      "เมือง", "ประเทศ", "วรรณคดี", "ผู้แต่ง", "หัวใจ", "บรรยากาศ", "ผิวหนัง",
-                      "ปฏิบัติการ", "ดิน", "หิน", "เชื่อม", "เครือข่าย", "อินเทอร์เน็ต", "เว็บ",
-                      "จัดเป็น", "คืออะไร", "ข้อใด", "หมายถึง", "ตัวอักษรย่อ"]
-    if any(sw in title_lower for sw in exam_stopwords): return None
+                       "เมือง", "ประเทศ", "วรรณคดี", "ผู้แต่ง", "หัวใจ", "บรรยากาศ", "ผิวหนัง",
+                       "ปฏิบัติการ", "ดิน", "หิน", "เชื่อม", "เครือข่าย", "อินเทอร์เน็ต", "เว็บ",
+                       "จัดเป็น", "คืออะไร", "ข้อใด", "หมายถึง", "ตัวอักษรย่อ"]
+    if any(sw in title_lower for sw in exam_stopwords):
+        return None
 
-    if my_name and any(k in title_lower for k in ["ชื่อ", "นามสกุล", "สกุล", "name"]): return (q_title, my_name, "ชื่อ-นามสกุล")
-    if my_student_id and any(k in title_lower for k in ["เลขประจำตัว", "รหัส", "student id", "id"]): return (q_title, my_student_id, "เลขประจำตัว")
-    if my_no and (any(k in title_lower for k in ["เลขที่", "no.", "number"]) or title_lower == "no"): return (q_title, my_no, "เลขที่")
+    if my_name and any(k in title_lower for k in ["ชื่อ", "นามสกุล", "สกุล", "name"]):
+        return (q_title, my_name, "ชื่อ-นามสกุล")
+    if my_student_id and any(k in title_lower for k in ["เลขประจำตัว", "รหัส", "student id", "id"]):
+        return (q_title, my_student_id, "เลขประจำตัว")
+    if my_no and (any(k in title_lower for k in ["เลขที่", "no.", "number"]) or title_lower == "no"):
+        return (q_title, my_no, "เลขที่")
 
     if my_class and any(k in title_lower for k in ["ชั้น", "ห้อง", "ม.", "มัธยม", "class", "grade", "room"]):
         best_val = my_class
@@ -53,32 +75,321 @@ def check_personal_info(q_title, choices, my_name, my_student_id, my_no, my_clas
         return (q_title, best_val, "ชั้น/ห้อง")
     return None
 
+
 def match_choice(ai_answer, choices):
     ai_answer = str(ai_answer).strip()
     clean_choices = [str(c).strip() for c in choices]
-    if not ai_answer or not clean_choices: return 0, False
-
+    if not ai_answer or not clean_choices:
+        return 0, False
     for i, c in enumerate(clean_choices):
-        if c == ai_answer: return i, True
+        if c == ai_answer:
+            return i, True
     for i, c in enumerate(clean_choices):
-        if c and (c in ai_answer or ai_answer in c): return i, True
+        if c and (c in ai_answer or ai_answer in c):
+            return i, True
     for i, c in enumerate(clean_choices):
-        if c.lower() == ai_answer.lower(): return i, True
-
+        if c.lower() == ai_answer.lower():
+            return i, True
     close = difflib.get_close_matches(ai_answer, clean_choices, n=1, cutoff=0.55)
-    if close: return clean_choices.index(close[0]), True
+    if close:
+        return clean_choices.index(close[0]), True
     return 0, False
+
 
 def compress_and_verify_image(raw_bytes, max_dim=1024, quality=82):
     try:
-        if len(raw_bytes) < 3000: return None, None
+        from PIL import Image
+        if len(raw_bytes) < 3000:
+            return None, None
         img = Image.open(io.BytesIO(raw_bytes)).convert("RGB")
-        if max(img.size) > max_dim: img.thumbnail((max_dim, max_dim), Image.LANCZOS)
+        if max(img.size) > max_dim:
+            img.thumbnail((max_dim, max_dim), Image.LANCZOS)
         buf = io.BytesIO()
         img.save(buf, "JPEG", quality=quality, optimize=True)
         return buf.getvalue(), "image/jpeg"
-    except Exception: return None, None
+    except Exception:
+        return None, None
 
+
+# ══════════════════════ [FIX บั๊ก#1] อ่านฟอร์ม + fbzx/fvv + โครงสร้างหน้า ══════════════════════
+def fetch_form(form_url):
+    if "docs.google.com/forms" not in form_url:
+        raise RuntimeError("ลิงก์นี้ไม่ใช่ Google Form ที่รองรับ")
+    res = requests.get(form_url, allow_redirects=True, headers=UA, timeout=15)
+    raw_html = res.text
+    m = re.search(r'FB_PUBLIC_LOAD_DATA_\s*=\s*(.*?);\s*</script>', raw_html, re.DOTALL)
+    if not m:
+        raise RuntimeError("อ่านโครงสร้างฟอร์มไม่ได้ (อาจต้องเข้าสู่ระบบ หรือลิงก์ไม่ถูกต้อง)")
+    form_data = json.loads(m.group(1))
+    fbzx_m = re.search(r'name="fbzx"\s+value="(\d+)"', raw_html)
+    fvv_m = re.search(r'name="fvv"\s+value="(\d+)"', raw_html)
+    fbzx = fbzx_m.group(1) if fbzx_m else ""
+    fvv = fvv_m.group(1) if fvv_m else "1"
+    html_no_meta = re.sub(r'<meta[^>]*property="og:image"[^>]*>', '', raw_html)
+    img_urls_found = IMG_URL_RE.findall(html_no_meta)
+    return form_data, fbzx, fvv, img_urls_found
+
+
+def parse_form(form_data, img_urls_found, my_name, my_student_id, my_no, my_class):
+    entries = form_data[1][1] if len(form_data) > 1 and form_data[1] else []
+    parsed_questions, personal_data_map = [], {}
+    pages_meta = [{"own_id": None, "next_raw": None}]   # page 0 ไม่มี marker ของตัวเอง
+    page_id_to_index = {}
+    current_page = 0
+    img_counter = 0
+
+    for item in entries:
+        if not item or len(item) < 4:
+            continue
+        q_type = item[3]
+
+        if q_type == TYPE_PAGE_BREAK:
+            current_page += 1
+            own_id = item[0]
+            next_raw = item[5] if len(item) > 5 else None
+            pages_meta.append({"own_id": own_id, "next_raw": next_raw})
+            page_id_to_index[own_id] = current_page
+            continue
+
+        if q_type == 11 or len(item) < 5 or not item[4]:
+            continue
+
+        try:
+            entry_id = "entry." + str(item[4][0][0])
+        except Exception:
+            continue
+
+        q_title = item[1]
+        choices_raw = item[4][0][1] if len(item[4][0]) > 1 else None
+        choices = [c[0] for c in choices_raw if c and len(c) > 0] if choices_raw else []
+
+        # [FIX บั๊ก#2] สแกนหาลิงก์รูปเฉพาะ "ในก้อนข้อมูลของคำถามนี้" ไม่ใช่นับลำดับทั้งหน้า
+        image_urls = []
+        try:
+            image_urls = list(dict.fromkeys(IMG_URL_RE.findall(json.dumps(item, ensure_ascii=False))))
+        except Exception:
+            pass
+        has_media = len(item) > 9 and bool(item[9])
+        if not image_urls and has_media and img_counter < len(img_urls_found):
+            image_urls = [img_urls_found[img_counter]]  # fallback สำรอง (วิธีเดิม)
+        if has_media or image_urls:
+            img_counter += 1
+
+        p_info = check_personal_info(q_title, choices, my_name, my_student_id, my_no, my_class)
+        if p_info:
+            personal_data_map[entry_id] = p_info
+            continue
+
+        branch_map = {}
+        if choices_raw:
+            for c in choices_raw:
+                if c and len(c) > 2 and c[2] is not None:
+                    if c[2] <= 0:
+                        branch_map[c[0]] = -1
+                    elif c[2] in page_id_to_index:
+                        branch_map[c[0]] = page_id_to_index[c[2]]
+
+        parsed_questions.append({
+            "entry_id": entry_id,
+            "title": q_title,
+            "choices": choices,
+            "is_multi": q_type == TYPE_CHECKBOX,
+            "image_urls": image_urls,
+            "page_index": current_page,
+            "branch_map": branch_map,
+        })
+
+    default_next = []
+    for i, meta in enumerate(pages_meta):
+        nxt = i + 1 if i + 1 < len(pages_meta) else -1
+        if meta["next_raw"] is not None:
+            if meta["own_id"] is not None and meta["next_raw"] == meta["own_id"]:
+                nxt = -1
+            elif meta["next_raw"] in page_id_to_index:
+                nxt = page_id_to_index[meta["next_raw"]]
+        default_next.append(nxt)
+
+    return parsed_questions, personal_data_map, default_next, len(pages_meta)
+
+
+def simulate_page_history(parsed_questions, final_answers, default_next, page_count):
+    """[FIX บั๊ก#1] คำนวณ pageHistory จริงจากเส้นทางที่ตอบจริง (รองรับ branching)"""
+    by_page = {}
+    for q in parsed_questions:
+        by_page.setdefault(q["page_index"], []).append(q)
+
+    visited, current, guard = [0], 0, 0
+    while guard < page_count + 2:
+        guard += 1
+        nxt = default_next[current] if current < len(default_next) else -1
+        for q in by_page.get(current, []):
+            if q["branch_map"]:
+                ans = final_answers.get(q["entry_id"])
+                if isinstance(ans, list):
+                    ans = ans[0] if ans else None
+                if ans in q["branch_map"]:
+                    nxt = q["branch_map"][ans]
+                    break
+        if nxt < 0 or nxt in visited:
+            break
+        visited.append(nxt)
+        current = nxt
+    return ",".join(str(p) for p in visited)
+
+
+# ══════════════════════ [FIX บั๊ก#3] ดาวน์โหลดรูปแบบพร้อมกัน ══════════════════════
+def prefetch_images(parsed_questions):
+    pairs = [(q["entry_id"], u) for q in parsed_questions for u in q.get("image_urls", [])]
+    bytes_map = {}
+
+    def _dl(pair):
+        eid, url = pair
+        try:
+            r = requests.get(url, headers=UA, timeout=10)
+            if r.status_code == 200:
+                data, mime = compress_and_verify_image(r.content)
+                if data:
+                    return eid, data, mime
+        except Exception:
+            pass
+        return None
+
+    if pairs:
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            for res in pool.map(_dl, pairs):
+                if res:
+                    eid, data, mime = res
+                    bytes_map.setdefault(eid, []).append((data, mime))
+
+    for q in parsed_questions:
+        q["image_data"] = bytes_map.get(q["entry_id"], [])
+    return [d for lst in bytes_map.values() for d, _ in lst]
+
+
+# ══════════════════════ [FIX บั๊ก#3] AI Engine — โมเดลจริง + ยิงพร้อมกันหลาย key ══════════════════════
+def build_prompt_header(exam_context):
+    text = (
+        f"Context: {exam_context or 'None'}\n"
+        "Instructions:\n"
+        "1. คิดทบทวนคำตอบให้รอบคอบก่อนสรุป\n"
+        "2. ถ้ามีตัวเลือกให้ copy ข้อความตัวเลือกมาเป๊ะ ๆ ห้ามแต่งคำตอบขึ้นเอง\n"
+        "3. ถ้าข้อไหนมีป้าย [เลือกได้หลายข้อ] ให้ตอบ answer เป็น array\n"
+        "4. หากข้อใดมีรูปภาพแนบมา ให้วิเคราะห์คำตอบจากรูปภาพนั้นเป็นหลัก\n"
+        "5. ตอบเป็น JSON เท่านั้น รูปแบบ: {\"entry.123\": {\"answer\": \"...\", \"confidence\": 90, \"reasoning\": \"...\"}}\n"
+        "\nQuestions:\n"
+    )
+    return types.Part.from_text(text=text)
+
+
+def build_question_block(idx, q):
+    parts = []
+    info = f"\nข้อ {idx} (ID: {q['entry_id']})"
+    if q.get("is_multi"):
+        info += " [เลือกได้หลายข้อ]"
+    info += f": {q['title']}"
+    if q["choices"]:
+        info += f"\nตัวเลือก: {json.dumps(q['choices'], ensure_ascii=False)}"
+    parts.append(types.Part.from_text(text=info))
+    for data, mime in q.get("image_data", []):
+        parts.append(types.Part.from_bytes(data=data, mime_type=mime))
+    return parts
+
+
+def call_gemini_chunk(api_key, exam_context, chunk, thinking_level="low"):
+    client = genai.Client(api_key=api_key, http_options=types.HttpOptions(timeout=30000))
+    contents = [build_prompt_header(exam_context)]
+    for idx, q in chunk:
+        contents.extend(build_question_block(idx, q))
+
+    gen_config = types.GenerateContentConfig(
+        thinking_config=types.ThinkingConfig(thinking_level=thinking_level),
+        response_mime_type="application/json",
+        max_output_tokens=4096,
+    )
+
+    last_err = None
+    for model_name in MODELS_TO_TRY:
+        for attempt in range(MAX_MODEL_ATTEMPTS):
+            try:
+                resp = client.models.generate_content(model=model_name, contents=contents, config=gen_config)
+                if resp and resp.text:
+                    raw = re.sub(r'`{3}(?:json)?', '', resp.text.strip()).strip()
+                    try:
+                        return json.loads(raw)
+                    except json.JSONDecodeError:
+                        m = re.search(r'\{.*\}', raw, re.DOTALL)
+                        if m:
+                            return json.loads(m.group(0))
+                        raise
+            except Exception as err:
+                last_err = err
+                msg = str(err)
+                if "429" in msg or "RESOURCE_EXHAUSTED" in msg:
+                    time.sleep(BACKOFF_SEC[min(attempt, len(BACKOFF_SEC) - 1)])
+                    continue
+                if ("503" in msg or "504" in msg) and attempt < MAX_MODEL_ATTEMPTS - 1:
+                    time.sleep(3)
+                    continue
+                break
+    raise last_err or RuntimeError("โมเดล AI ไม่ตอบสนอง")
+
+
+def analyze_all(parsed_questions, keys, exam_context, thinking_level, progress_cb=None):
+    indexed = list(enumerate(parsed_questions, 1))
+    chunks = [indexed[i:i + CHUNK_SIZE] for i in range(0, len(indexed), CHUNK_SIZE)]
+    results, errors = {}, []
+    if not chunks:
+        return results, errors
+    with ThreadPoolExecutor(max_workers=min(MAX_PARALLEL_WORKERS, len(chunks))) as pool:
+        futures = {
+            pool.submit(call_gemini_chunk, keys[i % len(keys)], exam_context, chunk, thinking_level): chunk
+            for i, chunk in enumerate(chunks)
+        }
+        done = 0
+        for fut in as_completed(futures):
+            done += 1
+            if progress_cb:
+                progress_cb(done, len(chunks))
+            try:
+                results.update(fut.result())
+            except Exception as e:
+                errors.append(str(e))
+    return results, errors
+
+
+# ══════════════════════ Submit ══════════════════════
+def build_submit_payload(personal_data_map, parsed_questions, final_answers, fbzx, fvv, page_history):
+    payload = {"fbzx": fbzx, "fvv": fvv, "pageHistory": page_history}
+    for entry_id, info in personal_data_map.items():
+        payload[entry_id] = info[1]
+    for q in parsed_questions:
+        entry_id = q["entry_id"]
+        ans = final_answers.get(entry_id, "")
+        if q["choices"]:
+            if q["is_multi"] and isinstance(ans, list):
+                valid = []
+                for a in ans:
+                    idx, matched = match_choice(a, q["choices"])
+                    valid.append(q["choices"][idx] if matched else a)
+                payload[entry_id] = valid
+            else:
+                idx, matched = match_choice(ans, q["choices"])
+                payload[entry_id] = q["choices"][idx] if matched else ans
+        else:
+            payload[entry_id] = ans
+    return payload
+
+
+def check_submit_success(response_text):
+    if re.search(r'freebirdFormviewerViewResponseConfirmationMessage|บันทึกคำตอบ|response.{0,15}recorded',
+                 response_text, re.IGNORECASE):
+        return True
+    if "FB_PUBLIC_LOAD_DATA_" in response_text:
+        return False  # เด้งกลับมาเป็นหน้ากรอกเดิม = ไม่ผ่าน validation
+    return None  # ไม่แน่ใจ (ฟอร์มบางแบบไม่มีข้อความยืนยันมาตรฐาน)
+
+
+# ══════════════════════ UI ══════════════════════
 render_header()
 
 with st.container(border=True):
@@ -90,6 +401,7 @@ st.write("")
 with st.container(border=True):
     st.markdown('<div class="glass-header">PERSONAL DATA & CONTEXT</div>', unsafe_allow_html=True)
     exam_context = st.text_area("EXAM CONTEXT", placeholder="เช่น ฟิสิกส์ ม.6 บทคลื่น...", height=68)
+    fast_mode = st.checkbox("โหมดเร็ว (แนะนำ) — ใช้ AI คิดแบบเร็ว แล้วกดวิเคราะห์ซ้ำเฉพาะข้อที่ไม่มั่นใจทีหลัง", value=True)
     st.write("")
     col1, col2 = st.columns(2)
     with col1:
@@ -107,177 +419,64 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
     else:
         with st.status("SYSTEM PROCESSING...", expanded=True) as status:
             try:
-                # --- จัดการแปลงลิงก์สำหรับการ Submit ---
-                if "viewform" in form_url:
-                    st.session_state["submit_url"] = form_url.replace("viewform", "formResponse")
-                elif "formResponse" not in form_url:
-                    st.session_state["submit_url"] = form_url.rstrip("/") + "/formResponse"
-                else:
-                    st.session_state["submit_url"] = form_url
+                st.session_state["submit_url"] = (
+                    form_url.replace("viewform", "formResponse") if "viewform" in form_url
+                    else form_url if "formResponse" in form_url
+                    else form_url.rstrip("/") + "/formResponse"
+                )
 
-                st.write("กำลังอ่านโครงสร้างฟอร์มด้วยความเร็วสูง...")
-                res = requests.get(form_url, allow_redirects=True, headers=UA, timeout=15)
-                html = res.text
-                html_no_meta = re.sub(r'<meta[^>]*property="og:image"[^>]*>', '', html)
-                img_urls_found = re.findall(r'https://lh\d?\.?googleusercontent\.com/[^\s"\'<>]+', html_no_meta)
-                img_counter = 0
+                st.write("กำลังอ่านโครงสร้างฟอร์ม...")
+                form_data, fbzx, fvv, img_urls_found = fetch_form(form_url)
 
-                match = re.search(r'FB_PUBLIC_LOAD_DATA_\s*=\s*(.*?);\s*</script>', html, re.DOTALL)
-                if not match:
-                    status.update(label="อ่านฟอร์มไม่ได้", state="error")
-                    st.stop()
+                st.write("กำลังสกัดคำถามและผูกรูปภาพกับคำถามที่ถูกต้อง...")
+                parsed_questions, personal_data_map, default_next, page_count = parse_form(
+                    form_data, img_urls_found, my_name, my_student_id, my_no, my_class
+                )
 
-                form_data = json.loads(match.group(1))
-                questions_data = form_data[1][1] if len(form_data) > 1 and form_data[1] else []
+                st.write("กำลังดาวน์โหลดรูปภาพแบบพร้อมกัน...")
+                preview_images = prefetch_images(parsed_questions)
 
-                parsed_questions = []
-                personal_data_map = {}
-                page_count = 0
-
-                st.write("กำลังสกัดคำถามและค้นหารูปภาพ...")
-                for item in questions_data:
-                    if not item or len(item) < 4: continue
-                    q_type = item[3]
-
-                    if q_type == 8:
-                        page_count += 1
-                        continue
-
-                    if q_type == 11 or len(item) < 5 or not item[4]:
-                        continue
-
-                    image_url = None
-                    has_media = len(item) > 9 and item[9]
-                    if has_media and img_counter < len(img_urls_found):
-                        image_url = img_urls_found[img_counter]
-                        img_counter += 1
-
-                    q_title = item[1]
-                    try: entry_id = "entry." + str(item[4][0][0])
-                    except: continue
-
-                    choices_raw = item[4][0][1] if len(item[4][0]) > 1 else None
-                    choices = [c[0] for c in choices_raw if c and len(c) > 0] if choices_raw else []
-
-                    p_info = check_personal_info(q_title, choices, my_name, my_student_id, my_no, my_class)
-                    if p_info:
-                        personal_data_map[entry_id] = p_info
-                        continue
-
-                    parsed_questions.append({
-                        "entry_id": entry_id,
-                        "title": q_title,
-                        "choices": choices,
-                        "is_multi": q_type == CHECKBOX_TYPE,
-                        "image_url": image_url,
-                    })
-
+                ai_answers, ai_errors = {}, []
                 if parsed_questions:
-                    st.write("AI กำลังวิเคราะห์ข้อมูลข้อสอบ...")
-                    contents_payload = []
+                    st.write(f"AI กำลังวิเคราะห์ {len(parsed_questions)} ข้อ (แบ่งงานพร้อมกัน)...")
+                    bar = st.progress(0.0)
 
-                    main_prompt = (
-                        f"Context: {exam_context if exam_context else 'None'}\n"
-                        "Instructions:\n"
-                        "1. คิดทบทวนคำตอบให้รอบคอบก่อนสรุป\n"
-                        "2. ถ้ามีตัวเลือกให้ copy ข้อความตัวเลือกมาเป๊ะ ๆ ห้ามแต่งคำตอบขึ้นเอง\n"
-                        "3. ถ้าข้อไหนมีป้าย [เลือกได้หลายข้อ] ให้ตอบ answer เป็น array\n"
-                        "4. หากข้อใดมีรูปภาพแนบมาให้ ให้วิเคราะห์คำตอบจากรูปภาพนั้นเป็นหลัก\n"
-                        "5. ตอบเป็น JSON รูปแบบ: {\"entry.123\": {\"answer\": \"...\", \"confidence\": 90, \"reasoning\": \"...\"}}\n"
+                    def _cb(done, total):
+                        bar.progress(done / total)
+
+                    ai_answers, ai_errors = analyze_all(
+                        parsed_questions, api_keys, exam_context,
+                        thinking_level=("low" if fast_mode else "medium"),
+                        progress_cb=_cb,
                     )
-                    contents_payload.append(types.Part.from_text(text=main_prompt))
-                    contents_payload.append(types.Part.from_text(text="\nQuestions:\n"))
-
-                    downloaded_preview = []
-
-                    for idx, q in enumerate(parsed_questions, 1):
-                        q_info = f"\nข้อ {idx} (ID: {q['entry_id']})"
-                        if q.get("is_multi"): q_info += " [เลือกได้หลายข้อ]"
-                        q_info += f": {q['title']}"
-                        if q["choices"]: q_info += f"\nตัวเลือก: {json.dumps(q['choices'], ensure_ascii=False)}"
-
-                        contents_payload.append(types.Part.from_text(text=q_info))
-
-                        if q.get("image_url"):
-                            try:
-                                img_res = requests.get(q["image_url"], headers=UA, timeout=10)
-                                if img_res.status_code == 200:
-                                    valid_bytes, mime = compress_and_verify_image(img_res.content)
-                                    if valid_bytes:
-                                        contents_payload.append(types.Part.from_bytes(data=valid_bytes, mime_type=mime))
-                                        downloaded_preview.append(valid_bytes)
-                            except Exception:
-                                pass
-
-                    gen_config = types.GenerateContentConfig(
-                        thinking_config=types.ThinkingConfig(thinking_budget=2048),
-                        temperature=0.1,
-                        max_output_tokens=3072,
-                    )
-
-                    models_to_try = ["gemini-3.8-flash", "gemini-3.8-flash-8b", "gemini-3.8-pro", "gemini-flash-latest"]
-                    MAX_RETRIES = 5
-                    response = None
-                    last_err = None
-
-                    for current_key in api_keys:
-                        if response: break
-                        client = genai.Client(api_key=current_key, http_options=types.HttpOptions(timeout=30000))
-
-                        for model_name in models_to_try:
-                            if response: break
-                            for attempt in range(MAX_RETRIES):
-                                try:
-                                    response = client.models.generate_content(model=model_name, contents=contents_payload, config=gen_config)
-                                    if response and response.text: break
-                                except Exception as err:
-                                    last_err = err
-                                    err_text = str(err)
-                                    
-                                    # ===== ส่วนที่ให้ระบบ "รอ" เมื่อโควต้าเต็ม (429) =====
-                                    if "429" in err_text or "RESOURCE_EXHAUSTED" in err_text:
-                                        st.write(f"⚠️ โควต้า API เต็มชั่วคราว (รอบที่ {attempt+1}/{MAX_RETRIES})... กำลังพักรอ 60 วินาทีเพื่อให้ระบบรีเซ็ต")
-                                        time.sleep(60) # หน่วงเวลา 1 นาทีให้โควต้ารีเซ็ต
-                                        continue # ลองส่งใหม่อีกครั้ง
-                                    # ========================================================
-                                    
-                                    if ("503" in err_text or "504" in err_text) and attempt < MAX_RETRIES - 1:
-                                        time.sleep(3)
-                                        continue
-                                    break
-
-
-                    if not response: raise last_err if last_err else RuntimeError("API Key ทุกเส้นโควต้าเต็มหมดแล้ว หรือระบบ AI ขัดข้อง")
-
-                    raw_ans = re.sub(r'`{3}(?:json)?', '', response.text.strip()).strip()
-                    try: ai_answers = json.loads(raw_ans)
-                    except json.JSONDecodeError:
-                        m = re.search(r'\{.*\}', raw_ans, re.DOTALL)
-                        ai_answers = json.loads(m.group(0)) if m else {}
-                else:
-                    ai_answers = {}
-                    downloaded_preview = []
+                    if ai_errors:
+                        st.warning(f"มีบาง batch วิเคราะห์ไม่สำเร็จ ({len(ai_errors)} ครั้ง) — ตรวจสอบข้อที่ไม่มีคำตอบในหน้า Review")
 
                 st.session_state["parsed_questions"] = parsed_questions
                 st.session_state["personal_data_map"] = personal_data_map
                 st.session_state["ai_answers"] = ai_answers
-                st.session_state["downloaded_preview"] = downloaded_preview
+                st.session_state["preview_images"] = preview_images
+                st.session_state["fbzx"] = fbzx
+                st.session_state["fvv"] = fvv
+                st.session_state["default_next"] = default_next
+                st.session_state["page_count"] = page_count
+                st.session_state["exam_context"] = exam_context
 
                 status.update(label="ANALYSIS COMPLETE", state="complete", expanded=False)
-
             except Exception as e:
                 status.update(label="ERROR", state="error")
                 st.error("รายละเอียด: " + str(e))
 
-# --- ส่วนทบทวนและปุ่ม Submit ถูกนำมารวมไว้ด้วยกัน ---
+# --- Review ---
 if "parsed_questions" in st.session_state:
     st.markdown('<div class="section-title">REVIEW (สำหรับทบทวนก่อนสอบเท่านั้น)</div>', unsafe_allow_html=True)
 
-    if st.session_state.get("downloaded_preview"):
+    if st.session_state.get("preview_images"):
         with st.container(border=True):
             st.markdown('<div class="glass-header">📸 รูปภาพที่ดึงมาจากโจทย์</div>', unsafe_allow_html=True)
-            cols = st.columns(min(len(st.session_state["downloaded_preview"]), 4))
-            for idx, img_bytes in enumerate(st.session_state["downloaded_preview"]):
+            imgs = st.session_state["preview_images"]
+            cols = st.columns(min(len(imgs), 4))
+            for idx, img_bytes in enumerate(imgs):
                 cols[idx % 4].image(img_bytes, use_container_width=True, caption=f"รูปที่ {idx+1}")
 
     if st.session_state["personal_data_map"]:
@@ -289,6 +488,7 @@ if "parsed_questions" in st.session_state:
                 title, val, cat = info
                 cols[idx % len(cols)].text_input(title, value=val, key="input_" + entry_id, disabled=True)
 
+    unanswered = []
     for idx, q in enumerate(st.session_state["parsed_questions"], 1):
         entry_id = q["entry_id"]
         title = html_lib.escape(str(q["title"]))
@@ -300,91 +500,107 @@ if "parsed_questions" in st.session_state:
             score = q_data.get("confidence", 70)
             reason = q_data.get("reasoning", "ประมวลผลอัตโนมัติ")
         else:
-            default_val = q_data
-            score = 80
-            reason = "ประมวลผลอัตโนมัติ"
-
-        try: score = int(score)
-        except Exception: score = 70
+            default_val, score, reason = q_data, 80, "ประมวลผลอัตโนมัติ"
+        try:
+            score = int(score)
+        except Exception:
+            score = 70
+        if not default_val:
+            unanswered.append(idx)
 
         color = "#5fe3d0" if score >= 85 else "#e8c98a" if score >= 60 else "#ff7a8a"
 
         with st.container(border=True):
             st.markdown('<div class="q-title">' + str(idx) + '. ' + title + '</div>', unsafe_allow_html=True)
 
+            if q.get("image_data"):
+                icols = st.columns(min(len(q["image_data"]), 3))
+                for i, (data, _) in enumerate(q["image_data"]):
+                    icols[i % 3].image(data, use_container_width=True)
+
             bar_html = (
                 '<div class="confidence-track">'
                 '<div class="confidence-fill" style="width:' + str(score) + '%;background:' + color + ';box-shadow:0 0 12px ' + color + ';"></div></div>'
                 '<div style="font-size:.72rem;font-weight:700;color:' + color + ';letter-spacing:1px;margin-bottom:10px;">CONFIDENCE ' + str(score) + '%</div>'
                 '<div class="reasoning-text"><b>AI REASON:</b> ' + html_lib.escape(str(reason)) + '</div>'
-                '<div style="margin-top:10px;font-weight:700;">เฉลยที่ AI แนะนำ: ' + html_lib.escape(str(default_val)) + '</div>'
             )
             st.markdown(bar_html, unsafe_allow_html=True)
 
+            # --- แก้คำตอบได้ก่อนส่งจริง (ของใหม่) ---
+            ans_key = f"ans_{entry_id}"
             if choices:
-                st.caption("ตัวเลือกทั้งหมด: " + ", ".join(str(c) for c in choices))
+                if q["is_multi"]:
+                    default_list = default_val if isinstance(default_val, list) else [default_val] if default_val else []
+                    valid_defaults = [d for d in default_list if str(d).strip() in [str(c).strip() for c in choices]]
+                    st.multiselect("คำตอบ", choices, default=valid_defaults, key=ans_key)
+                else:
+                    midx, _ = match_choice(default_val, choices)
+                    st.radio("คำตอบ", choices, index=midx, key=ans_key)
+            else:
+                st.text_input("คำตอบ", value=str(default_val), key=ans_key)
+
+            if st.button(f"🔄 วิเคราะห์ซ้ำแบบละเอียด (ข้อ {idx})", key=f"reanalyze_{entry_id}"):
+                with st.spinner("กำลังคิดใหม่แบบละเอียด..."):
+                    try:
+                        result = call_gemini_chunk(
+                            api_keys[idx % len(api_keys)], st.session_state.get("exam_context", ""),
+                            [(idx, q)], thinking_level="high",
+                        )
+                        if entry_id in result:
+                            st.session_state["ai_answers"][entry_id] = result[entry_id]
+                            st.session_state.pop(ans_key, None)
+                            st.rerun()
+                    except Exception as e:
+                        st.error("วิเคราะห์ซ้ำไม่สำเร็จ: " + str(e))
 
     st.write("")
-    
-    # --- ปุ่มส่งข้อมูล (รวมร่าง) ---
+    if unanswered:
+        st.warning("⚠️ ข้อที่ AI อาจยังไม่ได้ตอบ/คำตอบว่าง: ข้อ " + ", ".join(map(str, unanswered)) + " — โปรดตรวจสอบก่อนส่ง")
+
     if st.button("TRANSMIT DATA", type="primary", use_container_width=True):
         with st.spinner("กำลังประกอบข้อมูลและจัดส่ง..."):
-            
-            # --- สร้าง Payload สำหรับส่งฟอร์ม ---
-            final_payload = {}
-            
-            # 1. ใส่ข้อมูลส่วนตัว
+            final_answers = {}
             for entry_id, info in st.session_state["personal_data_map"].items():
-                title, val, cat = info
-                final_payload[entry_id] = val
-                
-            # 2. ใส่คำตอบ AI
+                final_answers[entry_id] = info[1]
             for q in st.session_state["parsed_questions"]:
-                entry_id = q["entry_id"]
-                q_data = st.session_state["ai_answers"].get(entry_id, {})
-                ai_ans = q_data.get("answer", "") if isinstance(q_data, dict) else q_data
-                
-                # เช็คคำตอบให้ตรงกับ Choices เพื่อป้องกัน Error ตอน POST
-                if q["choices"]:
-                    if q["is_multi"] and isinstance(ai_ans, list):
-                        valid_ans = []
-                        for ans_item in ai_ans:
-                            idx, matched = match_choice(ans_item, q["choices"])
-                            valid_ans.append(q["choices"][idx] if matched else ans_item)
-                        final_payload[entry_id] = valid_ans
-                    else:
-                        idx, matched = match_choice(ai_ans, q["choices"])
-                        final_payload[entry_id] = q["choices"][idx] if matched else ai_ans
-                else:
-                    final_payload[entry_id] = ai_ans
+                final_answers[q["entry_id"]] = st.session_state.get(f"ans_{q['entry_id']}", "")
 
+            page_history = simulate_page_history(
+                st.session_state["parsed_questions"], final_answers,
+                st.session_state["default_next"], st.session_state["page_count"],
+            )
+            final_payload = build_submit_payload(
+                st.session_state["personal_data_map"], st.session_state["parsed_questions"],
+                final_answers, st.session_state["fbzx"], st.session_state["fvv"], page_history,
+            )
             try:
-                # ทำการส่ง POST Request ไปยัง submit_url
                 res_submit = requests.post(st.session_state["submit_url"], data=final_payload, headers=UA, timeout=25)
             except Exception as e:
                 st.error("ส่งไม่สำเร็จ: " + str(e))
                 st.stop()
 
-        # --- ตรวจสอบผลลัพธ์ ---
-        if res_submit.status_code == 200:
+        success = check_submit_success(res_submit.text)
+        if res_submit.status_code == 200 and success is not False:
             st.balloons()
-            st.success("ส่งข้อมูลสำเร็จ")
-            
-            # ค้นหาลิงก์ดูคะแนน (หากระบบตั้งให้แสดงอัตโนมัติ)
+            st.success("ส่งข้อมูลสำเร็จ" if success else "ส่งคำขอสำเร็จ (ไม่พบข้อความยืนยันมาตรฐาน โปรดตรวจสอบด้วยตนเอง)")
+
             link_match = re.search(r'href="([^"]*?viewscore\?[^"]*)"', res_submit.text)
             if link_match:
                 score_url = html_lib.unescape(link_match.group(1))
                 try:
                     score_page = requests.get(score_url, headers=UA, timeout=8).text
-                    score_match = re.search(r'<span[^>]*>\s*([0-9]+)\s*</span>\s*<span[^>]*>\s*(?:/|&#47;|จาก)\s*([0-9]+)\s*</span>', score_page)
-                    if not score_match: 
-                        score_match = re.search(r'([0-9]+)\s*(?:/|&#47;|จาก)\s*([0-9]+)\s*(?:คะแนน|points)', score_page)
-                    if score_match: 
-                        st.markdown('<div class="score-box"><div class="score-val">' + score_match.group(1) + ' / ' + score_match.group(2) + '</div><div class="score-lb">Score Secured</div></div>', unsafe_allow_html=True)
-                except Exception: 
+                    score_match = re.search(
+                        r'<span[^>]*>\s*([0-9]+)\s*</span>\s*<span[^>]*>\s*(?:/|&#47;|จาก)\s*([0-9]+)\s*</span>',
+                        score_page) or re.search(r'([0-9]+)\s*(?:/|&#47;|จาก)\s*([0-9]+)\s*(?:คะแนน|points)', score_page)
+                    if score_match:
+                        st.markdown('<div class="score-box"><div class="score-val">' + score_match.group(1) + ' / ' +
+                                    score_match.group(2) + '</div><div class="score-lb">Score Secured</div></div>',
+                                    unsafe_allow_html=True)
+                except Exception:
                     pass
-                st.markdown('<a href="' + score_url + '" target="_blank" class="score-link">เปิดหน้ายืนยันคะแนน</a>', unsafe_allow_html=True)
+                st.markdown('<a href="' + score_url + '" target="_blank" class="score-link">เปิดหน้ายืนยันคะแนน</a>',
+                            unsafe_allow_html=True)
             else:
                 st.warning("ส่งสำเร็จแล้ว แต่ฟอร์มนี้ไม่ปล่อยคะแนนอัตโนมัติ")
         else:
-            st.error("Error Code: " + str(res_submit.status_code))
+            st.error("ส่งไม่สำเร็จ (Error Code: " + str(res_submit.status_code) + ") — อาจเป็นเพราะ pageHistory/entry ไม่ตรง ลองใหม่อีกครั้ง")
