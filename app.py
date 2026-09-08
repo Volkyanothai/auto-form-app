@@ -1,11 +1,10 @@
 """
-app.py — EZEXAM Auto Form System (Hotfix v2)
+app.py — EZEXAM Auto Form System (Hotfix v3)
 =============================================
 แก้ไข:
-- ระบบดึงรูปภาพผิดพลาด (global fallback)
-- AI ตอบ 0 ข้อ (response_schema ไม่รองรับ)
-- ตัวพิมพ์ผิด out_mipe
-- เพิ่ม debug mode
+- ชื่อโมเดล Gemini ให้รองรับ v1beta
+- ดึงรูปภาพจาก has_media flag + global URL pool
+- ค้นหารูปภาพลึกขึ้นในโครงสร้างฟอร์ม
 """
 from __future__ import annotations
 
@@ -49,7 +48,16 @@ TYPE_DROPDOWN = 3
 TYPE_TEXT = 0
 TYPE_PARAGRAPH = 1
 
-MODELS_TO_TRY = ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro"]
+# ชื่อโมเดลที่รองรับ v1beta
+MODELS_TO_TRY = [
+    "gemini-2.0-flash-exp",
+    "gemini-2.0-flash",
+    "gemini-2.0-flash-001",
+    "gemini-1.5-flash-latest",
+    "gemini-1.5-flash",
+    "gemini-1.5-flash-8b-latest",
+]
+
 CHUNK_SIZE = 2
 MAX_PARALLEL_WORKERS = 2
 MAX_MODEL_ATTEMPTS = 3
@@ -121,18 +129,7 @@ class Question:
     branch_map: Dict[str, int] = field(default_factory=dict)
     choice_images: Dict[int, List[QuestionImage]] = field(default_factory=dict)
     q_type: int = TYPE_TEXT
-
-
-@dataclass
-class ParsedForm:
-    questions: List[Question]
-    personal_data_map: Dict[str, Tuple[str, str, str]]
-    default_next: List[int]
-    page_count: int
-    fbzx: str
-    fvv: str
-    submit_url: str
-    raw_html: str
+    has_media: bool = False
 
 
 def safe_get(obj: Any, path: List[Union[int, str]], default: Any = None) -> Any:
@@ -344,9 +341,35 @@ def process_image_from_url(url: Optional[str], raw_bytes: Optional[bytes] = None
     )
 
 
-def extract_images_from_entry(entry: Any) -> Tuple[List[QuestionImage], Dict[int, List[QuestionImage]]]:
+def find_image_urls_recursive(obj: Any, max_depth: int = 8) -> List[str]:
+    """ค้นหา image URLs ใน nested structure แบบ recursive"""
+    found = []
+    if max_depth <= 0:
+        return found
+
+    if isinstance(obj, str):
+        return find_all_image_urls(obj)
+    elif isinstance(obj, list):
+        for item in obj:
+            found.extend(find_image_urls_recursive(item, max_depth - 1))
+    elif isinstance(obj, dict):
+        for v in obj.values():
+            found.extend(find_image_urls_recursive(v, max_depth - 1))
+
+    # กรองซ้ำ
+    seen = set()
+    unique = []
+    for url in found:
+        if url not in seen:
+            seen.add(url)
+            unique.append(url)
+    return unique
+
+
+def extract_images_from_entry(entry: Any, global_url_pool: List[str], global_index_ptr: List[int]) -> Tuple[List[QuestionImage], Dict[int, List[QuestionImage]]]:
     """
-    ดึงรูปภาพจาก entry โดยไม่ใช้ global fallback
+    ดึงรูปภาพจาก entry
+    global_index_ptr เป็น list ขนาด 1 เพื่อเก็บตำแหน่งปัจจุบันใน global_url_pool
     """
     question_images: List[QuestionImage] = []
     choice_images: Dict[int, List[QuestionImage]] = {}
@@ -354,9 +377,19 @@ def extract_images_from_entry(entry: Any) -> Tuple[List[QuestionImage], Dict[int
     if not entry:
         return question_images, choice_images
 
-    entry_json = json.dumps(entry, ensure_ascii=False)
+    # ตรวจ has_media flag
+    has_media = False
+    for mf in [9, 13, 10, 11, 12]:
+        media_val = safe_get(entry, [mf])
+        if media_val:
+            has_media = True
+            break
 
-    # 1. หา base64 จากทั้ง entry
+    # 1. ค้นหา URLs แบบ recursive ทั้ง entry
+    entry_urls = find_image_urls_recursive(entry)
+
+    # 2. หา base64
+    entry_json = json.dumps(entry, ensure_ascii=False)
     for mime, data in extract_base64_images(entry_json):
         valid, fmt, size = validate_image(data)
         if valid:
@@ -372,43 +405,36 @@ def extract_images_from_entry(entry: Any) -> Tuple[List[QuestionImage], Dict[int
                     status=status,
                 ))
 
-    # 2. หา URL จาก media field ที่เป็นไปได้
-    media_fields = [8, 9, 10, 11, 12, 13]
-    media_urls = []
-    for mf in media_fields:
-        media = safe_get(entry, [mf])
-        if media:
-            media_json = json.dumps(media, ensure_ascii=False)
-            media_urls.extend(find_all_image_urls(media_json))
+    # 3. เพิ่ม URLs ที่เจอจาก entry
+    for u in entry_urls:
+        question_images.append(QuestionImage(
+            source="question",
+            url=u,
+            data=None,
+            mime_type="image/jpeg",
+            status="pending",
+        ))
 
-    # 3. หา URL จาก title/description
-    for field_idx in [1, 2]:
-        field_text = safe_get(entry, [field_idx], "")
-        if isinstance(field_text, str):
-            media_urls.extend(find_all_image_urls(field_text))
+    # 4. ถ้ามี has_media แต่ไม่เจอ URL ใดๆ ให้ใช้ global URL pool
+    if has_media and not question_images and global_index_ptr[0] < len(global_url_pool):
+        u = global_url_pool[global_index_ptr[0]]
+        global_index_ptr[0] += 1
+        question_images.append(QuestionImage(
+            source="global_fallback",
+            url=u,
+            data=None,
+            mime_type="image/jpeg",
+            status="pending",
+        ))
 
-    # กรองซ้ำ
-    seen_urls = set()
-    for u in media_urls:
-        if u not in seen_urls:
-            seen_urls.add(u)
-            question_images.append(QuestionImage(
-                source="question",
-                url=u,
-                data=None,
-                mime_type="image/jpeg",
-                status="pending",
-            ))
-
-    # 4. หา URL จากตัวเลือก
+    # 5. หา URL จากตัวเลือก
     choices_raw = safe_get(entry, [4, 0, 1])
     if choices_raw and isinstance(choices_raw, list):
         for ci, choice in enumerate(choices_raw):
             if not choice:
                 continue
-            choice_json = json.dumps(choice, ensure_ascii=False)
-            choice_urls = find_all_image_urls(choice_json)
-            choice_base64 = extract_base64_images(choice_json)
+            choice_urls = find_image_urls_recursive(choice)
+            choice_base64 = extract_base64_images(json.dumps(choice, ensure_ascii=False))
 
             for u in choice_urls:
                 choice_images.setdefault(ci, []).append(QuestionImage(
@@ -495,18 +521,15 @@ def match_choice(ai_answer: Any, choices: List[str]) -> Tuple[int, bool]:
     if not ai_clean:
         return -1, False
 
-    # Exact
     for i, c in enumerate(clean_choices):
         if c == ai_clean:
             return i, True
 
-    # Case-insensitive
     ai_lower = ai_clean.lower()
     for i, c in enumerate(clean_choices):
         if c.lower() == ai_lower:
             return i, True
 
-    # ตัวอักษรนำ
     letter_match = re.match(r'^(?:ข้อ\s*)?[\(\[]?([ก-ฮa-zA-Z0-9]+)[\)\].]?\s*(.*)$', ai_clean)
     if letter_match:
         letter = letter_match.group(1)
@@ -515,14 +538,12 @@ def match_choice(ai_answer: Any, choices: List[str]) -> Tuple[int, bool]:
             if m:
                 return i, True
 
-    # Normalized substring
     for i, c in enumerate(clean_choices):
         c_norm = normalize_choice(c)
         ai_norm = normalize_choice(ai_clean)
         if c_norm and ai_norm and (c_norm == ai_norm or c_norm.startswith(ai_norm) or ai_norm.startswith(c_norm)):
             return i, True
 
-    # Fuzzy
     close = difflib.get_close_matches(ai_clean, clean_choices, n=1, cutoff=0.65)
     if close:
         return clean_choices.index(close[0]), True
@@ -589,6 +610,11 @@ def parse_form(
     if not isinstance(entries, list):
         raise RuntimeError("ไม่พบรายการคำถามในฟอร์ม")
 
+    # ดึง global image URLs จาก HTML
+    html_no_meta = re.sub(r'<meta[^>]*property="og:image"[^>]*>', '', raw_html)
+    global_urls = find_all_image_urls(html_no_meta)
+    global_index_ptr = [0]
+
     questions: List[Question] = []
     personal_data_map: Dict[str, Tuple[str, str, str]] = {}
 
@@ -631,12 +657,19 @@ def parse_form(
         is_multi = q_type == TYPE_CHECKBOX
         is_required = bool(safe_get(item, [4, 0, 2], False)) or bool(safe_get(item, [5], False))
 
+        # ตรวจ has_media
+        has_media = False
+        for mf in [9, 13, 10, 11, 12]:
+            if safe_get(item, [mf]):
+                has_media = True
+                break
+
         p_info = check_personal_info(full_title, choices, my_name, my_student_id, my_no, my_class)
         if p_info:
             personal_data_map[entry_id] = p_info
             continue
 
-        q_images, c_images = extract_images_from_entry(item)
+        q_images, c_images = extract_images_from_entry(item, global_urls, global_index_ptr)
 
         branch_map: Dict[str, int] = {}
         if choices_raw and isinstance(choices_raw, list):
@@ -659,6 +692,7 @@ def parse_form(
             branch_map=branch_map,
             choice_images=c_images,
             q_type=q_type,
+            has_media=has_media,
         ))
 
     default_next: List[int] = []
@@ -774,12 +808,10 @@ def build_question_parts(idx: int, q: Question) -> List[types.Part]:
 
 
 def parse_ai_response(resp_text: str) -> Dict[str, Any]:
-    """แปลงคำตอบ AI หลายรูปแบบ"""
     raw = resp_text.strip()
     raw = re.sub(r'^```(?:json)?\s*', '', raw)
     raw = re.sub(r'\s*```$', '', raw)
 
-    # ลองหา JSON object ใหญ่สุด
     try:
         data = json.loads(raw)
         if isinstance(data, dict):
@@ -787,7 +819,6 @@ def parse_ai_response(resp_text: str) -> Dict[str, Any]:
     except Exception:
         pass
 
-    # หา { ... } ใหญ่สุด
     matches = re.findall(r'\{.*\}', raw, re.DOTALL)
     if matches:
         for m in sorted(matches, key=len, reverse=True):
@@ -798,7 +829,6 @@ def parse_ai_response(resp_text: str) -> Dict[str, Any]:
             except Exception:
                 continue
 
-    # หา [ ... ]
     matches = re.findall(r'\[.*\]', raw, re.DOTALL)
     if matches:
         for m in sorted(matches, key=len, reverse=True):
@@ -817,7 +847,6 @@ def call_gemini_chunk(
     exam_context: str,
     chunk: List[Tuple[int, Question]],
     thinking_level: str = "low",
-    use_schema: bool = True,
 ) -> Dict[str, Any]:
     client = genai.Client(api_key=api_key, http_options=types.HttpOptions(timeout=120000))
 
@@ -835,35 +864,6 @@ def call_gemini_chunk(
         temperature=0.15,
         top_p=0.95,
     )
-
-    if use_schema:
-        try:
-            gen_config.response_schema = {
-                "type": "object",
-                "properties": {
-                    "answers": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "entry_id": {"type": "string"},
-                                "answer": {
-                                    "anyOf": [
-                                        {"type": "string"},
-                                        {"type": "array", "items": {"type": "string"}},
-                                    ]
-                                },
-                                "confidence": {"type": "integer", "minimum": 0, "maximum": 100},
-                                "reasoning": {"type": "string"},
-                            },
-                            "required": ["entry_id", "answer", "confidence", "reasoning"],
-                        },
-                    }
-                },
-                "required": ["answers"],
-            }
-        except Exception as e:
-            logger.warning(f"ไม่สามารถตั้งค่า response_schema ได้: {e}")
 
     if THINKING_CONFIG_AVAILABLE:
         try:
@@ -917,6 +917,10 @@ def call_gemini_chunk(
                     time.sleep(5)
                     continue
 
+                # ถ้าเป็น 404 หรือ model ไม่รองรับ ให้ลอง model ถัดไปทันที
+                if "not found" in msg or "not supported" in msg:
+                    break
+
                 break
 
     raise last_err or RuntimeError("โมเดลไม่ตอบสนองหลังจากลองทุกตัวเลือก")
@@ -942,7 +946,7 @@ def analyze_all(
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {
-            pool.submit(call_gemini_chunk, keys[i % len(keys)], exam_context, chunk, thinking_level, True): chunk
+            pool.submit(call_gemini_chunk, keys[i % len(keys)], exam_context, chunk, thinking_level): chunk
             for i, chunk in enumerate(chunks)
         }
 
@@ -1051,7 +1055,7 @@ def check_submit_success(response_text: str, status_code: int) -> Tuple[bool, Op
         return False, f"HTTP {status_code}"
 
     success_markers = [
-        "freebirdFormviewerViewResponseConfirmationMessage",
+        "freebirdFormviewerViewresponseconfirmationmessage",
         "บันทึกคำตอบ",
         "response received",
         "thank you",
@@ -1230,7 +1234,7 @@ if "questions" in st.session_state:
             for qi, q in enumerate(questions, 1):
                 ready = sum(1 for img in q.images if img.is_ready())
                 total = len(q.images)
-                st.text(f"ข้อ {qi}: {ready}/{total} รูป | choices: {len(q.choices)} | type: {q.q_type}")
+                st.text(f"ข้อ {qi}: {ready}/{total} รูป | has_media: {q.has_media} | choices: {len(q.choices)} | type: {q.q_type}")
 
     total_q = len(questions)
     answered = sum(1 for q in questions if get_ai_answer(ai_answers, q.entry_id).get("answer"))
