@@ -1,10 +1,11 @@
 """
-app.py — EZEXAM Auto Form System (Hotfix v3)
+app.py — EZEXAM Auto Form System (Hotfix v4)
 =============================================
 แก้ไข:
-- ชื่อโมเดล Gemini ให้รองรับ v1beta
-- ดึงรูปภาพจาก has_media flag + global URL pool
-- ค้นหารูปภาพลึกขึ้นในโครงสร้างฟอร์ม
+- ใช้ชื่อโมเดล Gemini ที่รองรับปัจจุบัน (gemini-2.5-flash, gemini-2.5-pro)
+- ดึงรูปภาพจาก HTML img tags โดยตรง
+- ใช้ global URL pool fallback แบบเดิมที่เคยทำงานได้
+- เพิ่ม debug แสดงจำนวน global URLs
 """
 from __future__ import annotations
 
@@ -48,14 +49,14 @@ TYPE_DROPDOWN = 3
 TYPE_TEXT = 0
 TYPE_PARAGRAPH = 1
 
-# ชื่อโมเดลที่รองรับ v1beta
+# ═══════════════════════════════════════════════════════════
+# ชื่อโมเดลที่รองรับปัจจุบัน (ตรวจสอบจาก Google AI ก.ย. 2025)
+# ═══════════════════════════════════════════════════════════
 MODELS_TO_TRY = [
-    "gemini-2.0-flash-exp",
-    "gemini-2.0-flash",
-    "gemini-2.0-flash-001",
-    "gemini-1.5-flash-latest",
-    "gemini-1.5-flash",
-    "gemini-1.5-flash-8b-latest",
+    "gemini-2.5-flash",                       # stable, แนะนำหลัก
+    "gemini-2.5-pro",                         # stable, แรงกว่า
+    "gemini-2.5-flash-lite-preview-06-17",    # preview ราคาถูก
+    "gemini-2.0-flash-preview-image-generation",  # รองรับรูปภาพ
 ]
 
 CHUNK_SIZE = 2
@@ -172,6 +173,36 @@ def find_all_image_urls(text: str) -> List[str]:
     seen = set()
     unique = []
     for url in found:
+        url = url.rstrip('"\'\\),;> ')
+        if url not in seen and len(url) > 10:
+            seen.add(url)
+            unique.append(url)
+    return unique
+
+
+def extract_image_urls_from_html(html: str) -> List[str]:
+    """ดึง image URLs จาก HTML img tags โดยตรง"""
+    urls = []
+    
+    # 1. จาก src attribute
+    src_pattern = re.compile(r'<img[^>]+src=["\'](https?://[^"\']+)["\']', re.IGNORECASE)
+    urls.extend(src_pattern.findall(html))
+    
+    # 2. จาก data-src (lazy loading)
+    datasrc_pattern = re.compile(r'<img[^>]+data-src=["\'](https?://[^"\']+)["\']', re.IGNORECASE)
+    urls.extend(datasrc_pattern.findall(html))
+    
+    # 3. จาก background-image url
+    bg_pattern = re.compile(r'background-image:\s*url\(["\']?(https?://[^"\')]+)["\']?\)', re.IGNORECASE)
+    urls.extend(bg_pattern.findall(html))
+    
+    # 4. จาก generic URL patterns
+    urls.extend(find_all_image_urls(html))
+    
+    # กรองซ้ำ
+    seen = set()
+    unique = []
+    for url in urls:
         url = url.rstrip('"\'\\),;> ')
         if url not in seen and len(url) > 10:
             seen.add(url)
@@ -342,7 +373,6 @@ def process_image_from_url(url: Optional[str], raw_bytes: Optional[bytes] = None
 
 
 def find_image_urls_recursive(obj: Any, max_depth: int = 8) -> List[str]:
-    """ค้นหา image URLs ใน nested structure แบบ recursive"""
     found = []
     if max_depth <= 0:
         return found
@@ -356,7 +386,6 @@ def find_image_urls_recursive(obj: Any, max_depth: int = 8) -> List[str]:
         for v in obj.values():
             found.extend(find_image_urls_recursive(v, max_depth - 1))
 
-    # กรองซ้ำ
     seen = set()
     unique = []
     for url in found:
@@ -366,10 +395,14 @@ def find_image_urls_recursive(obj: Any, max_depth: int = 8) -> List[str]:
     return unique
 
 
-def extract_images_from_entry(entry: Any, global_url_pool: List[str], global_index_ptr: List[int]) -> Tuple[List[QuestionImage], Dict[int, List[QuestionImage]]]:
+def extract_images_from_entry(
+    entry: Any,
+    global_url_pool: List[str],
+    global_index_ptr: List[int],
+    html: str,
+) -> Tuple[List[QuestionImage], Dict[int, List[QuestionImage]]]:
     """
-    ดึงรูปภาพจาก entry
-    global_index_ptr เป็น list ขนาด 1 เพื่อเก็บตำแหน่งปัจจุบันใน global_url_pool
+    ดึงรูปภาพจาก entry พร้อม fallback จาก global pool
     """
     question_images: List[QuestionImage] = []
     choice_images: Dict[int, List[QuestionImage]] = {}
@@ -599,7 +632,7 @@ def parse_form(
     my_student_id: str,
     my_no: str,
     my_class: str,
-) -> Tuple[List[Question], Dict[str, Tuple[str, str, str]], List[int], int]:
+) -> Tuple[List[Question], Dict[str, Tuple[str, str, str]], List[int], int, List[str]]:
     entries = safe_get(form_data, [1, 1], [])
     if not entries:
         if isinstance(form_data, list) and len(form_data) > 1 and isinstance(form_data[1], list) and len(form_data[1]) > 1:
@@ -610,9 +643,9 @@ def parse_form(
     if not isinstance(entries, list):
         raise RuntimeError("ไม่พบรายการคำถามในฟอร์ม")
 
-    # ดึง global image URLs จาก HTML
+    # ดึง global image URLs จาก HTML หลายวิธี
     html_no_meta = re.sub(r'<meta[^>]*property="og:image"[^>]*>', '', raw_html)
-    global_urls = find_all_image_urls(html_no_meta)
+    global_urls = extract_image_urls_from_html(html_no_meta)
     global_index_ptr = [0]
 
     questions: List[Question] = []
@@ -657,7 +690,6 @@ def parse_form(
         is_multi = q_type == TYPE_CHECKBOX
         is_required = bool(safe_get(item, [4, 0, 2], False)) or bool(safe_get(item, [5], False))
 
-        # ตรวจ has_media
         has_media = False
         for mf in [9, 13, 10, 11, 12]:
             if safe_get(item, [mf]):
@@ -669,7 +701,7 @@ def parse_form(
             personal_data_map[entry_id] = p_info
             continue
 
-        q_images, c_images = extract_images_from_entry(item, global_urls, global_index_ptr)
+        q_images, c_images = extract_images_from_entry(item, global_urls, global_index_ptr, raw_html)
 
         branch_map: Dict[str, int] = {}
         if choices_raw and isinstance(choices_raw, list):
@@ -706,7 +738,7 @@ def parse_form(
         default_next.append(nxt)
 
     page_count = len(pages_meta)
-    return questions, personal_data_map, default_next, page_count
+    return questions, personal_data_map, default_next, page_count, global_urls
 
 
 def simulate_page_history(
@@ -917,7 +949,6 @@ def call_gemini_chunk(
                     time.sleep(5)
                     continue
 
-                # ถ้าเป็น 404 หรือ model ไม่รองรับ ให้ลอง model ถัดไปทันที
                 if "not found" in msg or "not supported" in msg:
                     break
 
@@ -1055,7 +1086,7 @@ def check_submit_success(response_text: str, status_code: int) -> Tuple[bool, Op
         return False, f"HTTP {status_code}"
 
     success_markers = [
-        "freebirdFormviewerViewresponseconfirmationmessage",
+        "freebirdformviewerviewresponseconfirmationmessage",
         "บันทึกคำตอบ",
         "response received",
         "thank you",
@@ -1158,7 +1189,7 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                 form_data, fbzx, fvv, raw_html, submit_url = fetch_form(form_url)
 
                 st.write("🧩 กำลังสกัดคำถาม...")
-                questions, personal_data_map, default_next, page_count = parse_form(
+                questions, personal_data_map, default_next, page_count, global_urls = parse_form(
                     form_data, raw_html, my_name, my_student_id, my_no, my_class
                 )
 
@@ -1209,6 +1240,7 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                     "exam_context": exam_context,
                     "submit_url": submit_url,
                     "debug_logs": debug_logs,
+                    "global_urls": global_urls,
                 })
                 status.update(label="ANALYSIS COMPLETE", state="complete", expanded=False)
 
@@ -1225,16 +1257,21 @@ if "questions" in st.session_state:
     ai_answers = st.session_state.get("ai_answers", {})
     personal_data_map = st.session_state.get("personal_data_map", {})
     debug_logs = st.session_state.get("debug_logs", [])
+    global_urls = st.session_state.get("global_urls", [])
 
     if st.session_state.get("debug_mode") or debug_mode:
         with st.expander("🔧 Debug Logs", expanded=True):
+            st.write(f"**Global URLs found: {len(global_urls)}**")
+            for i, url in enumerate(global_urls[:10]):
+                st.text(f"{i+1}. {url[:100]}...")
+            st.write("**Chunk results:**")
             for log in debug_logs:
                 st.text(log)
             st.write("**Image counts per question:**")
             for qi, q in enumerate(questions, 1):
                 ready = sum(1 for img in q.images if img.is_ready())
                 total = len(q.images)
-                st.text(f"ข้อ {qi}: {ready}/{total} รูป | has_media: {q.has_media} | choices: {len(q.choices)} | type: {q.q_type}")
+                st.text(f"ข้อ {qi}: {ready}/{total} รูป | has_media: {q.has_media} | source: {[img.source for img in q.images]} | choices: {len(q.choices)} | type: {q.q_type}")
 
     total_q = len(questions)
     answered = sum(1 for q in questions if get_ai_answer(ai_answers, q.entry_id).get("answer"))
