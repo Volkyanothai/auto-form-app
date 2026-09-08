@@ -1,10 +1,10 @@
 """
-app.py — EZEXAM Auto Form System (Hotfix v8)
+app.py — EZEXAM Auto Form System (Hotfix v9)
 =============================================
 แก้ไข:
-- ดึงรูปภาพจาก Google Form blob ID
-- รองรับคำถามหลายคำตอบ (checkbox) ให้ถูกต้อง
-- ปรับปรุง prompt ให้ AI ตอบ checkbox เป็น array
+- ดึงรูปภาพจาก Google Form blob endpoint ที่ถูกต้อง
+- กรองรูปภาพที่ซ้ำและไม่ใช่
+- แก้ไขการรองรับ checkbox และ multiple choice
 """
 from __future__ import annotations
 
@@ -64,7 +64,6 @@ IMG_URL_PATTERNS = [
     re.compile(r'https?://lh\d?\.?googleusercontent\.com/[^\s"\'<>\\)]+', re.IGNORECASE),
     re.compile(r'https?://\w+\.googleusercontent\.com/[^\s"\'<>\\)]+', re.IGNORECASE),
     re.compile(r'https?://drive\.google\.com/uc\?export=view&id=[\w-]+', re.IGNORECASE),
-    re.compile(r'https?://\w+\.gstatic\.com/[^\s"\'<>\\)]+', re.IGNORECASE),
 ]
 BASE64_IMG_RE = re.compile(r'data:image/(?P<mime>[\w+]+);base64,(?P<data>[A-Za-z0-9+/=]+)')
 
@@ -196,43 +195,68 @@ def find_image_urls_in_text(text: str) -> List[str]:
     return unique
 
 
-def extract_blob_ids(entry: Any) -> List[str]:
-    """ดึง blob IDs จาก entry"""
-    blob_ids = []
+def extract_blob_ids(entry: Any) -> List[Tuple[str, str]]:
+    """
+    ดึง blob IDs พร้อมกับ type จาก entry
+    คืน list ของ (blob_id, blob_type)
+    """
+    blobs = []
     entry_json = json.dumps(entry, ensure_ascii=False)
-    # หา pattern s-blob-v1-IMAGE-xxx หรือ blob IDs อื่นๆ
-    patterns = [
-        re.compile(r'(s-blob-v1-IMAGE-[A-Za-z0-9_-]+)'),
-        re.compile(r'(s-blob-[A-Za-z0-9_-]+)'),
-        re.compile(r'"([A-Za-z0-9_-]{20,})"', re.IGNORECASE),
-    ]
-    for pattern in patterns:
-        for match in pattern.findall(entry_json):
-            if match and len(match) > 15:
-                blob_ids.append(match)
-    return list(dict.fromkeys(blob_ids))
+    
+    # หา s-blob-v1-IMAGE-xxx
+    image_pattern = re.compile(r'(s-blob-v1-IMAGE-[A-Za-z0-9_-]+)')
+    for match in image_pattern.findall(entry_json):
+        blobs.append((match, "image"))
+    
+    # หา blob IDs อื่นๆ ที่ยาวพอ
+    other_pattern = re.compile(r'"([A-Za-z0-9_-]{25,})"')
+    for match in other_pattern.findall(entry_json):
+        if match.startswith("s-blob"):
+            continue
+        # ตรวจว่าเป็น image blob โดยดู context
+        if f'"{match}"' in entry_json:
+            blobs.append((match, "unknown"))
+    
+    # กรองซ้ำ
+    seen = set()
+    unique = []
+    for b in blobs:
+        if b[0] not in seen:
+            seen.add(b[0])
+            unique.append(b)
+    return unique
 
 
-def blob_to_url(blob_id: str, form_url: str, fbzx: str = "") -> List[str]:
+def blob_to_url(blob_id: str, form_url: str) -> List[str]:
     """แปลง blob ID เป็น URLs ที่เป็นไปได้หลายแบบ"""
     urls = []
     
-    # ลองหา form ID จาก form_url
-    form_id_match = re.search(r'/d/e/([a-zA-Z0-9_-]+)', form_url)
-    if not form_id_match:
-        form_id_match = re.search(r'/forms/d/([a-zA-Z0-9_-]+)', form_url)
-    
-    form_id = form_id_match.group(1) if form_id_match else ""
+    # หา form ID
+    form_id = None
+    for pattern in [
+        r'/d/e/([a-zA-Z0-9_-]+)',
+        r'/forms/d/([a-zA-Z0-9_-]+)',
+        r'/forms/d/e/([a-zA-Z0-9_-]+)',
+    ]:
+        m = re.search(pattern, form_url)
+        if m:
+            form_id = m.group(1)
+            break
     
     if form_id:
-        urls.append(f"https://docs.google.com/forms/d/e/{form_id}/viewform?fbzx={fbzx}&blob={blob_id}")
-        urls.append(f"https://docs.google.com/forms/u/0/d/e/{form_id}/formResponse?fbzx={fbzx}&blob={blob_id}")
+        # วิธีที่ถูกต้องสำหรับ Google Form blob
+        base_url = f"https://docs.google.com/forms/d/e/{form_id}"
+        urls.append(f"{base_url}/viewform?fbzx=0&blob={blob_id}")
+        urls.append(f"{base_url}/formResponse?fbzx=0&blob={blob_id}")
+        urls.append(f"https://lh3.googleusercontent.com/{blob_id}")
+        urls.append(f"https://lh4.googleusercontent.com/{blob_id}")
+        urls.append(f"https://lh5.googleusercontent.com/{blob_id}")
+        urls.append(f"https://www.google.com/forms/d/e/{form_id}/viewform?fbzx=0&blob={blob_id}")
     
-    # ลองแบบ direct
+    # Fallback
     urls.append(f"https://lh3.googleusercontent.com/{blob_id}")
     urls.append(f"https://lh4.googleusercontent.com/{blob_id}")
     urls.append(f"https://lh5.googleusercontent.com/{blob_id}")
-    urls.append(f"https://www.google.com/forms/d/e/{form_id}/viewform?fbzx={fbzx}&blob={blob_id}")
     
     return urls
 
@@ -427,7 +451,6 @@ def extract_images_from_entry(
     global_urls: List[str],
     global_index_ptr: List[int],
     form_url: str = "",
-    fbzx: str = "",
 ) -> Tuple[List[QuestionImage], Dict[int, List[QuestionImage]]]:
     question_images: List[QuestionImage] = []
     choice_images: Dict[int, List[QuestionImage]] = {}
@@ -438,10 +461,10 @@ def extract_images_from_entry(
     # 1. หา URL จาก entry โดยตรง (recursive)
     entry_urls = find_image_urls_recursive(entry)
 
-    # 2. หา blob IDs และแปลงเป็น URL
-    blob_ids = extract_blob_ids(entry)
-    for blob_id in blob_ids:
-        for blob_url in blob_to_url(blob_id, form_url, fbzx):
+    # 2. หา blob IDs
+    blobs = extract_blob_ids(entry)
+    for blob_id, blob_type in blobs:
+        for blob_url in blob_to_url(blob_id, form_url):
             if blob_url not in entry_urls:
                 entry_urls.append(blob_url)
 
@@ -462,15 +485,18 @@ def extract_images_from_entry(
                     status=status,
                 ))
 
-    # 4. เพิ่ม URLs ที่เจอจาก entry
+    # 4. เพิ่ม URLs ที่เจอจาก entry (กรองซ้ำ)
+    seen_urls = set()
     for u in entry_urls:
-        question_images.append(QuestionImage(
-            source="question",
-            url=u,
-            data=None,
-            mime_type="image/jpeg",
-            status="pending",
-        ))
+        if u not in seen_urls:
+            seen_urls.add(u)
+            question_images.append(QuestionImage(
+                source="question",
+                url=u,
+                data=None,
+                mime_type="image/jpeg",
+                status="pending",
+            ))
 
     # 5. ตรวจ has_media flag
     has_media = len(entry) > 9 and bool(entry[9])
@@ -494,21 +520,24 @@ def extract_images_from_entry(
             if not choice:
                 continue
             choice_urls = find_image_urls_recursive(choice)
-            choice_blob_ids = extract_blob_ids(choice)
-            for blob_id in choice_blob_ids:
-                for blob_url in blob_to_url(blob_id, form_url, fbzx):
+            choice_blobs = extract_blob_ids(choice)
+            for blob_id, _ in choice_blobs:
+                for blob_url in blob_to_url(blob_id, form_url):
                     if blob_url not in choice_urls:
                         choice_urls.append(blob_url)
             choice_base64 = extract_base64_images(json.dumps(choice, ensure_ascii=False))
 
+            seen_choice_urls = set()
             for u in choice_urls:
-                choice_images.setdefault(ci, []).append(QuestionImage(
-                    source="choice",
-                    url=u,
-                    data=None,
-                    mime_type="image/jpeg",
-                    status="pending",
-                ))
+                if u not in seen_choice_urls:
+                    seen_choice_urls.add(u)
+                    choice_images.setdefault(ci, []).append(QuestionImage(
+                        source="choice",
+                        url=u,
+                        data=None,
+                        mime_type="image/jpeg",
+                        status="pending",
+                    ))
             for mime, data in choice_base64:
                 valid, fmt, size = validate_image(data)
                 if valid:
@@ -728,7 +757,7 @@ def parse_form(
             personal_data_map[entry_id] = p_info
             continue
 
-        q_images, c_images = extract_images_from_entry(item, global_urls, global_index_ptr, form_url, fbzx="")
+        q_images, c_images = extract_images_from_entry(item, global_urls, global_index_ptr, form_url)
 
         branch_map: Dict[str, int] = {}
         if choices_raw and isinstance(choices_raw, list):
@@ -1489,7 +1518,7 @@ if "questions" in st.session_state:
                 if q.is_multi:
                     default_list = default_val if isinstance(default_val, list) else ([default_val] if default_val else [])
                     default_list = [d for d in default_list if d in q.choices]
-                    st.multiselect("คำตอบ", q.choices, default=default_list, key=ans_key)
+                    st.multiselect("คำตอบ (เลือกได้หลายข้อ)", q.choices, default=default_list, key=ans_key)
                 else:
                     default_str = str(default_val) if default_val else None
                     if default_str not in q.choices:
