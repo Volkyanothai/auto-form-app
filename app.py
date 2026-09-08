@@ -1,10 +1,11 @@
 """
-app.py — EZEXAM Auto Form System (Hotfix v10)
+app.py — EZEXAM Auto Form System (Hotfix v11)
 ==============================================
-แก้ไขจริงจัง:
-- โมเดลสำเร็จต่อเมื่อทุก chunk สำเร็จเท่านั้น
-- ดึงรูปภาพจาก HTML โดยตรง + อัปโหลดเองได้ง่าย
-- รองรับ checkbox แบบถูกต้อง
+แก้ไข:
+- เร็วขึ้น (chunk size 2-3)
+- Progress bar ตรง
+- ลองโมเดลน้อยลง แต่ครอบคลุม
+- รูปภาพอัปโหลดเองได้ง่าย
 """
 from __future__ import annotations
 
@@ -48,7 +49,7 @@ TYPE_DROPDOWN = 3
 TYPE_TEXT = 0
 TYPE_PARAGRAPH = 1
 
-CHUNK_SIZE = 1
+CHUNK_SIZE = 3
 MAX_PARALLEL_WORKERS = 2
 MAX_MODEL_ATTEMPTS = 3
 BACKOFF_SEC = [4, 8, 15]
@@ -132,7 +133,6 @@ class Question:
     branch_map: Dict[str, int] = field(default_factory=dict)
     choice_images: Dict[int, List[QuestionImage]] = field(default_factory=dict)
     q_type: int = TYPE_TEXT
-    raw_entry: Any = None
 
 
 def safe_get(obj: Any, path: List[Union[int, str]], default: Any = None) -> Any:
@@ -193,15 +193,33 @@ def find_image_urls_in_text(text: str) -> List[str]:
     return unique
 
 
-def extract_blob_ids(entry: Any) -> List[str]:
-    """ดึง blob IDs จาก entry"""
-    blobs = []
-    entry_json = json.dumps(entry, ensure_ascii=False)
-    pattern = re.compile(r'(s-blob-v1-IMAGE-[A-Za-z0-9_-]+)')
-    for match in pattern.findall(entry_json):
-        if match not in blobs:
-            blobs.append(match)
-    return blobs
+def extract_images_from_html(html: str) -> List[str]:
+    """ดึงรูปภาพจาก HTML โดยตรง"""
+    urls = []
+    
+    # จาก img src
+    for m in re.finditer(r'<img[^>]+src=["\'](https?://[^"\']+)["\']', html, re.IGNORECASE):
+        urls.append(m.group(1))
+    
+    # จาก data-src
+    for m in re.finditer(r'<img[^>]+data-src=["\'](https?://[^"\']+)["\']', html, re.IGNORECASE):
+        urls.append(m.group(1))
+    
+    # จาก background-image
+    for m in re.finditer(r'background-image:\s*url\(["\']?(https?://[^"\')]+)["\']?\)', html, re.IGNORECASE):
+        urls.append(m.group(1))
+    
+    # จาก JSON-like URLs
+    urls.extend(find_image_urls_in_text(html))
+    
+    seen = set()
+    unique = []
+    for url in urls:
+        url = url.rstrip('"\'\\),;> ')
+        if url not in seen and is_valid_image_url(url):
+            seen.add(url)
+            unique.append(url)
+    return unique
 
 
 def validate_image(raw_bytes: bytes) -> Tuple[bool, Optional[str], Optional[Tuple[int, int]]]:
@@ -299,14 +317,12 @@ def download_image(url: str, timeout: int = IMAGE_TIMEOUT) -> Optional[bytes]:
     if not url or not url.startswith("http"):
         return None
 
-    for try_url in [url]:
-        try:
-            r = requests.get(try_url, headers=UA, timeout=timeout, allow_redirects=True)
-            if r.status_code == 200 and len(r.content) > 100:
-                return r.content
-        except Exception as e:
-            logger.warning(f"ดาวน์โหลดรูปล้มเหลว {try_url}: {e}")
-            continue
+    try:
+        r = requests.get(url, headers=UA, timeout=timeout, allow_redirects=True)
+        if r.status_code == 200 and len(r.content) > 100:
+            return r.content
+    except Exception as e:
+        logger.warning(f"ดาวน์โหลดรูปล้มเหลว {url}: {e}")
     return None
 
 
@@ -357,35 +373,6 @@ def process_image_from_url(url: Optional[str], raw_bytes: Optional[bytes] = None
         height=size[1] if size else None,
         status=status,
     )
-
-
-def extract_images_from_html(html: str) -> List[str]:
-    """ดึงรูปภาพจาก HTML โดยตรงหลายวิธี"""
-    urls = []
-    
-    # 1. จาก img src
-    for m in re.finditer(r'<img[^>]+src=["\'](https?://[^"\']+)["\']', html, re.IGNORECASE):
-        urls.append(m.group(1))
-    
-    # 2. จาก data-src
-    for m in re.finditer(r'<img[^>]+data-src=["\'](https?://[^"\']+)["\']', html, re.IGNORECASE):
-        urls.append(m.group(1))
-    
-    # 3. จาก background-image
-    for m in re.finditer(r'background-image:\s*url\(["\']?(https?://[^"\')]+)["\']?\)', html, re.IGNORECASE):
-        urls.append(m.group(1))
-    
-    # 4. จาก JSON-like URLs
-    urls.extend(find_image_urls_in_text(html))
-    
-    seen = set()
-    unique = []
-    for url in urls:
-        url = url.rstrip('"\'\\),;> ')
-        if url not in seen and is_valid_image_url(url):
-            seen.add(url)
-            unique.append(url)
-    return unique
 
 
 def extract_images_from_entry(
@@ -633,7 +620,7 @@ def parse_form(
     if not isinstance(entries, list):
         raise RuntimeError("ไม่พบรายการคำถามในฟอร์ม")
 
-    # ดึง global image URLs จาก HTML โดยตรง
+    # ดึง global image URLs จาก HTML
     global_urls = extract_images_from_html(raw_html)
     global_index_ptr = [0]
 
@@ -707,7 +694,6 @@ def parse_form(
             branch_map=branch_map,
             choice_images=c_images,
             q_type=q_type,
-            raw_entry=item,
         ))
 
     default_next: List[int] = []
@@ -790,6 +776,7 @@ def pick_best_model(available: List[str]) -> Optional[str]:
     if not available:
         return None
 
+    # ลองโมเดลล่าสุดที่น่าจะใช้ได้
     preferences = [
         "gemini-3.6-flash",
         "gemini-3.5-flash",
@@ -800,13 +787,6 @@ def pick_best_model(available: List[str]) -> Optional[str]:
         "gemini-2.5-flash",
         "gemini-2.0-flash",
         "gemini-1.5-flash",
-        "gemini-3.6-flash-lite",
-        "gemini-3.5-flash-lite",
-        "gemini-3.1-pro-preview",
-        "gemini-3-pro-image",
-        "gemini-2.5-pro",
-        "gemini-2.0-pro",
-        "gemini-1.5-pro",
     ]
 
     for pref in preferences:
@@ -1018,19 +998,18 @@ def analyze_all(
     available_models = get_available_models(keys[0])
     debug_logs.append(f"ℹ️ Available models: {available_models}")
 
-    model_candidates = []
     best_model = pick_best_model(available_models)
-    if best_model:
-        model_candidates.append(best_model)
+    if not best_model:
+        errors.append("ไม่พบโมเดลที่ใช้ได้")
+        return results, errors, debug_logs
 
+    # ลองโมเดลหลักก่อน ถ้าล้มเหลวทุก chunk ค่อยลองโมเดลอื่น
+    model_candidates = [best_model]
     for model in available_models:
-        if model not in model_candidates and "flash" in model.lower():
+        if model != best_model and "flash" in model.lower() and model not in model_candidates:
             model_candidates.append(model)
 
-    if not model_candidates:
-        model_candidates = ["gemini-3.6-flash", "gemini-3.5-flash", "gemini-2.5-flash"]
-
-    debug_logs.append(f"🎯 Model candidates: {model_candidates}")
+    debug_logs.append(f"🎯 Model candidates: {model_candidates[:3]}")
 
     workers = min(MAX_PARALLEL_WORKERS, len(keys), len(chunks))
 
@@ -1042,13 +1021,13 @@ def analyze_all(
 
         with ThreadPoolExecutor(max_workers=workers) as pool:
             futures = {
-                pool.submit(call_gemini_chunk, keys[i % len(keys)], exam_context, chunk, model_name, thinking_level): (i, chunk)
+                pool.submit(call_gemini_chunk, keys[i % len(keys)], exam_context, chunk, model_name, thinking_level): i
                 for i, chunk in enumerate(chunks)
             }
 
             done = 0
             for fut in as_completed(futures):
-                chunk_idx, chunk = futures[fut]
+                chunk_idx = futures[fut]
                 done += 1
                 if progress_cb:
                     progress_cb(done, len(chunks))
@@ -1057,23 +1036,22 @@ def analyze_all(
                     chunk_result = fut.result()
                     if isinstance(chunk_result, dict):
                         results.update(chunk_result)
-                        debug_logs.append(f"✅ Chunk {chunk_idx+1}: ได้คำตอบ {len(chunk_result)} ข้อ")
+                        debug_logs.append(f"✅ Chunk {chunk_idx+1}/{len(chunks)}: ได้คำตอบ {len(chunk_result)} ข้อ")
                     else:
                         errors.append("ผลลัพธ์จาก AI ไม่ถูกต้อง")
-                        debug_logs.append(f"❌ Chunk {chunk_idx+1}: ผลลัพธ์ไม่ใช่ dict")
+                        debug_logs.append(f"❌ Chunk {chunk_idx+1}/{len(chunks)}: ผลลัพธ์ไม่ใช่ dict")
                         failed_chunks += 1
                 except Exception as e:
-                    err_msg = f"Chunk {chunk_idx+1} error: {str(e)}"
+                    err_msg = f"Chunk {chunk_idx+1}/{len(chunks)} error: {str(e)}"
                     errors.append(str(e))
                     debug_logs.append(f"❌ {err_msg}")
                     failed_chunks += 1
 
-        # โมเดลสำเร็จต่อเมื่อทุก chunk สำเร็จเท่านั้น
         if failed_chunks == 0:
             debug_logs.append(f"✅ ใช้โมเดล {model_name} สำเร็จทุก chunk")
             return results, errors, debug_logs
         else:
-            debug_logs.append(f"⚠️ โมเดล {model_name} ล้มเหลว {failed_chunks} chunk จาก {len(chunks)} chunk ลองโมเดลถัดไป")
+            debug_logs.append(f"⚠️ โมเดล {model_name} ล้มเหลว {failed_chunks}/{len(chunks)} chunk")
 
     debug_logs.append("❌ ทุกโมเดลล้มเหลว")
     return results, errors, debug_logs
@@ -1347,7 +1325,7 @@ if "questions" in st.session_state:
             for qi, q in enumerate(questions, 1):
                 ready = sum(1 for img in q.images if img.is_ready())
                 total = len(q.images)
-                st.text(f"ข้อ {qi}: {ready}/{total} รูป | source: {[img.source for img in q.images]} | choices: {len(q.choices)} | type: {q.q_type} | is_multi: {q.is_multi}")
+                st.text(f"ข้อ {qi}: {ready}/{total} รูป | type: {q.q_type} | is_multi: {q.is_multi}")
 
     total_q = len(questions)
     answered = sum(1 for q in questions if get_ai_answer(ai_answers, q.entry_id).get("answer"))
