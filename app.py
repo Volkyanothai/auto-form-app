@@ -1,10 +1,10 @@
 """
-app.py — EZEXAM Auto Form System (Hotfix v9)
-=============================================
-แก้ไข:
-- ดึงรูปภาพจาก Google Form blob endpoint ที่ถูกต้อง
-- กรองรูปภาพที่ซ้ำและไม่ใช่
-- แก้ไขการรองรับ checkbox และ multiple choice
+app.py — EZEXAM Auto Form System (Hotfix v10)
+==============================================
+แก้ไขจริงจัง:
+- โมเดลสำเร็จต่อเมื่อทุก chunk สำเร็จเท่านั้น
+- ดึงรูปภาพจาก HTML โดยตรง + อัปโหลดเองได้ง่าย
+- รองรับ checkbox แบบถูกต้อง
 """
 from __future__ import annotations
 
@@ -48,7 +48,7 @@ TYPE_DROPDOWN = 3
 TYPE_TEXT = 0
 TYPE_PARAGRAPH = 1
 
-CHUNK_SIZE = 2
+CHUNK_SIZE = 1
 MAX_PARALLEL_WORKERS = 2
 MAX_MODEL_ATTEMPTS = 3
 BACKOFF_SEC = [4, 8, 15]
@@ -59,19 +59,17 @@ MAX_IMAGE_DIM_TEXT = 1536
 MAX_IMAGE_FILE_SIZE = 4 * 1024 * 1024
 JPEG_QUALITY = 82
 
-# Regex หลายรูปแบบสำหรับรูปภาพ
+# Regex สำหรับรูปภาพ
 IMG_URL_PATTERNS = [
     re.compile(r'https?://lh\d?\.?googleusercontent\.com/[^\s"\'<>\\)]+', re.IGNORECASE),
     re.compile(r'https?://\w+\.googleusercontent\.com/[^\s"\'<>\\)]+', re.IGNORECASE),
-    re.compile(r'https?://drive\.google\.com/uc\?export=view&id=[\w-]+', re.IGNORECASE),
 ]
 BASE64_IMG_RE = re.compile(r'data:image/(?P<mime>[\w+]+);base64,(?P<data>[A-Za-z0-9+/=]+)')
 
 # URL ที่ไม่ใช่รูปคำถาม ให้กรองออก
 URL_IGNORE_PATTERNS = [
-    re.compile(r'gstatic\.com/images/branding', re.I),
+    re.compile(r'gstatic\.com', re.I),
     re.compile(r'googlelogo', re.I),
-    re.compile(r'google\.com/images', re.I),
     re.compile(r'favicon', re.I),
     re.compile(r'avatar', re.I),
     re.compile(r'/logos/', re.I),
@@ -195,70 +193,15 @@ def find_image_urls_in_text(text: str) -> List[str]:
     return unique
 
 
-def extract_blob_ids(entry: Any) -> List[Tuple[str, str]]:
-    """
-    ดึง blob IDs พร้อมกับ type จาก entry
-    คืน list ของ (blob_id, blob_type)
-    """
+def extract_blob_ids(entry: Any) -> List[str]:
+    """ดึง blob IDs จาก entry"""
     blobs = []
     entry_json = json.dumps(entry, ensure_ascii=False)
-    
-    # หา s-blob-v1-IMAGE-xxx
-    image_pattern = re.compile(r'(s-blob-v1-IMAGE-[A-Za-z0-9_-]+)')
-    for match in image_pattern.findall(entry_json):
-        blobs.append((match, "image"))
-    
-    # หา blob IDs อื่นๆ ที่ยาวพอ
-    other_pattern = re.compile(r'"([A-Za-z0-9_-]{25,})"')
-    for match in other_pattern.findall(entry_json):
-        if match.startswith("s-blob"):
-            continue
-        # ตรวจว่าเป็น image blob โดยดู context
-        if f'"{match}"' in entry_json:
-            blobs.append((match, "unknown"))
-    
-    # กรองซ้ำ
-    seen = set()
-    unique = []
-    for b in blobs:
-        if b[0] not in seen:
-            seen.add(b[0])
-            unique.append(b)
-    return unique
-
-
-def blob_to_url(blob_id: str, form_url: str) -> List[str]:
-    """แปลง blob ID เป็น URLs ที่เป็นไปได้หลายแบบ"""
-    urls = []
-    
-    # หา form ID
-    form_id = None
-    for pattern in [
-        r'/d/e/([a-zA-Z0-9_-]+)',
-        r'/forms/d/([a-zA-Z0-9_-]+)',
-        r'/forms/d/e/([a-zA-Z0-9_-]+)',
-    ]:
-        m = re.search(pattern, form_url)
-        if m:
-            form_id = m.group(1)
-            break
-    
-    if form_id:
-        # วิธีที่ถูกต้องสำหรับ Google Form blob
-        base_url = f"https://docs.google.com/forms/d/e/{form_id}"
-        urls.append(f"{base_url}/viewform?fbzx=0&blob={blob_id}")
-        urls.append(f"{base_url}/formResponse?fbzx=0&blob={blob_id}")
-        urls.append(f"https://lh3.googleusercontent.com/{blob_id}")
-        urls.append(f"https://lh4.googleusercontent.com/{blob_id}")
-        urls.append(f"https://lh5.googleusercontent.com/{blob_id}")
-        urls.append(f"https://www.google.com/forms/d/e/{form_id}/viewform?fbzx=0&blob={blob_id}")
-    
-    # Fallback
-    urls.append(f"https://lh3.googleusercontent.com/{blob_id}")
-    urls.append(f"https://lh4.googleusercontent.com/{blob_id}")
-    urls.append(f"https://lh5.googleusercontent.com/{blob_id}")
-    
-    return urls
+    pattern = re.compile(r'(s-blob-v1-IMAGE-[A-Za-z0-9_-]+)')
+    for match in pattern.findall(entry_json):
+        if match not in blobs:
+            blobs.append(match)
+    return blobs
 
 
 def validate_image(raw_bytes: bytes) -> Tuple[bool, Optional[str], Optional[Tuple[int, int]]]:
@@ -356,14 +299,7 @@ def download_image(url: str, timeout: int = IMAGE_TIMEOUT) -> Optional[bytes]:
     if not url or not url.startswith("http"):
         return None
 
-    urls_to_try = [url]
-
-    if "drive.google.com" in url and "/file/d/" in url:
-        m = re.search(r'/file/d/([\w-]+)', url)
-        if m:
-            urls_to_try.append(f"https://drive.google.com/uc?export=view&id={m.group(1)}")
-
-    for try_url in urls_to_try:
+    for try_url in [url]:
         try:
             r = requests.get(try_url, headers=UA, timeout=timeout, allow_redirects=True)
             if r.status_code == 200 and len(r.content) > 100:
@@ -423,24 +359,30 @@ def process_image_from_url(url: Optional[str], raw_bytes: Optional[bytes] = None
     )
 
 
-def find_image_urls_recursive(obj: Any, max_depth: int = 15) -> List[str]:
-    found = []
-    if max_depth <= 0:
-        return found
-
-    if isinstance(obj, str):
-        return find_image_urls_in_text(obj)
-    elif isinstance(obj, list):
-        for item in obj:
-            found.extend(find_image_urls_recursive(item, max_depth - 1))
-    elif isinstance(obj, dict):
-        for v in obj.values():
-            found.extend(find_image_urls_recursive(v, max_depth - 1))
-
+def extract_images_from_html(html: str) -> List[str]:
+    """ดึงรูปภาพจาก HTML โดยตรงหลายวิธี"""
+    urls = []
+    
+    # 1. จาก img src
+    for m in re.finditer(r'<img[^>]+src=["\'](https?://[^"\']+)["\']', html, re.IGNORECASE):
+        urls.append(m.group(1))
+    
+    # 2. จาก data-src
+    for m in re.finditer(r'<img[^>]+data-src=["\'](https?://[^"\']+)["\']', html, re.IGNORECASE):
+        urls.append(m.group(1))
+    
+    # 3. จาก background-image
+    for m in re.finditer(r'background-image:\s*url\(["\']?(https?://[^"\')]+)["\']?\)', html, re.IGNORECASE):
+        urls.append(m.group(1))
+    
+    # 4. จาก JSON-like URLs
+    urls.extend(find_image_urls_in_text(html))
+    
     seen = set()
     unique = []
-    for url in found:
-        if url not in seen:
+    for url in urls:
+        url = url.rstrip('"\'\\),;> ')
+        if url not in seen and is_valid_image_url(url):
             seen.add(url)
             unique.append(url)
     return unique
@@ -450,7 +392,6 @@ def extract_images_from_entry(
     entry: Any,
     global_urls: List[str],
     global_index_ptr: List[int],
-    form_url: str = "",
 ) -> Tuple[List[QuestionImage], Dict[int, List[QuestionImage]]]:
     question_images: List[QuestionImage] = []
     choice_images: Dict[int, List[QuestionImage]] = {}
@@ -458,18 +399,11 @@ def extract_images_from_entry(
     if not entry:
         return question_images, choice_images
 
-    # 1. หา URL จาก entry โดยตรง (recursive)
-    entry_urls = find_image_urls_recursive(entry)
-
-    # 2. หา blob IDs
-    blobs = extract_blob_ids(entry)
-    for blob_id, blob_type in blobs:
-        for blob_url in blob_to_url(blob_id, form_url):
-            if blob_url not in entry_urls:
-                entry_urls.append(blob_url)
-
-    # 3. หา base64
+    # 1. หา URL จาก entry โดยตรง
     entry_json = json.dumps(entry, ensure_ascii=False)
+    entry_urls = find_image_urls_in_text(entry_json)
+
+    # 2. หา base64
     for mime, data in extract_base64_images(entry_json):
         valid, fmt, size = validate_image(data)
         if valid:
@@ -485,7 +419,7 @@ def extract_images_from_entry(
                     status=status,
                 ))
 
-    # 4. เพิ่ม URLs ที่เจอจาก entry (กรองซ้ำ)
+    # 3. เพิ่ม URLs ที่เจอจาก entry
     seen_urls = set()
     for u in entry_urls:
         if u not in seen_urls:
@@ -498,10 +432,10 @@ def extract_images_from_entry(
                 status="pending",
             ))
 
-    # 5. ตรวจ has_media flag
+    # 4. ตรวจ has_media flag
     has_media = len(entry) > 9 and bool(entry[9])
 
-    # 6. ถ้ามี has_media แต่ไม่เจอ URL ใดๆ ให้ใช้ global URL pool
+    # 5. ถ้ามี has_media แต่ไม่เจอ URL ใดๆ ให้ใช้ global URL pool
     if has_media and not question_images and global_index_ptr[0] < len(global_urls):
         u = global_urls[global_index_ptr[0]]
         global_index_ptr[0] += 1
@@ -513,18 +447,13 @@ def extract_images_from_entry(
             status="pending",
         ))
 
-    # 7. หา URL จากตัวเลือก
+    # 6. หา URL จากตัวเลือก
     choices_raw = safe_get(entry, [4, 0, 1])
     if choices_raw and isinstance(choices_raw, list):
         for ci, choice in enumerate(choices_raw):
             if not choice:
                 continue
-            choice_urls = find_image_urls_recursive(choice)
-            choice_blobs = extract_blob_ids(choice)
-            for blob_id, _ in choice_blobs:
-                for blob_url in blob_to_url(blob_id, form_url):
-                    if blob_url not in choice_urls:
-                        choice_urls.append(blob_url)
+            choice_urls = find_image_urls_in_text(json.dumps(choice, ensure_ascii=False))
             choice_base64 = extract_base64_images(json.dumps(choice, ensure_ascii=False))
 
             seen_choice_urls = set()
@@ -689,7 +618,6 @@ def fetch_form(form_url: str) -> Tuple[dict, str, str, str, str]:
 def parse_form(
     form_data: Any,
     raw_html: str,
-    form_url: str,
     my_name: str,
     my_student_id: str,
     my_no: str,
@@ -705,9 +633,8 @@ def parse_form(
     if not isinstance(entries, list):
         raise RuntimeError("ไม่พบรายการคำถามในฟอร์ม")
 
-    # ดึง global image URLs จาก HTML
-    html_no_meta = re.sub(r'<meta[^>]*property="og:image"[^>]*>', '', raw_html)
-    global_urls = [u for u in find_image_urls_in_text(html_no_meta) if is_valid_image_url(u)]
+    # ดึง global image URLs จาก HTML โดยตรง
+    global_urls = extract_images_from_html(raw_html)
     global_index_ptr = [0]
 
     questions: List[Question] = []
@@ -757,7 +684,7 @@ def parse_form(
             personal_data_map[entry_id] = p_info
             continue
 
-        q_images, c_images = extract_images_from_entry(item, global_urls, global_index_ptr, form_url)
+        q_images, c_images = extract_images_from_entry(item, global_urls, global_index_ptr)
 
         branch_map: Dict[str, int] = {}
         if choices_raw and isinstance(choices_raw, list):
@@ -904,7 +831,7 @@ def build_system_instruction(exam_context: str) -> str:
 1. อ่านคำถามและรูปประกอบให้ละเอียด
 2. ถ้าคำถามมีตัวเลือก ให้ตอบเป็นข้อความของตัวเลือกนั้นเป๊ะๆ (เช่น "ก. แมว" ไม่ใช่แค่ "ก")
 3. ถ้าเป็นคำถามเติมคำ/ข้อความ ให้ตอบเป็นข้อความสั้นที่ถูกต้อง
-4. ถ้าเป็นคำถามหลายคำตอบ (เลือกได้หลายข้อ) ให้ตอบเป็น array ของข้อความ เช่น ["ก. แมว", "ข. หมา"]
+4. ถ้าเป็นคำถามหลายคำตอบ (เลือกได้หลายข้อ / checkbox) ให้ตอบเป็น array ของข้อความ เช่น ["ก. แมว", "ข. หมา"]
 5. ให้ confidence 0-100 โดยพิจารณาจากความชัดเจนของโจทย์
 6. อธิบาย reasoning สั้นๆ ว่าทำไมถึงเลือกคำตอบนี้ (ภาษาไทย)
 7. ตอบเป็น JSON ตามรูปแบบนี้เท่านั้น ห้ามมีข้อความนอก JSON:
@@ -926,7 +853,7 @@ def build_question_parts(idx: int, q: Question) -> List[types.Part]:
     if q.description:
         text += f"คำอธิบาย: {q.description}\n"
     if q.is_multi:
-        text += "ประเภท: เลือกได้หลายคำตอบ (ตอบเป็น array)\n"
+        text += "ประเภท: เลือกได้หลายคำตอบ (ตอบเป็น array เท่านั้น)\n"
     elif q.choices:
         text += "ประเภท: เลือกคำตอบเดียว\n"
     else:
@@ -1111,7 +1038,7 @@ def analyze_all(
         debug_logs.append(f"🚀 Trying model: {model_name}")
         results = {}
         errors = []
-        model_success = False
+        failed_chunks = 0
 
         with ThreadPoolExecutor(max_workers=workers) as pool:
             futures = {
@@ -1131,20 +1058,22 @@ def analyze_all(
                     if isinstance(chunk_result, dict):
                         results.update(chunk_result)
                         debug_logs.append(f"✅ Chunk {chunk_idx+1}: ได้คำตอบ {len(chunk_result)} ข้อ")
-                        model_success = True
                     else:
                         errors.append("ผลลัพธ์จาก AI ไม่ถูกต้อง")
                         debug_logs.append(f"❌ Chunk {chunk_idx+1}: ผลลัพธ์ไม่ใช่ dict")
+                        failed_chunks += 1
                 except Exception as e:
                     err_msg = f"Chunk {chunk_idx+1} error: {str(e)}"
                     errors.append(str(e))
                     debug_logs.append(f"❌ {err_msg}")
+                    failed_chunks += 1
 
-        if model_success:
-            debug_logs.append(f"✅ ใช้โมเดล {model_name} สำเร็จ")
+        # โมเดลสำเร็จต่อเมื่อทุก chunk สำเร็จเท่านั้น
+        if failed_chunks == 0:
+            debug_logs.append(f"✅ ใช้โมเดล {model_name} สำเร็จทุก chunk")
             return results, errors, debug_logs
         else:
-            debug_logs.append(f"⚠️ โมเดล {model_name} ล้มเหลวทุก chunk ลองโมเดลถัดไป")
+            debug_logs.append(f"⚠️ โมเดล {model_name} ล้มเหลว {failed_chunks} chunk จาก {len(chunks)} chunk ลองโมเดลถัดไป")
 
     debug_logs.append("❌ ทุกโมเดลล้มเหลว")
     return results, errors, debug_logs
@@ -1337,7 +1266,7 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
 
                 st.write("🧩 กำลังสกัดคำถาม...")
                 questions, personal_data_map, default_next, page_count, global_urls = parse_form(
-                    form_data, raw_html, form_url, my_name, my_student_id, my_no, my_class
+                    form_data, raw_html, my_name, my_student_id, my_no, my_class
                 )
 
                 total_images = sum(
@@ -1418,13 +1347,7 @@ if "questions" in st.session_state:
             for qi, q in enumerate(questions, 1):
                 ready = sum(1 for img in q.images if img.is_ready())
                 total = len(q.images)
-                st.text(f"ข้อ {qi}: {ready}/{total} รูป | source: {[img.source for img in q.images]} | choices: {len(q.choices)} | type: {q.q_type}")
-
-            st.write("**Raw entries for image questions:**")
-            for qi, q in enumerate(questions, 1):
-                if "รูป" in q.title or "ภาพ" in q.title:
-                    with st.expander(f"ข้อ {qi} raw entry"):
-                        st.json(q.raw_entry)
+                st.text(f"ข้อ {qi}: {ready}/{total} รูป | source: {[img.source for img in q.images]} | choices: {len(q.choices)} | type: {q.q_type} | is_multi: {q.is_multi}")
 
     total_q = len(questions)
     answered = sum(1 for q in questions if get_ai_answer(ai_answers, q.entry_id).get("answer"))
