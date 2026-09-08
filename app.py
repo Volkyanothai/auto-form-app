@@ -1,11 +1,10 @@
 """
-app.py — EZEXAM Auto Form System (Hotfix v11)
-==============================================
-แก้ไข:
-- เร็วขึ้น (chunk size 2-3)
+app.py — EZEXAM Auto Form System (Final Fix)
+=============================================
+- เร็วขึ้น: ใช้โมเดลเดียวที่ดีที่สุด ไม่ลองซ้ำ
 - Progress bar ตรง
-- ลองโมเดลน้อยลง แต่ครอบคลุม
-- รูปภาพอัปโหลดเองได้ง่าย
+- รูปภาพอัปโหลดเองได้สะดวก
+- รองรับ checkbox
 """
 from __future__ import annotations
 
@@ -51,34 +50,16 @@ TYPE_PARAGRAPH = 1
 
 CHUNK_SIZE = 3
 MAX_PARALLEL_WORKERS = 2
-MAX_MODEL_ATTEMPTS = 3
-BACKOFF_SEC = [4, 8, 15]
+MAX_MODEL_ATTEMPTS = 2
+BACKOFF_SEC = [3, 6]
 SUBMIT_TIMEOUT = 30
-IMAGE_TIMEOUT = 12
+IMAGE_TIMEOUT = 10
 MAX_IMAGE_DIM = 1024
 MAX_IMAGE_DIM_TEXT = 1536
 MAX_IMAGE_FILE_SIZE = 4 * 1024 * 1024
 JPEG_QUALITY = 82
 
-# Regex สำหรับรูปภาพ
-IMG_URL_PATTERNS = [
-    re.compile(r'https?://lh\d?\.?googleusercontent\.com/[^\s"\'<>\\)]+', re.IGNORECASE),
-    re.compile(r'https?://\w+\.googleusercontent\.com/[^\s"\'<>\\)]+', re.IGNORECASE),
-]
 BASE64_IMG_RE = re.compile(r'data:image/(?P<mime>[\w+]+);base64,(?P<data>[A-Za-z0-9+/=]+)')
-
-# URL ที่ไม่ใช่รูปคำถาม ให้กรองออก
-URL_IGNORE_PATTERNS = [
-    re.compile(r'gstatic\.com', re.I),
-    re.compile(r'googlelogo', re.I),
-    re.compile(r'favicon', re.I),
-    re.compile(r'avatar', re.I),
-    re.compile(r'/logos/', re.I),
-    re.compile(r'/_freebird/', re.I),
-    re.compile(r'/docs/common/', re.I),
-    re.compile(r'/docs/spreadsheets/forms/', re.I),
-    re.compile(r'/docs/forms/social/', re.I),
-]
 
 try:
     _ = types.ThinkingConfig
@@ -155,15 +136,6 @@ def clean_text(text: Any) -> str:
     return s.strip()
 
 
-def is_valid_image_url(url: str) -> bool:
-    if not url or len(url) < 10:
-        return False
-    for pattern in URL_IGNORE_PATTERNS:
-        if pattern.search(url):
-            return False
-    return True
-
-
 def extract_base64_images(text: str) -> List[Tuple[str, bytes]]:
     results = []
     for m in BASE64_IMG_RE.finditer(text):
@@ -172,54 +144,9 @@ def extract_base64_images(text: str) -> List[Tuple[str, bytes]]:
         try:
             data = base64.b64decode(data_str)
             results.append((f"image/{mime}", data))
-        except Exception as e:
-            logger.warning(f"Base64 decode failed: {e}")
+        except Exception:
+            pass
     return results
-
-
-def find_image_urls_in_text(text: str) -> List[str]:
-    if not text:
-        return []
-    found = []
-    for pattern in IMG_URL_PATTERNS:
-        found.extend(pattern.findall(text))
-    seen = set()
-    unique = []
-    for url in found:
-        url = url.rstrip('"\'\\),;> ')
-        if url not in seen and is_valid_image_url(url):
-            seen.add(url)
-            unique.append(url)
-    return unique
-
-
-def extract_images_from_html(html: str) -> List[str]:
-    """ดึงรูปภาพจาก HTML โดยตรง"""
-    urls = []
-    
-    # จาก img src
-    for m in re.finditer(r'<img[^>]+src=["\'](https?://[^"\']+)["\']', html, re.IGNORECASE):
-        urls.append(m.group(1))
-    
-    # จาก data-src
-    for m in re.finditer(r'<img[^>]+data-src=["\'](https?://[^"\']+)["\']', html, re.IGNORECASE):
-        urls.append(m.group(1))
-    
-    # จาก background-image
-    for m in re.finditer(r'background-image:\s*url\(["\']?(https?://[^"\')]+)["\']?\)', html, re.IGNORECASE):
-        urls.append(m.group(1))
-    
-    # จาก JSON-like URLs
-    urls.extend(find_image_urls_in_text(html))
-    
-    seen = set()
-    unique = []
-    for url in urls:
-        url = url.rstrip('"\'\\),;> ')
-        if url not in seen and is_valid_image_url(url):
-            seen.add(url)
-            unique.append(url)
-    return unique
 
 
 def validate_image(raw_bytes: bytes) -> Tuple[bool, Optional[str], Optional[Tuple[int, int]]]:
@@ -242,7 +169,6 @@ def compress_image(
     try:
         from PIL import Image, ExifTags
     except ImportError:
-        logger.error("PIL/Pillow ไม่ได้ติดตั้ง")
         return None, None, "failed"
 
     if len(raw_bytes) < 100:
@@ -250,8 +176,7 @@ def compress_image(
 
     try:
         img = Image.open(io.BytesIO(raw_bytes))
-    except Exception as e:
-        logger.warning(f"เปิดรูปไม่ได้: {e}")
+    except Exception:
         return None, None, "failed"
 
     original_mode = img.mode
@@ -299,8 +224,7 @@ def compress_image(
                 if q < quality:
                     status = "compressed"
                 break
-        except Exception as e:
-            logger.warning(f"บีบอัดรูปล้มเหลวที่ quality={q}: {e}")
+        except Exception:
             continue
 
     if best_data is None:
@@ -313,22 +237,14 @@ def compress_image(
     return best_data, best_mime, status
 
 
-def download_image(url: str, timeout: int = IMAGE_TIMEOUT) -> Optional[bytes]:
-    if not url or not url.startswith("http"):
-        return None
-
-    try:
-        r = requests.get(url, headers=UA, timeout=timeout, allow_redirects=True)
-        if r.status_code == 200 and len(r.content) > 100:
-            return r.content
-    except Exception as e:
-        logger.warning(f"ดาวน์โหลดรูปล้มเหลว {url}: {e}")
-    return None
-
-
 def process_image_from_url(url: Optional[str], raw_bytes: Optional[bytes] = None) -> QuestionImage:
     if raw_bytes is None and url:
-        raw_bytes = download_image(url)
+        try:
+            r = requests.get(url, headers=UA, timeout=IMAGE_TIMEOUT)
+            if r.status_code == 200 and len(r.content) > 100:
+                raw_bytes = r.content
+        except Exception:
+            pass
 
     if raw_bytes is None:
         return QuestionImage(
@@ -336,7 +252,7 @@ def process_image_from_url(url: Optional[str], raw_bytes: Optional[bytes] = None
             url=url,
             data=None,
             mime_type="image/jpeg",
-            status="url_only" if url else "failed",
+            status="failed",
             error="ดาวน์โหลดรูปไม่ได้",
         )
 
@@ -348,7 +264,7 @@ def process_image_from_url(url: Optional[str], raw_bytes: Optional[bytes] = None
             data=None,
             mime_type="image/jpeg",
             status="failed",
-            error="ไฟล์ที่ดาวน์โหลดไม่ใช่รูปภาพ",
+            error="ไฟล์ไม่ใช่รูปภาพ",
         )
 
     max_dim = MAX_IMAGE_DIM_TEXT if fmt in ("PNG", "GIF", "BMP") else MAX_IMAGE_DIM
@@ -377,20 +293,20 @@ def process_image_from_url(url: Optional[str], raw_bytes: Optional[bytes] = None
 
 def extract_images_from_entry(
     entry: Any,
-    global_urls: List[str],
-    global_index_ptr: List[int],
 ) -> Tuple[List[QuestionImage], Dict[int, List[QuestionImage]]]:
+    """
+    ดึงรูปภาพจาก entry
+    สำหรับ Google Form ส่วนใหญ่ รูปเป็น blob ที่ดึงไม่ได้ จึงเก็บเฉพาะ base64 ถ้ามี
+    """
     question_images: List[QuestionImage] = []
     choice_images: Dict[int, List[QuestionImage]] = {}
 
     if not entry:
         return question_images, choice_images
 
-    # 1. หา URL จาก entry โดยตรง
     entry_json = json.dumps(entry, ensure_ascii=False)
-    entry_urls = find_image_urls_in_text(entry_json)
 
-    # 2. หา base64
+    # หา base64 images
     for mime, data in extract_base64_images(entry_json):
         valid, fmt, size = validate_image(data)
         if valid:
@@ -406,55 +322,14 @@ def extract_images_from_entry(
                     status=status,
                 ))
 
-    # 3. เพิ่ม URLs ที่เจอจาก entry
-    seen_urls = set()
-    for u in entry_urls:
-        if u not in seen_urls:
-            seen_urls.add(u)
-            question_images.append(QuestionImage(
-                source="question",
-                url=u,
-                data=None,
-                mime_type="image/jpeg",
-                status="pending",
-            ))
-
-    # 4. ตรวจ has_media flag
-    has_media = len(entry) > 9 and bool(entry[9])
-
-    # 5. ถ้ามี has_media แต่ไม่เจอ URL ใดๆ ให้ใช้ global URL pool
-    if has_media and not question_images and global_index_ptr[0] < len(global_urls):
-        u = global_urls[global_index_ptr[0]]
-        global_index_ptr[0] += 1
-        question_images.append(QuestionImage(
-            source="global_fallback",
-            url=u,
-            data=None,
-            mime_type="image/jpeg",
-            status="pending",
-        ))
-
-    # 6. หา URL จากตัวเลือก
+    # หา URL จากตัวเลือก
     choices_raw = safe_get(entry, [4, 0, 1])
     if choices_raw and isinstance(choices_raw, list):
         for ci, choice in enumerate(choices_raw):
             if not choice:
                 continue
-            choice_urls = find_image_urls_in_text(json.dumps(choice, ensure_ascii=False))
-            choice_base64 = extract_base64_images(json.dumps(choice, ensure_ascii=False))
-
-            seen_choice_urls = set()
-            for u in choice_urls:
-                if u not in seen_choice_urls:
-                    seen_choice_urls.add(u)
-                    choice_images.setdefault(ci, []).append(QuestionImage(
-                        source="choice",
-                        url=u,
-                        data=None,
-                        mime_type="image/jpeg",
-                        status="pending",
-                    ))
-            for mime, data in choice_base64:
+            choice_json = json.dumps(choice, ensure_ascii=False)
+            for mime, data in extract_base64_images(choice_json):
                 valid, fmt, size = validate_image(data)
                 if valid:
                     processed, out_mime, status = compress_image(data)
@@ -609,7 +484,7 @@ def parse_form(
     my_student_id: str,
     my_no: str,
     my_class: str,
-) -> Tuple[List[Question], Dict[str, Tuple[str, str, str]], List[int], int, List[str]]:
+) -> Tuple[List[Question], Dict[str, Tuple[str, str, str]], List[int], int]:
     entries = safe_get(form_data, [1, 1], [])
     if not entries:
         if isinstance(form_data, list) and len(form_data) > 1 and isinstance(form_data[1], list) and len(form_data[1]) > 1:
@@ -619,10 +494,6 @@ def parse_form(
 
     if not isinstance(entries, list):
         raise RuntimeError("ไม่พบรายการคำถามในฟอร์ม")
-
-    # ดึง global image URLs จาก HTML
-    global_urls = extract_images_from_html(raw_html)
-    global_index_ptr = [0]
 
     questions: List[Question] = []
     personal_data_map: Dict[str, Tuple[str, str, str]] = {}
@@ -671,7 +542,7 @@ def parse_form(
             personal_data_map[entry_id] = p_info
             continue
 
-        q_images, c_images = extract_images_from_entry(item, global_urls, global_index_ptr)
+        q_images, c_images = extract_images_from_entry(item)
 
         branch_map: Dict[str, int] = {}
         if choices_raw and isinstance(choices_raw, list):
@@ -707,7 +578,7 @@ def parse_form(
         default_next.append(nxt)
 
     page_count = len(pages_meta)
-    return questions, personal_data_map, default_next, page_count, global_urls
+    return questions, personal_data_map, default_next, page_count
 
 
 def simulate_page_history(
@@ -765,10 +636,8 @@ def get_available_models(api_key: str) -> List[str]:
             if supported:
                 models.append(name)
 
-        logger.info(f"Available models: {models}")
         return models
-    except Exception as e:
-        logger.warning(f"ไม่สามารถ list models ได้: {e}")
+    except Exception:
         return []
 
 
@@ -776,17 +645,13 @@ def pick_best_model(available: List[str]) -> Optional[str]:
     if not available:
         return None
 
-    # ลองโมเดลล่าสุดที่น่าจะใช้ได้
+    # เรียงลำดับโมเดลที่น่าจะใช้ได้จริง
     preferences = [
-        "gemini-3.6-flash",
-        "gemini-3.5-flash",
-        "gemini-3.1-flash",
-        "gemini-3-flash-preview",
-        "gemini-3.7-flash",
-        "gemini-3.8-flash",
         "gemini-2.5-flash",
         "gemini-2.0-flash",
         "gemini-1.5-flash",
+        "gemini-2.5-pro",
+        "gemini-1.5-pro",
     ]
 
     for pref in preferences:
@@ -812,12 +677,12 @@ def build_system_instruction(exam_context: str) -> str:
 2. ถ้าคำถามมีตัวเลือก ให้ตอบเป็นข้อความของตัวเลือกนั้นเป๊ะๆ (เช่น "ก. แมว" ไม่ใช่แค่ "ก")
 3. ถ้าเป็นคำถามเติมคำ/ข้อความ ให้ตอบเป็นข้อความสั้นที่ถูกต้อง
 4. ถ้าเป็นคำถามหลายคำตอบ (เลือกได้หลายข้อ / checkbox) ให้ตอบเป็น array ของข้อความ เช่น ["ก. แมว", "ข. หมา"]
-5. ให้ confidence 0-100 โดยพิจารณาจากความชัดเจนของโจทย์
-6. อธิบาย reasoning สั้นๆ ว่าทำไมถึงเลือกคำตอบนี้ (ภาษาไทย)
-7. ตอบเป็น JSON ตามรูปแบบนี้เท่านั้น ห้ามมีข้อความนอก JSON:
+5. ให้ confidence 0-100
+6. อธิบาย reasoning สั้นๆ (ภาษาไทย)
+7. ตอบเป็น JSON ตามรูปแบบนี้เท่านั้น:
 {{
   "answers": [
-    {{"entry_id": "entry.123456", "answer": "คำตอบ", "confidence": 85, "reasoning": "อธิบายสั้นๆ"}},
+    {{"entry_id": "entry.123456", "answer": "คำตอบ", "confidence": 85, "reasoning": "..."}},
     {{"entry_id": "entry.789012", "answer": ["ตัวเลือก1", "ตัวเลือก2"], "confidence": 70, "reasoning": "..."}}
   ]
 }}
@@ -830,14 +695,12 @@ def build_question_parts(idx: int, q: Question) -> List[types.Part]:
 
     text = f"\n--- ข้อ {idx} (ID: {q.entry_id}) ---\n"
     text += f"คำถาม: {q.title}\n"
-    if q.description:
-        text += f"คำอธิบาย: {q.description}\n"
     if q.is_multi:
-        text += "ประเภท: เลือกได้หลายคำตอบ (ตอบเป็น array เท่านั้น)\n"
+        text += "ประเภท: เลือกได้หลายคำตอบ (ตอบเป็น array)\n"
     elif q.choices:
         text += "ประเภท: เลือกคำตอบเดียว\n"
     else:
-        text += "ประเภท: คำตอบอิสระ (เติมคำตอบ)\n"
+        text += "ประเภท: คำตอบอิสระ\n"
 
     if q.choices:
         text += "ตัวเลือก:\n"
@@ -846,20 +709,10 @@ def build_question_parts(idx: int, q: Question) -> List[types.Part]:
 
     parts.append(types.Part.from_text(text=text))
 
+    # ใส่รูปภาพที่มีให้ AI (เฉพาะที่โหลดสำเร็จ)
     for img in q.images:
         if img.is_ready():
             parts.append(types.Part.from_bytes(data=img.data, mime_type=img.mime_type))
-        elif img.url:
-            parts.append(types.Part.from_text(text=f"[รูปประกอบคำถาม: {img.url}]"))
-
-    for ci, imgs in q.choice_images.items():
-        if ci < len(q.choices):
-            for img in imgs:
-                if img.is_ready():
-                    parts.append(types.Part.from_text(text=f"[รูปประกอบตัวเลือก {q.choices[ci]}]"))
-                    parts.append(types.Part.from_bytes(data=img.data, mime_type=img.mime_type))
-                elif img.url:
-                    parts.append(types.Part.from_text(text=f"[รูปประกอบตัวเลือก {q.choices[ci]}: {img.url}]"))
 
     return parts
 
@@ -904,28 +757,23 @@ def call_gemini_chunk(
     exam_context: str,
     chunk: List[Tuple[int, Question]],
     model_name: str,
-    thinking_level: str = "low",
 ) -> Dict[str, Any]:
-    client = genai.Client(api_key=api_key, http_options=types.HttpOptions(timeout=120000))
+    client = genai.Client(api_key=api_key, http_options=types.HttpOptions(timeout=torch.float32 if False else 120000))
 
     contents: List[types.Part] = [types.Part.from_text(text=build_system_instruction(exam_context))]
     for idx, q in chunk:
         contents.extend(build_question_parts(idx, q))
 
-    image_count = sum(1 for p in contents if hasattr(p, "inline_data") and p.inline_data is not None)
-    if image_count > 16:
-        logger.warning(f"Chunk มีรูปมาก ({image_count} รูป) อาจเกิน limit ของ Gemini")
-
     gen_config = types.GenerateContentConfig(
         response_mime_type="application/json",
-        max_output_tokens=8192,
-        temperature=0.15,
+        max_output_tokens=4096,
+        temperature=0.1,
         top_p=0.95,
     )
 
     if THINKING_CONFIG_AVAILABLE:
         try:
-            gen_config.thinking_config = types.ThinkingConfig(thinking_level=thinking_level)
+            gen_config.thinking_config = types.ThinkingConfig(thinking_level="low")
         except Exception:
             pass
 
@@ -933,7 +781,6 @@ def call_gemini_chunk(
 
     for attempt in range(MAX_MODEL_ATTEMPTS):
         try:
-            logger.info(f"Calling {model_name} (attempt {attempt + 1}) for {len(chunk)} questions")
             resp = client.models.generate_content(
                 model=model_name,
                 contents=contents,
@@ -946,7 +793,7 @@ def call_gemini_chunk(
             data = parse_ai_response(resp.text)
 
             if "answers" not in data:
-                raise RuntimeError(f"คำตอบไม่มี key 'answers': {list(data.keys())}")
+                raise RuntimeError(f"คำตอบไม่มี key 'answers'")
 
             result: Dict[str, Any] = {}
             for ans in data.get("answers", []):
@@ -962,16 +809,13 @@ def call_gemini_chunk(
         except Exception as err:
             last_err = err
             msg = str(err).lower()
-            logger.warning(f"{model_name} attempt {attempt + 1} failed: {err}")
 
             if "429" in msg or "resource_exhausted" in msg or "quota" in msg:
-                sleep_time = BACKOFF_SEC[min(attempt, len(BACKOFF_SEC) - 1)]
-                logger.info(f"Rate limited, sleeping {sleep_time}s")
-                time.sleep(sleep_time)
+                time.sleep(BACKOFF_SEC[min(attempt, len(BACKOFF_SEC) - 1)])
                 continue
 
             if any(code in msg for code in ["503", "504", "502", "500", "deadline"]) and attempt < MAX_MODEL_ATTEMPTS - 1:
-                time.sleep(5)
+                time.sleep(3)
                 continue
 
             break
@@ -983,7 +827,6 @@ def analyze_all(
     questions: List[Question],
     keys: List[str],
     exam_context: str,
-    thinking_level: str,
     progress_cb=None,
 ) -> Tuple[Dict[str, Any], List[str], List[str]]:
     indexed = list(enumerate(questions, 1))
@@ -996,99 +839,43 @@ def analyze_all(
         return results, errors, debug_logs
 
     available_models = get_available_models(keys[0])
-    debug_logs.append(f"ℹ️ Available models: {available_models}")
+    model_name = pick_best_model(available_models)
 
-    best_model = pick_best_model(available_models)
-    if not best_model:
+    if not model_name:
         errors.append("ไม่พบโมเดลที่ใช้ได้")
         return results, errors, debug_logs
 
-    # ลองโมเดลหลักก่อน ถ้าล้มเหลวทุก chunk ค่อยลองโมเดลอื่น
-    model_candidates = [best_model]
-    for model in available_models:
-        if model != best_model and "flash" in model.lower() and model not in model_candidates:
-            model_candidates.append(model)
-
-    debug_logs.append(f"🎯 Model candidates: {model_candidates[:3]}")
+    debug_logs.append(f"✅ ใช้โมเดล: {model_name}")
 
     workers = min(MAX_PARALLEL_WORKERS, len(keys), len(chunks))
 
-    for model_name in model_candidates:
-        debug_logs.append(f"🚀 Trying model: {model_name}")
-        results = {}
-        errors = []
-        failed_chunks = 0
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {
+            pool.submit(call_gemini_chunk, keys[i % len(keys)], exam_context, chunk, model_name): i
+            for i, chunk in enumerate(chunks)
+        }
 
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            futures = {
-                pool.submit(call_gemini_chunk, keys[i % len(keys)], exam_context, chunk, model_name, thinking_level): i
-                for i, chunk in enumerate(chunks)
-            }
-
-            done = 0
-            for fut in as_completed(futures):
-                chunk_idx = futures[fut]
-                done += 1
-                if progress_cb:
-                    progress_cb(done, len(chunks))
-
-                try:
-                    chunk_result = fut.result()
-                    if isinstance(chunk_result, dict):
-                        results.update(chunk_result)
-                        debug_logs.append(f"✅ Chunk {chunk_idx+1}/{len(chunks)}: ได้คำตอบ {len(chunk_result)} ข้อ")
-                    else:
-                        errors.append("ผลลัพธ์จาก AI ไม่ถูกต้อง")
-                        debug_logs.append(f"❌ Chunk {chunk_idx+1}/{len(chunks)}: ผลลัพธ์ไม่ใช่ dict")
-                        failed_chunks += 1
-                except Exception as e:
-                    err_msg = f"Chunk {chunk_idx+1}/{len(chunks)} error: {str(e)}"
-                    errors.append(str(e))
-                    debug_logs.append(f"❌ {err_msg}")
-                    failed_chunks += 1
-
-        if failed_chunks == 0:
-            debug_logs.append(f"✅ ใช้โมเดล {model_name} สำเร็จทุก chunk")
-            return results, errors, debug_logs
-        else:
-            debug_logs.append(f"⚠️ โมเดล {model_name} ล้มเหลว {failed_chunks}/{len(chunks)} chunk")
-
-    debug_logs.append("❌ ทุกโมเดลล้มเหลว")
-    return results, errors, debug_logs
-
-
-def fetch_and_process_images(questions: List[Question], progress_cb=None) -> None:
-    tasks = []
-
-    for qi, q in enumerate(questions):
-        for ii, img in enumerate(q.images):
-            if img.status == "pending" and img.url:
-                tasks.append((qi, ii, img, False, None))
-        for ci, imgs in q.choice_images.items():
-            for ii, img in enumerate(imgs):
-                if img.status == "pending" and img.url:
-                    tasks.append((qi, ii, img, True, ci))
-
-    total = len(tasks)
-    if total == 0:
-        return
-
-    def _process(task):
-        qi, ii, img, is_choice, ci = task
-        processed = process_image_from_url(img.url)
-        return qi, ii, is_choice, ci, processed
-
-    completed = 0
-    with ThreadPoolExecutor(max_workers=8) as pool:
-        for result in pool.map(_process, tasks):
-            qi, ii, is_choice, ci, processed = result
-            if is_choice:
-                questions[qi].choice_images[ci][ii] = processed
-            else:
-                questions[qi].images[ii] = processed
-            completed += 1
+        done = 0
+        for fut in as_completed(futures):
+            chunk_idx = futures[fut]
+            done += 1
             if progress_cb:
-                progress_cb(completed, total)
+                progress_cb(done, len(chunks))
+
+            try:
+                chunk_result = fut.result()
+                if isinstance(chunk_result, dict):
+                    results.update(chunk_result)
+                    debug_logs.append(f"✅ Chunk {chunk_idx+1}/{len(chunks)}: ได้ {len(chunk_result)} ข้อ")
+                else:
+                    errors.append("ผลลัพธ์จาก AI ไม่ถูกต้อง")
+                    debug_logs.append(f"❌ Chunk {chunk_idx+1}/{len(chunks)}: ผลลัพธ์ไม่ใช่ dict")
+            except Exception as e:
+                err_msg = f"Chunk {chunk_idx+1}/{len(chunks)} error: {str(e)}"
+                errors.append(str(e))
+                debug_logs.append(f"❌ {err_msg}")
+
+    return results, errors, debug_logs
 
 
 def build_submit_payload(
@@ -1202,8 +989,6 @@ def render_image_status(img: QuestionImage):
         return "✅"
     elif img.status == "compressed":
         return "⚡"
-    elif img.status == "url_only":
-        return "🔗"
     elif img.status == "failed":
         return "❌"
     return "⏳"
@@ -1218,7 +1003,6 @@ with st.container(border=True):
 with st.container(border=True):
     st.markdown('<div class="glass-header">PERSONAL DATA & CONTEXT</div>', unsafe_allow_html=True)
     exam_context = st.text_area("EXAM CONTEXT", placeholder="เช่น ฟิสิกส์ ม.6 บทคลื่น...", height=68)
-    fast_mode = st.checkbox("โหมดเร็ว", value=True)
     debug_mode = st.checkbox("โหมด debug", value=False)
 
     col1, col2 = st.columns(2)
@@ -1243,45 +1027,28 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                 form_data, fbzx, fvv, raw_html, submit_url = fetch_form(form_url)
 
                 st.write("🧩 กำลังสกัดคำถาม...")
-                questions, personal_data_map, default_next, page_count, global_urls = parse_form(
+                questions, personal_data_map, default_next, page_count = parse_form(
                     form_data, raw_html, my_name, my_student_id, my_no, my_class
                 )
 
-                total_images = sum(
-                    len(q.images) + sum(len(v) for v in q.choice_images.values())
-                    for q in questions
+                st.write(f"🤖 AI กำลังวิเคราะห์ {len(questions)} ข้อ...")
+                bar = st.progress(0.0)
+
+                def ai_cb(done, total):
+                    bar.progress(done / total, text=f"วิเคราะห์ {done}/{total}")
+
+                ai_answers, ai_errors, debug_logs = analyze_all(
+                    questions, api_keys, exam_context, ai_cb
                 )
-                st.write(f"🖼️ กำลังดาวน์โหลดรูปภาพ ({total_images} รูป)...")
-                img_progress = st.empty()
+                bar.empty()
 
-                def img_cb(done, total):
-                    img_progress.progress(done / total, text=f"ดาวน์โหลดรูป {done}/{total}")
-
-                fetch_and_process_images(questions, img_cb)
-                img_progress.empty()
-
-                ai_answers, ai_errors, debug_logs = {}, [], []
-                if questions:
-                    st.write(f"🤖 AI กำลังวิเคราะห์ {len(questions)} ข้อ...")
-                    bar = st.progress(0.0)
-
-                    def ai_cb(done, total):
-                        bar.progress(done / total, text=f"วิเคราะห์ {done}/{total}")
-
-                    ai_answers, ai_errors, debug_logs = analyze_all(
-                        questions, api_keys, exam_context,
-                        "low" if fast_mode else "medium",
-                        ai_cb,
-                    )
-                    bar.empty()
-
-                    if ai_errors:
-                        st.warning(f"มี {len(ai_errors)} ข้อที่วิเคราะห์ไม่สำเร็จ")
-                        with st.expander("ดูรายละเอียดข้อผิดพลาด"):
-                            for err in ai_errors:
-                                st.code(err)
-                    else:
-                        st.success(f"✅ AI วิเคราะห์สำเร็จ {len(ai_answers)} ข้อ")
+                if ai_errors:
+                    st.warning(f"มี {len(ai_errors)} ข้อที่วิเคราะห์ไม่สำเร็จ")
+                    with st.expander("ดูรายละเอียดข้อผิดพลาด"):
+                        for err in ai_errors:
+                            st.code(err)
+                else:
+                    st.success(f"✅ AI วิเคราะห์สำเร็จ {len(ai_answers)} ข้อ")
 
                 st.session_state.update({
                     "questions": questions,
@@ -1294,7 +1061,6 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                     "exam_context": exam_context,
                     "submit_url": submit_url,
                     "debug_logs": debug_logs,
-                    "global_urls": global_urls,
                 })
                 status.update(label="ANALYSIS COMPLETE", state="complete", expanded=False)
 
@@ -1311,21 +1077,11 @@ if "questions" in st.session_state:
     ai_answers = st.session_state.get("ai_answers", {})
     personal_data_map = st.session_state.get("personal_data_map", {})
     debug_logs = st.session_state.get("debug_logs", [])
-    global_urls = st.session_state.get("global_urls", [])
 
     if st.session_state.get("debug_mode") or debug_mode:
         with st.expander("🔧 Debug Logs", expanded=True):
-            st.write(f"**Global URLs found: {len(global_urls)}**")
-            for i, url in enumerate(global_urls[:10]):
-                st.text(f"{i+1}. {url[:100]}...")
-            st.write("**Chunk results:**")
             for log in debug_logs:
                 st.text(log)
-            st.write("**Image counts per question:**")
-            for qi, q in enumerate(questions, 1):
-                ready = sum(1 for img in q.images if img.is_ready())
-                total = len(q.images)
-                st.text(f"ข้อ {qi}: {ready}/{total} รูป | type: {q.q_type} | is_multi: {q.is_multi}")
 
     total_q = len(questions)
     answered = sum(1 for q in questions if get_ai_answer(ai_answers, q.entry_id).get("answer"))
@@ -1365,10 +1121,14 @@ if "questions" in st.session_state:
                     del st.session_state[f"ans_{q.entry_id}"]
             st.rerun()
 
-    # อัปโหลดรูปเองสำหรับข้อที่มีรูปแต่ดึงไม่ได้
+    # อัปโหลดรูปเองสำหรับข้อที่มีรูป
     for qi, q in enumerate(questions, 1):
         if ("รูป" in q.title or "ภาพ" in q.title) and not any(img.is_ready() for img in q.images):
-            uploaded = st.file_uploader(f"อัปโหลดรูปสำหรับข้อ {qi}", type=["jpg", "jpeg", "png", "webp"], key=f"upload_{q.entry_id}")
+            uploaded = st.file_uploader(
+                f"📎 อัปโหลดรูปสำหรับข้อ {qi} (Google Form เก็บรูปแบบ private blob ดึงอัตโนมัติไม่ได้)",
+                type=["jpg", "jpeg", "png", "webp"],
+                key=f"upload_{q.entry_id}"
+            )
             if uploaded:
                 q.images.append(QuestionImage(
                     source="manual_upload",
@@ -1377,7 +1137,7 @@ if "questions" in st.session_state:
                     mime_type=uploaded.type or "image/jpeg",
                     status="ok",
                 ))
-                st.success(f"✅ อัปโหลดรูปข้อ {qi} สำเร็จ")
+                st.success(f"✅ อัปโหลดรูปข้อ {qi} สำเร็จ กด INITIATE ANALYSIS อีกครั้งเพื่อให้ AI วิเคราะห์")
 
     for idx, q in enumerate(questions, 1):
         entry_id = q.entry_id
@@ -1397,8 +1157,6 @@ if "questions" in st.session_state:
                     with img_cols[i % 3]:
                         if img.is_ready():
                             st.image(img.data, use_container_width=True, caption=f"รูป {i+1} {render_image_status(img)}")
-                        elif img.url:
-                            st.markdown(f'<div class="image-fallback">🔗 รูปที่ {i+1}: <a href="{img.url}" target="_blank">ดูรูปต้นฉบับ</a></div>', unsafe_allow_html=True)
                         else:
                             st.markdown(f'<div class="image-fallback">❌ โหลดรูปที่ {i+1} ไม่ได้</div>', unsafe_allow_html=True)
                 st.markdown('</div>', unsafe_allow_html=True)
