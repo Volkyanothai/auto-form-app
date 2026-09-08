@@ -1,10 +1,10 @@
 """
-app.py — EZEXAM Auto Form System (Hotfix v5)
+app.py — EZEXAM Auto Form System (Hotfix v6)
 =============================================
-แก้ไขอย่างจริงจัง:
-- Dynamic model listing จาก Google API (ไม่เดาชื่อโมเดล)
-- ดึงรูปภาพแบบเดิมที่เคยใช้ได้ + กรองรูปที่ไม่ใช่
-- ค้นหารูปใน FB_PUBLIC_LOAD_DATA_ แบบละเอียด
+แก้ไข:
+- ใช้โมเดล gemini-3.6-flash ตามที่ Google แนะนำ
+- ดึงรูปภาพจาก FB_PUBLIC_LOAD_DATA_ โดยตรง
+- ค้นหา image URLs ในทุก field ของ entry
 """
 from __future__ import annotations
 
@@ -59,7 +59,7 @@ MAX_IMAGE_DIM_TEXT = 1536
 MAX_IMAGE_FILE_SIZE = 4 * 1024 * 1024
 JPEG_QUALITY = 82
 
-# Regex แบบเดิมที่เคยใช้ได้
+# Regex หลักสำหรับ Google Form images
 IMG_URL_RE = re.compile(r'https://lh\d?\.?googleusercontent\.com/[^\s"\'<>\\]+')
 
 BASE64_IMG_RE = re.compile(r'data:image/(?P<mime>[\w+]+);base64,(?P<data>[A-Za-z0-9+/=]+)')
@@ -149,7 +149,6 @@ def clean_text(text: Any) -> str:
 
 
 def is_valid_image_url(url: str) -> bool:
-    """กรอง URL ที่ไม่ใช่รูปคำถามออก"""
     if not url or len(url) < 10:
         return False
     for pattern in URL_IGNORE_PATTERNS:
@@ -172,7 +171,6 @@ def extract_base64_images(text: str) -> List[Tuple[str, bytes]]:
 
 
 def find_image_urls_in_text(text: str) -> List[str]:
-    """หา image URLs จากข้อความ โดยใช้ regex แบบเดิม"""
     if not text:
         return []
     found = IMG_URL_RE.findall(text)
@@ -348,7 +346,7 @@ def process_image_from_url(url: Optional[str], raw_bytes: Optional[bytes] = None
     )
 
 
-def find_image_urls_recursive(obj: Any, max_depth: int = 10) -> List[str]:
+def find_image_urls_recursive(obj: Any, max_depth: int = 12) -> List[str]:
     """ค้นหา image URLs ใน nested structure แบบ recursive"""
     found = []
     if max_depth <= 0:
@@ -737,9 +735,6 @@ def simulate_page_history(
 
 
 def get_available_models(api_key: str) -> List[str]:
-    """
-    ถาม Google API ว่า API key นี้ใช้โมเดลไหนได้บ้าง
-    """
     try:
         client = genai.Client(api_key=api_key)
         models = []
@@ -748,14 +743,12 @@ def get_available_models(api_key: str) -> List[str]:
             if name.startswith("models/"):
                 name = name[7:]
 
-            # ตรวจสอบว่ารองรับ generateContent หรือไม่
             supported = False
             if hasattr(m, "supported_actions") and m.supported_actions:
                 supported = "generateContent" in m.supported_actions
             elif hasattr(m, "supported_generation_methods") and m.supported_generation_methods:
                 supported = "generateContent" in m.supported_generation_methods
             else:
-                # ถ้าไม่มีข้อมูล ให้ลองเพิ่มเข้าไปก่อน
                 supported = True
 
             if supported:
@@ -769,15 +762,22 @@ def get_available_models(api_key: str) -> List[str]:
 
 
 def pick_best_model(available: List[str]) -> Optional[str]:
-    """เลือกโมเดลที่ดีที่สุดจากรายการที่มี"""
     if not available:
         return None
 
-    # ลำดับความต้องการ: flash ก่อน (เร็ว+ถูก) แล้วค่อย pro
+    # Google แนะนำให้ใช้ gemini-3.6-flash สำหรับ new users
     preferences = [
+        "gemini-3.6-flash",
+        "gemini-3.5-flash",
+        "gemini-3.1-flash",
+        "gemini-3-flash-preview",
         "gemini-2.5-flash",
         "gemini-2.0-flash",
         "gemini-1.5-flash",
+        "gemini-3.6-flash-lite",
+        "gemini-3.5-flash-lite",
+        "gemini-3.1-pro-preview",
+        "gemini-3-pro-image",
         "gemini-2.5-pro",
         "gemini-2.0-pro",
         "gemini-1.5-pro",
@@ -788,7 +788,6 @@ def pick_best_model(available: List[str]) -> Optional[str]:
             if model == pref or model.startswith(pref + "-"):
                 return model
 
-    # ถ้าไม่ตรง preference ให้เอาอันแรกที่เป็น flash
     for model in available:
         if "flash" in model.lower():
             return model
@@ -990,7 +989,6 @@ def analyze_all(
     if not chunks:
         return results, errors, debug_logs
 
-    # หาโมเดลที่ใช้ได้จาก key แรก
     available_models = get_available_models(keys[0])
     model_name = pick_best_model(available_models)
 
@@ -998,8 +996,7 @@ def analyze_all(
         debug_logs.append(f"✅ Available models: {available_models}")
         debug_logs.append(f"✅ Selected model: {model_name}")
     else:
-        # Fallback ถ้า list ไม่ได้
-        fallback_models = ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro"]
+        fallback_models = ["gemini-3.6-flash", "gemini-3.5-flash", "gemini-2.5-flash"]
         model_name = pick_best_model(fallback_models)
         debug_logs.append(f"⚠️ ใช้ fallback model: {model_name}")
 
