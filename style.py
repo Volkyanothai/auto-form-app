@@ -1,6 +1,9 @@
 """
-style.py — EZEXAM UI (drop-in replacement, ทับไฟล์เดิมได้เลย)
-ต้องมี Pillow ใน requirements.txt:  pillow
+style.py — EZEXAM UI (Phase 0+1 Overhaul)
+=========================================
+- แก้ไข logo processing ให้ปลอดภัยและเร็วขึ้น
+- เพิ่ม styles สำหรับ confidence bar, reasoning, image gallery
+- Responsive ที่ดีขึ้น
 """
 import base64
 import io
@@ -9,9 +12,9 @@ from pathlib import Path
 import streamlit as st
 
 # ═══════════ ปรับได้ตรงนี้ ═══════════
-LOGO_FILES  = ("logo.png", "logo.jpg", "logo.jpeg", "logo.webp", "logo.svg")
-LOGO_COLOR  = "auto"     # "auto" = ตรวจเอง | "white" = บังคับขาว | "original" = สีเดิม
-STRIP_WHITE = True       # ลบพื้นหลังขาวทึบออกอัตโนมัติ
+LOGO_FILES = ("logo.png", "logo.jpg", "logo.jpeg", "logo.webp", "logo.svg")
+LOGO_COLOR = "auto"     # "auto" = ตรวจเอง | "white" = บังคับขาว | "original" = สีเดิม
+STRIP_WHITE = True      # ลบพื้นหลังขาวทึบออกอัตโนมัติ
 # ════════════════════════════════════
 
 
@@ -24,47 +27,80 @@ def _find_logo():
 
 
 def _strip_white_bg(img, tol=34):
-    """ลบพื้นหลังขาวทึบ -> โปร่งใส (เช็คจาก 4 มุมก่อน ถ้าไม่ขาวจะไม่แตะ)"""
+    """ลบพื้นหลังขาวทึบ -> โปร่งใส โดยใช้ numpy เพื่อความเร็ว"""
+    try:
+        import numpy as np
+        from PIL import Image
+    except ImportError:
+        return img
+
     w, h = img.size
-    px = img.load()
-    corners = [px[0, 0], px[w - 1, 0], px[0, h - 1], px[w - 1, h - 1]]
+    if w < 2 or h < 2:
+        return img
+
+    arr = np.array(img)
+    if arr.shape[-1] != 4:
+        return img
+
+    # ตรวจ 4 มุม
+    corners = [arr[0, 0], arr[0, -1], arr[-1, 0], arr[-1, -1]]
     solid = [c for c in corners if c[3] > 8]
     if not solid:
         return img
-    r0 = sum(c[0] for c in solid) // len(solid)
-    g0 = sum(c[1] for c in solid) // len(solid)
-    b0 = sum(c[2] for c in solid) // len(solid)
+
+    r0 = int(np.mean([c[0] for c in solid]))
+    g0 = int(np.mean([c[1] for c in solid]))
+    b0 = int(np.mean([c[2] for c in solid]))
+
     if not (r0 > 224 and g0 > 224 and b0 > 224):
         return img
-    out = img.copy()
-    o = out.load()
-    for y in range(h):
-        for x in range(w):
-            r, g, b, a = px[x, y]
-            d = max(abs(r - r0), abs(g - g0), abs(b - b0))
-            if d <= tol:
-                o[x, y] = (r, g, b, 0)
-            elif d <= tol * 2:
-                o[x, y] = (r, g, b, int(a * (d - tol) / tol))
-    return out
+
+    # สร้าง mask
+    diff = np.max(np.abs(arr[:, :, :3].astype(np.int16) - [r0, g0, b0]), axis=2)
+    alpha = arr[:, :, 3].astype(np.float32)
+
+    # พื้นหลังขาว -> โปร่งใส
+    mask_bg = diff <= tol
+    alpha[mask_bg] = 0
+
+    # ขอบเขต -> โปร่งใสแบบ gradient
+    mask_edge = (diff > tol) & (diff <= tol * 2)
+    ratio = (diff[mask_edge] - tol) / tol
+    alpha[mask_edge] = alpha[mask_edge] * ratio
+
+    arr[:, :, 3] = alpha.astype(np.uint8)
+    return Image.fromarray(arr)
 
 
 def _is_dark(img):
-    data = [p for p in img.getdata() if p[3] > 40]
-    if not data:
+    try:
+        import numpy as np
+        arr = np.array(img)
+        if arr.shape[-1] == 4:
+            mask = arr[:, :, 3] > 40
+            if not np.any(mask):
+                return False
+            rgb = arr[:, :, :3][mask]
+            lum = 0.299 * rgb[:, 0] + 0.587 * rgb[:, 1] + 0.114 * rgb[:, 2]
+            return float(np.mean(lum)) < 135
+        else:
+            lum = 0.299 * arr[:, :, 0] + 0.587 * arr[:, :, 1] + 0.114 * arr[:, :, 2]
+            return float(np.mean(lum)) < 135
+    except Exception:
         return False
-    lum = sum(0.299 * p[0] + 0.587 * p[1] + 0.114 * p[2] for p in data) / len(data)
-    return lum < 135
 
 
 def _to_white(img):
-    return img.point(lambda _: 255, mode=None) if False else \
-        __import__("PIL.Image", fromlist=["Image"]).merge(
-            "RGBA",
-            (img.split()[0].point(lambda _: 255),
-             img.split()[1].point(lambda _: 255),
-             img.split()[2].point(lambda _: 255),
-             img.split()[3]))
+    """แปลงสีรูปเป็นขาว โดยเก็บ alpha channel"""
+    try:
+        from PIL import Image
+        r, g, b, a = img.split()
+        white_r = r.point(lambda _: 255)
+        white_g = g.point(lambda _: 255)
+        white_b = b.point(lambda _: 255)
+        return Image.merge("RGBA", (white_r, white_g, white_b, a))
+    except Exception:
+        return img
 
 
 @st.cache_data(show_spinner=False)
@@ -79,13 +115,14 @@ def _logo_uri() -> str:
         from PIL import Image
     except Exception:
         return "data:image/png;base64," + base64.b64encode(raw).decode()
+
     try:
         img = Image.open(io.BytesIO(raw)).convert("RGBA")
         if max(img.size) > 1000:
             img.thumbnail((1000, 1000), Image.LANCZOS)
         if STRIP_WHITE:
             img = _strip_white_bg(img)
-        box = img.getbbox()                 # ◄ หัวใจ: ตัดขอบว่างทิ้ง
+        box = img.getbbox()
         if box:
             img = img.crop(box)
         if LOGO_COLOR == "white" or (LOGO_COLOR == "auto" and _is_dark(img)):
@@ -117,7 +154,7 @@ html,body,p,h1,h2,h3,h4,h5,h6,label,input,textarea,li,button,span,div{font-famil
 #MainMenu,footer{visibility:hidden;}
 [data-testid="stToolbar"]{visibility:hidden;height:0;}
 [data-testid="stDecoration"]{display:none;}
-.block-container{padding:1.2rem 1rem 4rem;max-width:860px;}
+.block-container{padding:1.2rem 1rem 4rem;max-width:900px;}
 
 /* ═══ HERO ═══ */
 .hero{position:relative;overflow:hidden;border-radius:24px;padding:1.75rem 1.4rem 1.4rem;margin:0 0 1.35rem;background:linear-gradient(158deg,rgba(22,42,90,.52),rgba(6,12,30,.44));border:1px solid rgba(140,175,255,.12);backdrop-filter:blur(24px) saturate(150%);-webkit-backdrop-filter:blur(24px) saturate(150%);box-shadow:0 24px 64px rgba(0,0,0,.5),inset 0 1px 0 rgba(255,255,255,.075);animation:rise .7s cubic-bezier(.2,.8,.2,1) both;}
@@ -166,11 +203,25 @@ div.stButton>button:active{transform:translateY(1px) scale(.99);}
 .stTextInput label p,.stSelectbox label p,.stTextArea label p{color:#8698bd;font-size:.68rem;font-weight:700;letter-spacing:1.1px;text-transform:uppercase;}
 .stTextInput input:disabled{-webkit-appearance:none;appearance:none;background-color:rgba(7,14,34,.8)!important;color:#e7edfb!important;-webkit-text-fill-color:#e7edfb!important;opacity:1!important;border:1px solid rgba(140,175,255,.17)!important;}
 
-/* ═══ RESULT ═══ */
-.confidence-track{width:100%;height:6px;background:rgba(255,255,255,.055);border-radius:99px;overflow:hidden;margin:.6rem 0 .5rem;}
-.confidence-fill{height:100%;border-radius:99px;animation:grow 1.1s cubic-bezier(.2,.8,.2,1) both;}
+/* ═══ IMAGE GALLERY ═══ */
+.image-gallery{margin:.6rem 0 1rem;}
+.image-gallery [data-testid="stImage"]{border-radius:12px;overflow:hidden;border:1px solid rgba(140,175,255,.15);box-shadow:0 8px 24px rgba(0,0,0,.3);}
+.image-fallback{padding:.7rem 1rem;border-radius:10px;background:rgba(255,107,107,.08);border:1px solid rgba(255,107,107,.25);color:#ff9e9e;font-size:.82rem;margin:.3rem 0;}
+.image-fallback a{color:#8fbcff;text-decoration:underline;}
+
+/* ═══ CONFIDENCE & REASONING ═══ */
+.confidence-track{width:100%;height:6px;background:rgba(255,255,255,.055);border-radius:99px;overflow:hidden;margin:.4rem 0 .25rem;}
+.confidence-fill{height:100%;border-radius:99px;animation:grow 1.1s cubic-bezier(.2,.8,.2,1) both;box-shadow:0 0 10px currentColor;}
 @keyframes grow{from{width:0}}
+.confidence-label{font-size:.72rem;color:#8698bd;margin-bottom:.6rem;}
 .reasoning-text{color:#c2d0ee;font-size:.85rem;line-height:1.65;background:rgba(127,179,255,.085);padding:11px 15px;border-radius:11px;border-left:3px solid #7fb3ff;margin-bottom:12px;}
+
+/* ═══ METRICS ═══ */
+[data-testid="stMetric"]{background:rgba(127,179,255,.06);border:1px solid rgba(140,175,255,.12);border-radius:12px;padding:.6rem;}
+[data-testid="stMetricLabel"]{font-size:.65rem!important;letter-spacing:1.2px;text-transform:uppercase;color:#8698bd;}
+[data-testid="stMetricValue"]{font-size:1.6rem!important;font-weight:700;color:#e7edfb;}
+
+/* ═══ RESULT ═══ */
 .score-box{position:relative;overflow:hidden;text-align:center;padding:2rem 1.2rem;border-radius:22px;margin:1.2rem 0;background:linear-gradient(150deg,rgba(232,201,138,.13),rgba(127,179,255,.08));border:1px solid rgba(232,201,138,.28);backdrop-filter:blur(20px);box-shadow:0 22px 58px rgba(0,0,0,.48),0 0 42px rgba(232,201,138,.11);animation:pop .7s cubic-bezier(.2,1.2,.3,1) both;}
 .score-box::after{content:"";position:absolute;top:0;left:22%;right:22%;height:1px;background:linear-gradient(90deg,transparent,rgba(232,201,138,.8),transparent);}
 .score-val{font-size:3.3rem;font-weight:800;line-height:1;background:linear-gradient(120deg,#e8c98a,#fff 48%,#7fb3ff);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;}
@@ -188,6 +239,10 @@ hr{border-color:rgba(140,175,255,.13);}
 ::-webkit-scrollbar-track{background:transparent;}
 ::-webkit-scrollbar-thumb{background:rgba(127,179,255,.2);border-radius:99px;}
 ::-webkit-scrollbar-thumb:hover{background:rgba(127,179,255,.36);}
+
+/* ═══ RADIO / MULTISELECT ═══ */
+.stRadio label span{color:#e7edfb;}
+.stMultiSelect [data-baseweb="tag"]{background:rgba(127,179,255,.2)!important;border-color:rgba(127,179,255,.4)!important;color:#e7edfb!important;}
 
 @media (max-width:640px){
 .block-container{padding:.8rem .65rem 3rem;}
