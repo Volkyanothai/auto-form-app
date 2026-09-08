@@ -1,10 +1,10 @@
 """
-app.py — EZEXAM Auto Form System (Hotfix v7)
+app.py — EZEXAM Auto Form System (Hotfix v8)
 =============================================
 แก้ไข:
-- ลองโมเดลหลายตัวอัตโนมัติจนกว่าจะสำเร็จ
-- ดึงรูปภาพหลายรูปแบบ + อัปโหลดรูปเองได้
-- แสดง raw entry สำหรับ debug
+- ดึงรูปภาพจาก Google Form blob ID
+- รองรับคำถามหลายคำตอบ (checkbox) ให้ถูกต้อง
+- ปรับปรุง prompt ให้ AI ตอบ checkbox เป็น array
 """
 from __future__ import annotations
 
@@ -76,6 +76,10 @@ URL_IGNORE_PATTERNS = [
     re.compile(r'favicon', re.I),
     re.compile(r'avatar', re.I),
     re.compile(r'/logos/', re.I),
+    re.compile(r'/_freebird/', re.I),
+    re.compile(r'/docs/common/', re.I),
+    re.compile(r'/docs/spreadsheets/forms/', re.I),
+    re.compile(r'/docs/forms/social/', re.I),
 ]
 
 try:
@@ -192,6 +196,47 @@ def find_image_urls_in_text(text: str) -> List[str]:
     return unique
 
 
+def extract_blob_ids(entry: Any) -> List[str]:
+    """ดึง blob IDs จาก entry"""
+    blob_ids = []
+    entry_json = json.dumps(entry, ensure_ascii=False)
+    # หา pattern s-blob-v1-IMAGE-xxx หรือ blob IDs อื่นๆ
+    patterns = [
+        re.compile(r'(s-blob-v1-IMAGE-[A-Za-z0-9_-]+)'),
+        re.compile(r'(s-blob-[A-Za-z0-9_-]+)'),
+        re.compile(r'"([A-Za-z0-9_-]{20,})"', re.IGNORECASE),
+    ]
+    for pattern in patterns:
+        for match in pattern.findall(entry_json):
+            if match and len(match) > 15:
+                blob_ids.append(match)
+    return list(dict.fromkeys(blob_ids))
+
+
+def blob_to_url(blob_id: str, form_url: str, fbzx: str = "") -> List[str]:
+    """แปลง blob ID เป็น URLs ที่เป็นไปได้หลายแบบ"""
+    urls = []
+    
+    # ลองหา form ID จาก form_url
+    form_id_match = re.search(r'/d/e/([a-zA-Z0-9_-]+)', form_url)
+    if not form_id_match:
+        form_id_match = re.search(r'/forms/d/([a-zA-Z0-9_-]+)', form_url)
+    
+    form_id = form_id_match.group(1) if form_id_match else ""
+    
+    if form_id:
+        urls.append(f"https://docs.google.com/forms/d/e/{form_id}/viewform?fbzx={fbzx}&blob={blob_id}")
+        urls.append(f"https://docs.google.com/forms/u/0/d/e/{form_id}/formResponse?fbzx={fbzx}&blob={blob_id}")
+    
+    # ลองแบบ direct
+    urls.append(f"https://lh3.googleusercontent.com/{blob_id}")
+    urls.append(f"https://lh4.googleusercontent.com/{blob_id}")
+    urls.append(f"https://lh5.googleusercontent.com/{blob_id}")
+    urls.append(f"https://www.google.com/forms/d/e/{form_id}/viewform?fbzx={fbzx}&blob={blob_id}")
+    
+    return urls
+
+
 def validate_image(raw_bytes: bytes) -> Tuple[bool, Optional[str], Optional[Tuple[int, int]]]:
     try:
         from PIL import Image
@@ -296,7 +341,7 @@ def download_image(url: str, timeout: int = IMAGE_TIMEOUT) -> Optional[bytes]:
 
     for try_url in urls_to_try:
         try:
-            r = requests.get(try_url, headers=UA, timeout=timeout)
+            r = requests.get(try_url, headers=UA, timeout=timeout, allow_redirects=True)
             if r.status_code == 200 and len(r.content) > 100:
                 return r.content
         except Exception as e:
@@ -355,7 +400,6 @@ def process_image_from_url(url: Optional[str], raw_bytes: Optional[bytes] = None
 
 
 def find_image_urls_recursive(obj: Any, max_depth: int = 15) -> List[str]:
-    """ค้นหา image URLs ใน nested structure แบบ recursive"""
     found = []
     if max_depth <= 0:
         return found
@@ -378,7 +422,13 @@ def find_image_urls_recursive(obj: Any, max_depth: int = 15) -> List[str]:
     return unique
 
 
-def extract_images_from_entry(entry: Any, global_urls: List[str], global_index_ptr: List[int]) -> Tuple[List[QuestionImage], Dict[int, List[QuestionImage]]]:
+def extract_images_from_entry(
+    entry: Any,
+    global_urls: List[str],
+    global_index_ptr: List[int],
+    form_url: str = "",
+    fbzx: str = "",
+) -> Tuple[List[QuestionImage], Dict[int, List[QuestionImage]]]:
     question_images: List[QuestionImage] = []
     choice_images: Dict[int, List[QuestionImage]] = {}
 
@@ -388,7 +438,14 @@ def extract_images_from_entry(entry: Any, global_urls: List[str], global_index_p
     # 1. หา URL จาก entry โดยตรง (recursive)
     entry_urls = find_image_urls_recursive(entry)
 
-    # 2. หา base64
+    # 2. หา blob IDs และแปลงเป็น URL
+    blob_ids = extract_blob_ids(entry)
+    for blob_id in blob_ids:
+        for blob_url in blob_to_url(blob_id, form_url, fbzx):
+            if blob_url not in entry_urls:
+                entry_urls.append(blob_url)
+
+    # 3. หา base64
     entry_json = json.dumps(entry, ensure_ascii=False)
     for mime, data in extract_base64_images(entry_json):
         valid, fmt, size = validate_image(data)
@@ -405,7 +462,7 @@ def extract_images_from_entry(entry: Any, global_urls: List[str], global_index_p
                     status=status,
                 ))
 
-    # 3. เพิ่ม URLs ที่เจอจาก entry
+    # 4. เพิ่ม URLs ที่เจอจาก entry
     for u in entry_urls:
         question_images.append(QuestionImage(
             source="question",
@@ -415,10 +472,10 @@ def extract_images_from_entry(entry: Any, global_urls: List[str], global_index_p
             status="pending",
         ))
 
-    # 4. ตรวจ has_media flag
+    # 5. ตรวจ has_media flag
     has_media = len(entry) > 9 and bool(entry[9])
 
-    # 5. ถ้ามี has_media แต่ไม่เจอ URL ใดๆ ให้ใช้ global URL pool
+    # 6. ถ้ามี has_media แต่ไม่เจอ URL ใดๆ ให้ใช้ global URL pool
     if has_media and not question_images and global_index_ptr[0] < len(global_urls):
         u = global_urls[global_index_ptr[0]]
         global_index_ptr[0] += 1
@@ -430,13 +487,18 @@ def extract_images_from_entry(entry: Any, global_urls: List[str], global_index_p
             status="pending",
         ))
 
-    # 6. หา URL จากตัวเลือก
+    # 7. หา URL จากตัวเลือก
     choices_raw = safe_get(entry, [4, 0, 1])
     if choices_raw and isinstance(choices_raw, list):
         for ci, choice in enumerate(choices_raw):
             if not choice:
                 continue
             choice_urls = find_image_urls_recursive(choice)
+            choice_blob_ids = extract_blob_ids(choice)
+            for blob_id in choice_blob_ids:
+                for blob_url in blob_to_url(blob_id, form_url, fbzx):
+                    if blob_url not in choice_urls:
+                        choice_urls.append(blob_url)
             choice_base64 = extract_base64_images(json.dumps(choice, ensure_ascii=False))
 
             for u in choice_urls:
@@ -598,6 +660,7 @@ def fetch_form(form_url: str) -> Tuple[dict, str, str, str, str]:
 def parse_form(
     form_data: Any,
     raw_html: str,
+    form_url: str,
     my_name: str,
     my_student_id: str,
     my_no: str,
@@ -665,7 +728,7 @@ def parse_form(
             personal_data_map[entry_id] = p_info
             continue
 
-        q_images, c_images = extract_images_from_entry(item, global_urls, global_index_ptr)
+        q_images, c_images = extract_images_from_entry(item, global_urls, global_index_ptr, form_url, fbzx="")
 
         branch_map: Dict[str, int] = {}
         if choices_raw and isinstance(choices_raw, list):
@@ -812,7 +875,7 @@ def build_system_instruction(exam_context: str) -> str:
 1. อ่านคำถามและรูปประกอบให้ละเอียด
 2. ถ้าคำถามมีตัวเลือก ให้ตอบเป็นข้อความของตัวเลือกนั้นเป๊ะๆ (เช่น "ก. แมว" ไม่ใช่แค่ "ก")
 3. ถ้าเป็นคำถามเติมคำ/ข้อความ ให้ตอบเป็นข้อความสั้นที่ถูกต้อง
-4. ถ้าเป็นคำถามหลายคำตอบ ให้ตอบเป็น array ของข้อความ
+4. ถ้าเป็นคำถามหลายคำตอบ (เลือกได้หลายข้อ) ให้ตอบเป็น array ของข้อความ เช่น ["ก. แมว", "ข. หมา"]
 5. ให้ confidence 0-100 โดยพิจารณาจากความชัดเจนของโจทย์
 6. อธิบาย reasoning สั้นๆ ว่าทำไมถึงเลือกคำตอบนี้ (ภาษาไทย)
 7. ตอบเป็น JSON ตามรูปแบบนี้เท่านั้น ห้ามมีข้อความนอก JSON:
@@ -834,7 +897,7 @@ def build_question_parts(idx: int, q: Question) -> List[types.Part]:
     if q.description:
         text += f"คำอธิบาย: {q.description}\n"
     if q.is_multi:
-        text += "ประเภท: เลือกได้หลายคำตอบ\n"
+        text += "ประเภท: เลือกได้หลายคำตอบ (ตอบเป็น array)\n"
     elif q.choices:
         text += "ประเภท: เลือกคำตอบเดียว\n"
     else:
@@ -999,13 +1062,11 @@ def analyze_all(
     available_models = get_available_models(keys[0])
     debug_logs.append(f"ℹ️ Available models: {available_models}")
 
-    # ลองโมเดลหลายตัวจนกว่าจะสำเร็จ
     model_candidates = []
     best_model = pick_best_model(available_models)
     if best_model:
         model_candidates.append(best_model)
 
-    # เพิ่ม candidates อื่นๆ
     for model in available_models:
         if model not in model_candidates and "flash" in model.lower():
             model_candidates.append(model)
@@ -1017,7 +1078,6 @@ def analyze_all(
 
     workers = min(MAX_PARALLEL_WORKERS, len(keys), len(chunks))
 
-    # ลองทีละโมเดล ถ้าโมเดลแรกล้มเหลวทุก chunk ให้ลองโมเดลถัดไป
     for model_name in model_candidates:
         debug_logs.append(f"🚀 Trying model: {model_name}")
         results = {}
@@ -1248,7 +1308,7 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
 
                 st.write("🧩 กำลังสกัดคำถาม...")
                 questions, personal_data_map, default_next, page_count, global_urls = parse_form(
-                    form_data, raw_html, my_name, my_student_id, my_no, my_class
+                    form_data, raw_html, form_url, my_name, my_student_id, my_no, my_class
                 )
 
                 total_images = sum(
@@ -1331,7 +1391,6 @@ if "questions" in st.session_state:
                 total = len(q.images)
                 st.text(f"ข้อ {qi}: {ready}/{total} รูป | source: {[img.source for img in q.images]} | choices: {len(q.choices)} | type: {q.q_type}")
 
-            # แสดง raw entry ของข้อที่มีคำว่า "รูป" หรือ "ภาพ"
             st.write("**Raw entries for image questions:**")
             for qi, q in enumerate(questions, 1):
                 if "รูป" in q.title or "ภาพ" in q.title:
@@ -1378,7 +1437,7 @@ if "questions" in st.session_state:
 
     # อัปโหลดรูปเองสำหรับข้อที่มีรูปแต่ดึงไม่ได้
     for qi, q in enumerate(questions, 1):
-        if ("รูป" in q.title or "ภาพ" in q.title) and not q.images:
+        if ("รูป" in q.title or "ภาพ" in q.title) and not any(img.is_ready() for img in q.images):
             uploaded = st.file_uploader(f"อัปโหลดรูปสำหรับข้อ {qi}", type=["jpg", "jpeg", "png", "webp"], key=f"upload_{q.entry_id}")
             if uploaded:
                 q.images.append(QuestionImage(
