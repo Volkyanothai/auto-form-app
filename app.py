@@ -1,12 +1,11 @@
 """
-app.py — EZEXAM Auto Form System (Phase 0+1 Overhaul)
-======================================================
-- Image Pipeline ใหม่: ดึงรูปหลายโดเมน, base64, fallback, จัดการ limits
-- Form Parser ที่ robust ขึ้น
-- Choice Matching ที่แม่นยำขึ้น
-- AI Prompt มี JSON Schema ชัดเจน
-- Submit + pageHistory ที่ถูกต้องขึ้น
-- Review UI แสดงคำตอบ AI, confidence, reasoning
+app.py — EZEXAM Auto Form System (Hotfix v2)
+=============================================
+แก้ไข:
+- ระบบดึงรูปภาพผิดพลาด (global fallback)
+- AI ตอบ 0 ข้อ (response_schema ไม่รองรับ)
+- ตัวพิมพ์ผิด out_mipe
+- เพิ่ม debug mode
 """
 from __future__ import annotations
 
@@ -30,23 +29,12 @@ from google.genai import types
 
 from style import inject_css, render_header
 
-# ═══════════════════════════════════════════════════════════
-# Logging
-# ═══════════════════════════════════════════════════════════
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("ezexam")
 
-
-# ═══════════════════════════════════════════════════════════
-# Streamlit Config
-# ═══════════════════════════════════════════════════════════
 st.set_page_config(page_title="EZEXAM | Auto Form System", page_icon="⚡", layout="centered")
 inject_css()
 
-
-# ═══════════════════════════════════════════════════════════
-# Constants
-# ═══════════════════════════════════════════════════════════
 UA = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -56,12 +44,10 @@ UA = {
 
 TYPE_PAGE_BREAK = 8
 TYPE_CHECKBOX = 4
+TYPE_MULTIPLE_CHOICE = 2
+TYPE_DROPDOWN = 3
 TYPE_TEXT = 0
 TYPE_PARAGRAPH = 1
-TYPE_GRID = 2
-TYPE_SCALE = 3
-TYPE_DATE = 5
-TYPE_TIME = 6
 
 MODELS_TO_TRY = ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro"]
 CHUNK_SIZE = 2
@@ -72,19 +58,16 @@ SUBMIT_TIMEOUT = 30
 IMAGE_TIMEOUT = 12
 MAX_IMAGE_DIM = 1024
 MAX_IMAGE_DIM_TEXT = 1536
-MAX_IMAGE_FILE_SIZE = 4 * 1024 * 1024  # 4MB
+MAX_IMAGE_FILE_SIZE = 4 * 1024 * 1024
 JPEG_QUALITY = 82
 
-# Regex รูปภาพหลายรูปแบบ
 IMG_URL_PATTERNS = [
     re.compile(r'https?://lh\d?\.?googleusercontent\.com/[^\s"\'<>\\)]+', re.IGNORECASE),
     re.compile(r'https?://\w+\.googleusercontent\.com/[^\s"\'<>\\)]+', re.IGNORECASE),
     re.compile(r'https?://drive\.google\.com/uc\?export=view&id=[\w-]+', re.IGNORECASE),
-    re.compile(r'https?://\w+\.googleapis\.com/[^\s"\'<>\\)]+', re.IGNORECASE),
 ]
 BASE64_IMG_RE = re.compile(r'data:image/(?P<mime>[\w+]+);base64,(?P<data>[A-Za-z0-9+/=]+)')
 
-# ตรวจสอบว่า google-genai รองรับ thinking_config หรือไม่
 try:
     _ = types.ThinkingConfig
     THINKING_CONFIG_AVAILABLE = True
@@ -92,9 +75,6 @@ except Exception:
     THINKING_CONFIG_AVAILABLE = False
 
 
-# ═══════════════════════════════════════════════════════════
-# API Keys
-# ═══════════════════════════════════════════════════════════
 def _load_api_keys() -> List[str]:
     keys = []
     for k in st.secrets:
@@ -113,18 +93,15 @@ if not api_keys:
     st.stop()
 
 
-# ═══════════════════════════════════════════════════════════
-# Dataclasses
-# ═══════════════════════════════════════════════════════════
 @dataclass
 class QuestionImage:
-    source: str  # "question" | "choice" | "header" | "fallback"
+    source: str
     url: Optional[str]
     data: Optional[bytes]
     mime_type: str
     width: Optional[int] = None
     height: Optional[int] = None
-    status: str = "ok"  # ok | compressed | failed | url_only
+    status: str = "ok"
     error: Optional[str] = None
 
     def is_ready(self) -> bool:
@@ -158,11 +135,7 @@ class ParsedForm:
     raw_html: str
 
 
-# ═══════════════════════════════════════════════════════════
-# Utilities
-# ═══════════════════════════════════════════════════════════
 def safe_get(obj: Any, path: List[Union[int, str]], default: Any = None) -> Any:
-    """เข้าถึง nested object อย่างปลอดภัย"""
     try:
         for p in path:
             if obj is None:
@@ -183,7 +156,6 @@ def clean_text(text: Any) -> str:
 
 
 def extract_base64_images(text: str) -> List[Tuple[str, bytes]]:
-    """แยก base64 images จากข้อความ"""
     results = []
     for m in BASE64_IMG_RE.finditer(text):
         mime = m.group("mime")
@@ -197,11 +169,9 @@ def extract_base64_images(text: str) -> List[Tuple[str, bytes]]:
 
 
 def find_all_image_urls(text: str) -> List[str]:
-    """หา image URLs ทุกรูปแบบจากข้อความ"""
     found = []
     for pattern in IMG_URL_PATTERNS:
         found.extend(pattern.findall(text))
-    # กรองซ้ำ รักษาลำดับ
     seen = set()
     unique = []
     for url in found:
@@ -212,18 +182,14 @@ def find_all_image_urls(text: str) -> List[str]:
     return unique
 
 
-# ═══════════════════════════════════════════════════════════
-# Image Pipeline
-# ═══════════════════════════════════════════════════════════
 def validate_image(raw_bytes: bytes) -> Tuple[bool, Optional[str], Optional[Tuple[int, int]]]:
-    """ตรวจสอบว่าเป็นไฟล์รูปภาพจริง และคืนขนาด"""
     try:
         from PIL import Image
         img = Image.open(io.BytesIO(raw_bytes))
         img.verify()
         img = Image.open(io.BytesIO(raw_bytes))
         return True, img.format, img.size
-    except Exception as e:
+    except Exception:
         return False, None, None
 
 
@@ -233,10 +199,6 @@ def compress_image(
     quality: int = JPEG_QUALITY,
     max_file_size: int = MAX_IMAGE_FILE_SIZE,
 ) -> Tuple[Optional[bytes], Optional[str], str]:
-    """
-    บีบอัดรูปภาพให้เหมาะสมกับ Gemini
-    คืน (data, mime_type, status)
-    """
     try:
         from PIL import Image, ExifTags
     except ImportError:
@@ -252,10 +214,8 @@ def compress_image(
         logger.warning(f"เปิดรูปไม่ได้: {e}")
         return None, None, "failed"
 
-    original_format = img.format
     original_mode = img.mode
 
-    # หมุนตาม EXIF
     try:
         if hasattr(img, '_getexif') and img._getexif():
             exif = dict(img._getexif().items())
@@ -271,22 +231,15 @@ def compress_image(
     except Exception:
         pass
 
-    # แปลงเป็น RGBA ก่อน แล้วค่อย RGB
     if original_mode not in ("RGB", "RGBA", "L"):
         img = img.convert("RGBA")
 
-    # ตัดพื้นหลังขาวทึบออกเล็กน้อย (optional)
-    if original_mode == "RGBA":
-        # ไม่ทำอะไร เก็บโปร่งใส
-        pass
-    else:
+    if original_mode != "RGBA":
         img = img.convert("RGB")
 
-    # Resize
     if max(img.size) > max_dim:
         img.thumbnail((max_dim, max_dim), Image.LANCZOS)
 
-    # บีบอัดวนลูปจนกว่าจะได้ขนาดที่เหมาะสม
     best_data = None
     best_mime = "image/jpeg"
     status = "ok"
@@ -311,7 +264,6 @@ def compress_image(
             continue
 
     if best_data is None:
-        # ลองลดขนาดลงอีก
         img.thumbnail((max_dim // 2, max_dim // 2), Image.LANCZOS)
         buf = io.BytesIO()
         img.save(buf, "JPEG", quality=40, optimize=True)
@@ -322,13 +274,11 @@ def compress_image(
 
 
 def download_image(url: str, timeout: int = IMAGE_TIMEOUT) -> Optional[bytes]:
-    """ดาวน์โหลดรูปภาพพร้อม fallback"""
     if not url or not url.startswith("http"):
         return None
 
     urls_to_try = [url]
 
-    # แปลง Google Drive URL ถ้ามี
     if "drive.google.com" in url and "/file/d/" in url:
         m = re.search(r'/file/d/([\w-]+)', url)
         if m:
@@ -346,7 +296,6 @@ def download_image(url: str, timeout: int = IMAGE_TIMEOUT) -> Optional[bytes]:
 
 
 def process_image_from_url(url: Optional[str], raw_bytes: Optional[bytes] = None) -> QuestionImage:
-    """ประมวลผลรูปภาพจาก URL หรือ bytes"""
     if raw_bytes is None and url:
         raw_bytes = download_image(url)
 
@@ -371,10 +320,9 @@ def process_image_from_url(url: Optional[str], raw_bytes: Optional[bytes] = None
             error="ไฟล์ที่ดาวน์โหลดไม่ใช่รูปภาพ",
         )
 
-    # ถ้าเป็นรูปที่มีข้อความ ให้ใช้ความละเอียดสูงขึ้น
     max_dim = MAX_IMAGE_DIM_TEXT if fmt in ("PNG", "GIF", "BMP") else MAX_IMAGE_DIM
-
     data, mime, status = compress_image(raw_bytes, max_dim=max_dim)
+
     if data is None:
         return QuestionImage(
             source="question",
@@ -396,10 +344,9 @@ def process_image_from_url(url: Optional[str], raw_bytes: Optional[bytes] = None
     )
 
 
-def extract_images_from_entry(entry: Any, entry_index: int, global_urls: List[str]) -> Tuple[List[QuestionImage], Dict[int, List[QuestionImage]]]:
+def extract_images_from_entry(entry: Any) -> Tuple[List[QuestionImage], Dict[int, List[QuestionImage]]]:
     """
-    ดึงรูปภาพจาก entry หนึ่งรายการ
-    คืน (question_images, choice_images)
+    ดึงรูปภาพจาก entry โดยไม่ใช้ global fallback
     """
     question_images: List[QuestionImage] = []
     choice_images: Dict[int, List[QuestionImage]] = {}
@@ -407,13 +354,10 @@ def extract_images_from_entry(entry: Any, entry_index: int, global_urls: List[st
     if not entry:
         return question_images, choice_images
 
-    # 1. หา URL จาก subtree ของ entry
     entry_json = json.dumps(entry, ensure_ascii=False)
-    entry_urls = find_all_image_urls(entry_json)
-    base64_list = extract_base64_images(entry_json)
 
-    # 2. หา base64 จาก nested structure
-    for mime, data in base64_list:
+    # 1. หา base64 จากทั้ง entry
+    for mime, data in extract_base64_images(entry_json):
         valid, fmt, size = validate_image(data)
         if valid:
             processed, out_mime, status = compress_image(data)
@@ -422,44 +366,41 @@ def extract_images_from_entry(entry: Any, entry_index: int, global_urls: List[st
                     source="question",
                     url=None,
                     data=processed,
-                    mime_type=out_mipe,
+                    mime_type=out_mime,
                     width=size[0] if size else None,
                     height=size[1] if size else None,
                     status=status,
                 ))
 
-    # 3. หา URL จาก media field ถ้ามี (หลายตำแหน่งที่เป็นไปได้)
-    media_fields = [9, 13, 8, 10, 11]
+    # 2. หา URL จาก media field ที่เป็นไปได้
+    media_fields = [8, 9, 10, 11, 12, 13]
+    media_urls = []
     for mf in media_fields:
         media = safe_get(entry, [mf])
         if media:
             media_json = json.dumps(media, ensure_ascii=False)
-            media_urls = find_all_image_urls(media_json)
-            for u in media_urls:
-                if u not in [img.url for img in question_images]:
-                    question_images.append(QuestionImage(
-                        source="question",
-                        url=u,
-                        data=None,
-                        mime_type="image/jpeg",
-                        status="pending",
-                    ))
+            media_urls.extend(find_all_image_urls(media_json))
 
-    # 4. หา URL จาก title/description ถ้ามี
+    # 3. หา URL จาก title/description
     for field_idx in [1, 2]:
         field_text = safe_get(entry, [field_idx], "")
         if isinstance(field_text, str):
-            for u in find_all_image_urls(field_text):
-                if u not in [img.url for img in question_images]:
-                    question_images.append(QuestionImage(
-                        source="question",
-                        url=u,
-                        data=None,
-                        mime_type="image/jpeg",
-                        status="pending",
-                    ))
+            media_urls.extend(find_all_image_urls(field_text))
 
-    # 5. หา URL จากตัวเลือก
+    # กรองซ้ำ
+    seen_urls = set()
+    for u in media_urls:
+        if u not in seen_urls:
+            seen_urls.add(u)
+            question_images.append(QuestionImage(
+                source="question",
+                url=u,
+                data=None,
+                mime_type="image/jpeg",
+                status="pending",
+            ))
+
+    # 4. หา URL จากตัวเลือก
     choices_raw = safe_get(entry, [4, 0, 1])
     if choices_raw and isinstance(choices_raw, list):
         for ci, choice in enumerate(choices_raw):
@@ -468,6 +409,7 @@ def extract_images_from_entry(entry: Any, entry_index: int, global_urls: List[st
             choice_json = json.dumps(choice, ensure_ascii=False)
             choice_urls = find_all_image_urls(choice_json)
             choice_base64 = extract_base64_images(choice_json)
+
             for u in choice_urls:
                 choice_images.setdefault(ci, []).append(QuestionImage(
                     source="choice",
@@ -491,61 +433,9 @@ def extract_images_from_entry(entry: Any, entry_index: int, global_urls: List[st
                             status=status,
                         ))
 
-    # 6. ถ้า entry ไม่มีรูปเลย แต่มี global URL ตามลำดับ ให้ fallback
-    if not question_images and entry_index < len(global_urls):
-        question_images.append(QuestionImage(
-            source="fallback",
-            url=global_urls[entry_index],
-            data=None,
-            mime_type="image/jpeg",
-            status="pending",
-        ))
-
     return question_images, choice_images
 
 
-def fetch_and_process_images(questions: List[Question], progress_cb=None) -> None:
-    """
-    ดาวน์โหลดและประมวลผลรูปภาพทั้งหมดแบบ parallel
-    """
-    # รวบรวม tasks ทั้งหมด
-    tasks = []  # (question_idx, image_idx, image, is_choice, choice_idx)
-
-    for qi, q in enumerate(questions):
-        for ii, img in enumerate(q.images):
-            if img.status == "pending" and img.url:
-                tasks.append((qi, ii, img, False, None))
-        for ci, imgs in q.choice_images.items():
-            for ii, img in enumerate(imgs):
-                if img.status == "pending" and img.url:
-                    tasks.append((qi, ii, img, True, ci))
-
-    total = len(tasks)
-    if total == 0:
-        return
-
-    def _process(task):
-        qi, ii, img, is_choice, ci = task
-        processed = process_image_from_url(img.url)
-        return qi, ii, is_choice, ci, processed
-
-    completed = 0
-    with ThreadPoolExecutor(max_workers=8) as pool:
-        for result in pool.map(_process, tasks):
-            qi, ii, is_choice, ci, processed = result
-            if is_choice:
-                questions[qi].choice_images[ci][ii] = processed
-            else:
-                questions[qi].images[ii] = processed
-
-            completed += 1
-            if progress_cb:
-                progress_cb(completed, total)
-
-
-# ═══════════════════════════════════════════════════════════
-# Personal Info Detection
-# ═══════════════════════════════════════════════════════════
 def check_personal_info(
     q_title: str,
     choices: List[str],
@@ -590,21 +480,13 @@ def check_personal_info(
     return None
 
 
-# ═══════════════════════════════════════════════════════════
-# Choice Matching
-# ═══════════════════════════════════════════════════════════
 def normalize_choice(text: str) -> str:
     s = str(text).strip()
-    # ลบ prefix "ข้อ ", "(". ")", ช่องว่าง
     s = re.sub(r'^(?:ข้อ\s*)?[\(\[]?([ก-ฮa-zA-Z0-9]+)[\)\].]?\s*', r'\1 ', s)
     return s.strip()
 
 
 def match_choice(ai_answer: Any, choices: List[str]) -> Tuple[int, bool]:
-    """
-    จับคู่คำตอบจาก AI กับตัวเลือก
-    คืน (index, matched)
-    """
     if not choices:
         return -1, False
 
@@ -613,18 +495,18 @@ def match_choice(ai_answer: Any, choices: List[str]) -> Tuple[int, bool]:
     if not ai_clean:
         return -1, False
 
-    # 1. Exact match
+    # Exact
     for i, c in enumerate(clean_choices):
         if c == ai_clean:
             return i, True
 
-    # 2. Case-insensitive exact
+    # Case-insensitive
     ai_lower = ai_clean.lower()
     for i, c in enumerate(clean_choices):
         if c.lower() == ai_lower:
             return i, True
 
-    # 3. Match ตัวอักษรนำ (เช่น "ก." กับ "ข้อ ก. ...")
+    # ตัวอักษรนำ
     letter_match = re.match(r'^(?:ข้อ\s*)?[\(\[]?([ก-ฮa-zA-Z0-9]+)[\)\].]?\s*(.*)$', ai_clean)
     if letter_match:
         letter = letter_match.group(1)
@@ -633,19 +515,18 @@ def match_choice(ai_answer: Any, choices: List[str]) -> Tuple[int, bool]:
             if m:
                 return i, True
 
-    # 4. Substring ที่ชาญฉลาด (ไม่ให้ "ก." ตรงกับ "ข้อ ก.")
+    # Normalized substring
     for i, c in enumerate(clean_choices):
         c_norm = normalize_choice(c)
         ai_norm = normalize_choice(ai_clean)
         if c_norm and ai_norm and (c_norm == ai_norm or c_norm.startswith(ai_norm) or ai_norm.startswith(c_norm)):
             return i, True
 
-    # 5. Fuzzy match
+    # Fuzzy
     close = difflib.get_close_matches(ai_clean, clean_choices, n=1, cutoff=0.65)
     if close:
         return clean_choices.index(close[0]), True
 
-    # 6. Fuzzy บนตัวอักษรนำ
     if letter_match:
         letter = letter_match.group(1)
         for i, c in enumerate(clean_choices):
@@ -656,14 +537,7 @@ def match_choice(ai_answer: Any, choices: List[str]) -> Tuple[int, bool]:
     return -1, False
 
 
-# ═══════════════════════════════════════════════════════════
-# Form Fetching & Parsing
-# ═══════════════════════════════════════════════════════════
 def fetch_form(form_url: str) -> Tuple[dict, str, str, str, str]:
-    """
-    ดึงข้อมูลฟอร์มจาก Google Form
-    คืน (form_data, fbzx, fvv, raw_html, submit_url)
-    """
     if "docs.google.com/forms" not in form_url:
         raise RuntimeError("ลิงก์นี้ไม่ใช่ Google Form")
 
@@ -672,7 +546,6 @@ def fetch_form(form_url: str) -> Tuple[dict, str, str, str, str]:
 
     m = re.search(r'FB_PUBLIC_LOAD_DATA_\s*=\s*(.*?);\s*</script>', raw_html, re.DOTALL)
     if not m:
-        # ลอง pattern สำรอง
         m = re.search(r'FB_PUBLIC_LOAD_DATA_\s*=\s*(\[.*?\]);', raw_html, re.DOTALL)
     if not m:
         raise RuntimeError("อ่านโครงสร้างฟอร์มไม่ได้ (ไม่พบ FB_PUBLIC_LOAD_DATA_)")
@@ -706,13 +579,8 @@ def parse_form(
     my_no: str,
     my_class: str,
 ) -> Tuple[List[Question], Dict[str, Tuple[str, str, str]], List[int], int]:
-    """
-    แยกโครงสร้างฟอร์มออกมาเป็น questions
-    """
-    # หา entries
     entries = safe_get(form_data, [1, 1], [])
     if not entries:
-        # ลอง path อื่น
         if isinstance(form_data, list) and len(form_data) > 1 and isinstance(form_data[1], list) and len(form_data[1]) > 1:
             entries = form_data[1][1]
         elif isinstance(form_data, list) and len(form_data) > 1:
@@ -721,19 +589,12 @@ def parse_form(
     if not isinstance(entries, list):
         raise RuntimeError("ไม่พบรายการคำถามในฟอร์ม")
 
-    # ดึง global image URLs จาก HTML ทั้งหมด
-    html_no_meta = re.sub(r'<meta[^>]*property="og:image"[^>]*>', '', raw_html)
-    global_urls = find_all_image_urls(html_no_meta)
-
     questions: List[Question] = []
     personal_data_map: Dict[str, Tuple[str, str, str]] = {}
 
     pages_meta = [{"own_id": None, "next_raw": None}]
     page_id_to_index: Dict[Any, int] = {}
     current_page = 0
-
-    # นับเฉพาะ entry ที่เป็นคำถามจริงๆ สำหรับ fallback global URLs
-    question_entry_indices = []
 
     for item in entries:
         if not item or len(item) < 4:
@@ -748,7 +609,6 @@ def parse_form(
             page_id_to_index[own_id] = current_page
             continue
 
-        # ข้าม types ที่ไม่รองรับ
         if q_type in (9, 10, 11):
             continue
         if len(item) < 5 or not item[4]:
@@ -771,18 +631,13 @@ def parse_form(
         is_multi = q_type == TYPE_CHECKBOX
         is_required = bool(safe_get(item, [4, 0, 2], False)) or bool(safe_get(item, [5], False))
 
-        # ตรวจข้อมูลส่วนตัว
         p_info = check_personal_info(full_title, choices, my_name, my_student_id, my_no, my_class)
         if p_info:
             personal_data_map[entry_id] = p_info
             continue
 
-        # ดึงรูปภาพ
-        entry_index = len(question_entry_indices)
-        question_entry_indices.append(entry_index)
-        q_images, c_images = extract_images_from_entry(item, entry_index, global_urls)
+        q_images, c_images = extract_images_from_entry(item)
 
-        # Branching map
         branch_map: Dict[str, int] = {}
         if choices_raw and isinstance(choices_raw, list):
             for c in choices_raw:
@@ -806,7 +661,6 @@ def parse_form(
             q_type=q_type,
         ))
 
-    # คำนวณ default_next
     default_next: List[int] = []
     for i, meta in enumerate(pages_meta):
         nxt = i + 1 if i + 1 < len(pages_meta) else -1
@@ -821,9 +675,6 @@ def parse_form(
     return questions, personal_data_map, default_next, page_count
 
 
-# ═══════════════════════════════════════════════════════════
-# Page History Simulation
-# ═══════════════════════════════════════════════════════════
 def simulate_page_history(
     questions: List[Question],
     final_answers: Dict[str, Any],
@@ -859,35 +710,6 @@ def simulate_page_history(
     return ",".join(str(p) for p in visited)
 
 
-# ═══════════════════════════════════════════════════════════
-# AI Analysis
-# ═══════════════════════════════════════════════════════════
-ANSWER_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "answers": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "entry_id": {"type": "string"},
-                    "answer": {
-                        "anyOf": [
-                            {"type": "string"},
-                            {"type": "array", "items": {"type": "string"}},
-                        ]
-                    },
-                    "confidence": {"type": "integer", "minimum": 0, "maximum": 100},
-                    "reasoning": {"type": "string"},
-                },
-                "required": ["entry_id", "answer", "confidence", "reasoning"],
-            },
-        }
-    },
-    "required": ["answers"],
-}
-
-
 def build_system_instruction(exam_context: str) -> str:
     ctx = exam_context.strip() if exam_context else "ไม่มีบริบทเพิ่มเติม"
     return f"""คุณคือผู้ช่วยตอบข้อสอบอัตโนมัติที่แม่นยำและระมัดระวัง
@@ -901,7 +723,13 @@ def build_system_instruction(exam_context: str) -> str:
 4. ถ้าเป็นคำถามหลายคำตอบ ให้ตอบเป็น array ของข้อความ
 5. ให้ confidence 0-100 โดยพิจารณาจากความชัดเจนของโจทย์
 6. อธิบาย reasoning สั้นๆ ว่าทำไมถึงเลือกคำตอบนี้ (ภาษาไทย)
-7. ตอบเป็น JSON ตาม schema ที่กำหนดเท่านั้น ห้ามมีข้อความนอก JSON
+7. ตอบเป็น JSON ตามรูปแบบนี้เท่านั้น ห้ามมีข้อความนอก JSON:
+{{
+  "answers": [
+    {{"entry_id": "entry.123456", "answer": "คำตอบ", "confidence": 85, "reasoning": "อธิบายสั้นๆ"}},
+    {{"entry_id": "entry.789012", "answer": ["ตัวเลือก1", "ตัวเลือก2"], "confidence": 70, "reasoning": "..."}}
+  ]
+}}
 8. หากไม่แน่ใจ ให้ตอบตัวเลือกที่น่าจะถูกที่สุดพร้อม confidence ต่ำ
 """
 
@@ -909,32 +737,30 @@ def build_system_instruction(exam_context: str) -> str:
 def build_question_parts(idx: int, q: Question) -> List[types.Part]:
     parts: List[types.Part] = []
 
-    # ข้อความคำถาม
     text = f"\n--- ข้อ {idx} (ID: {q.entry_id}) ---\n"
     text += f"คำถาม: {q.title}\n"
     if q.description:
         text += f"คำอธิบาย: {q.description}\n"
     if q.is_multi:
         text += "ประเภท: เลือกได้หลายคำตอบ\n"
-    else:
+    elif q.choices:
         text += "ประเภท: เลือกคำตอบเดียว\n"
+    else:
+        text += "ประเภท: คำตอบอิสระ (เติมคำตอบ)\n"
+
     if q.choices:
         text += "ตัวเลือก:\n"
         for ci, choice in enumerate(q.choices, 1):
             text += f"  {ci}. {choice}\n"
-    else:
-        text += "ประเภท: คำตอบอิสระ (เติมคำตอบ)\n"
 
     parts.append(types.Part.from_text(text=text))
 
-    # รูปประกอบคำถาม
     for img in q.images:
         if img.is_ready():
             parts.append(types.Part.from_bytes(data=img.data, mime_type=img.mime_type))
         elif img.url:
             parts.append(types.Part.from_text(text=f"[รูปประกอบคำถาม: {img.url}]"))
 
-    # รูปประกอบตัวเลือก
     for ci, imgs in q.choice_images.items():
         if ci < len(q.choices):
             for img in imgs:
@@ -947,11 +773,51 @@ def build_question_parts(idx: int, q: Question) -> List[types.Part]:
     return parts
 
 
+def parse_ai_response(resp_text: str) -> Dict[str, Any]:
+    """แปลงคำตอบ AI หลายรูปแบบ"""
+    raw = resp_text.strip()
+    raw = re.sub(r'^```(?:json)?\s*', '', raw)
+    raw = re.sub(r'\s*```$', '', raw)
+
+    # ลองหา JSON object ใหญ่สุด
+    try:
+        data = json.loads(raw)
+        if isinstance(data, dict):
+            return data
+    except Exception:
+        pass
+
+    # หา { ... } ใหญ่สุด
+    matches = re.findall(r'\{.*\}', raw, re.DOTALL)
+    if matches:
+        for m in sorted(matches, key=len, reverse=True):
+            try:
+                data = json.loads(m)
+                if isinstance(data, dict):
+                    return data
+            except Exception:
+                continue
+
+    # หา [ ... ]
+    matches = re.findall(r'\[.*\]', raw, re.DOTALL)
+    if matches:
+        for m in sorted(matches, key=len, reverse=True):
+            try:
+                arr = json.loads(m)
+                if isinstance(arr, list):
+                    return {"answers": arr}
+            except Exception:
+                continue
+
+    raise RuntimeError(f"ไม่สามารถแปลงคำตอบ AI ได้: {raw[:200]}")
+
+
 def call_gemini_chunk(
     api_key: str,
     exam_context: str,
     chunk: List[Tuple[int, Question]],
     thinking_level: str = "low",
+    use_schema: bool = True,
 ) -> Dict[str, Any]:
     client = genai.Client(api_key=api_key, http_options=types.HttpOptions(timeout=120000))
 
@@ -959,21 +825,45 @@ def call_gemini_chunk(
     for idx, q in chunk:
         contents.extend(build_question_parts(idx, q))
 
-    # นับจำนวนรูปใน chunk
-    image_count = sum(
-        1 for p in contents
-        if hasattr(p, "inline_data") and p.inline_data is not None
-    )
+    image_count = sum(1 for p in contents if hasattr(p, "inline_data") and p.inline_data is not None)
     if image_count > 16:
         logger.warning(f"Chunk มีรูปมาก ({image_count} รูป) อาจเกิน limit ของ Gemini")
 
     gen_config = types.GenerateContentConfig(
         response_mime_type="application/json",
-        response_schema=ANSWER_SCHEMA,
         max_output_tokens=8192,
         temperature=0.15,
         top_p=0.95,
     )
+
+    if use_schema:
+        try:
+            gen_config.response_schema = {
+                "type": "object",
+                "properties": {
+                    "answers": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "entry_id": {"type": "string"},
+                                "answer": {
+                                    "anyOf": [
+                                        {"type": "string"},
+                                        {"type": "array", "items": {"type": "string"}},
+                                    ]
+                                },
+                                "confidence": {"type": "integer", "minimum": 0, "maximum": 100},
+                                "reasoning": {"type": "string"},
+                            },
+                            "required": ["entry_id", "answer", "confidence", "reasoning"],
+                        },
+                    }
+                },
+                "required": ["answers"],
+            }
+        except Exception as e:
+            logger.warning(f"ไม่สามารถตั้งค่า response_schema ได้: {e}")
 
     if THINKING_CONFIG_AVAILABLE:
         try:
@@ -996,13 +886,10 @@ def call_gemini_chunk(
                 if not resp or not resp.text:
                     raise RuntimeError("โมเดลตอบกลับเป็นค่าว่าง")
 
-                raw = resp.text.strip()
-                raw = re.sub(r'^```(?:json)?\s*', '', raw)
-                raw = re.sub(r'\s*```$', '', raw)
+                data = parse_ai_response(resp.text)
 
-                data = json.loads(raw)
-                if not isinstance(data, dict) or "answers" not in data:
-                    raise RuntimeError("รูปแบบ JSON ไม่ถูกต้อง")
+                if "answers" not in data:
+                    raise RuntimeError(f"คำตอบไม่มี key 'answers': {list(data.keys())}")
 
                 result: Dict[str, Any] = {}
                 for ans in data.get("answers", []):
@@ -1030,7 +917,6 @@ def call_gemini_chunk(
                     time.sleep(5)
                     continue
 
-                # ถ้าเป็น JSON parse error ลอง model ถัดไป
                 break
 
     raise last_err or RuntimeError("โมเดลไม่ตอบสนองหลังจากลองทุกตัวเลือก")
@@ -1042,21 +928,21 @@ def analyze_all(
     exam_context: str,
     thinking_level: str,
     progress_cb=None,
-) -> Tuple[Dict[str, Any], List[str]]:
+) -> Tuple[Dict[str, Any], List[str], List[str]]:
     indexed = list(enumerate(questions, 1))
     chunks = [indexed[i:i + CHUNK_SIZE] for i in range(0, len(indexed), CHUNK_SIZE)]
     results: Dict[str, Any] = {}
     errors: List[str] = []
+    debug_logs: List[str] = []
 
     if not chunks:
-        return results, errors
+        return results, errors, debug_logs
 
-    # จำกัด parallelism ตามจำนวน keys
     workers = min(MAX_PARALLEL_WORKERS, len(keys), len(chunks))
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {
-            pool.submit(call_gemini_chunk, keys[i % len(keys)], exam_context, chunk, thinking_level): chunk
+            pool.submit(call_gemini_chunk, keys[i % len(keys)], exam_context, chunk, thinking_level, True): chunk
             for i, chunk in enumerate(chunks)
         }
 
@@ -1070,19 +956,52 @@ def analyze_all(
                 chunk_result = fut.result()
                 if isinstance(chunk_result, dict):
                     results.update(chunk_result)
+                    debug_logs.append(f"✅ Chunk {done}: ได้คำตอบ {len(chunk_result)} ข้อ")
                 else:
                     errors.append("ผลลัพธ์จาก AI ไม่ถูกต้อง")
+                    debug_logs.append(f"❌ Chunk {done}: ผลลัพธ์ไม่ใช่ dict")
             except Exception as e:
-                err_msg = f"Chunk error: {str(e)}\n{traceback.format_exc()}"
-                logger.error(err_msg)
+                err_msg = f"Chunk {done} error: {str(e)}"
                 errors.append(str(e))
+                debug_logs.append(f"❌ {err_msg}")
 
-    return results, errors
+    return results, errors, debug_logs
 
 
-# ═══════════════════════════════════════════════════════════
-# Submit
-# ═══════════════════════════════════════════════════════════
+def fetch_and_process_images(questions: List[Question], progress_cb=None) -> None:
+    tasks = []
+
+    for qi, q in enumerate(questions):
+        for ii, img in enumerate(q.images):
+            if img.status == "pending" and img.url:
+                tasks.append((qi, ii, img, False, None))
+        for ci, imgs in q.choice_images.items():
+            for ii, img in enumerate(imgs):
+                if img.status == "pending" and img.url:
+                    tasks.append((qi, ii, img, True, ci))
+
+    total = len(tasks)
+    if total == 0:
+        return
+
+    def _process(task):
+        qi, ii, img, is_choice, ci = task
+        processed = process_image_from_url(img.url)
+        return qi, ii, is_choice, ci, processed
+
+    completed = 0
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        for result in pool.map(_process, tasks):
+            qi, ii, is_choice, ci, processed = result
+            if is_choice:
+                questions[qi].choice_images[ci][ii] = processed
+            else:
+                questions[qi].images[ii] = processed
+            completed += 1
+            if progress_cb:
+                progress_cb(completed, total)
+
+
 def build_submit_payload(
     personal_data_map: Dict[str, Tuple[str, str, str]],
     questions: List[Question],
@@ -1097,11 +1016,9 @@ def build_submit_payload(
         "pageHistory": page_history,
     }
 
-    # ข้อมูลส่วนตัว
     for entry_id, info in personal_data_map.items():
         payload[entry_id] = info[1]
 
-    # คำตอบแต่ละข้อ
     for q in questions:
         entry_id = q.entry_id
         ans = final_answers.get(entry_id, "")
@@ -1144,11 +1061,9 @@ def check_submit_success(response_text: str, status_code: int) -> Tuple[bool, Op
     if any(marker in response_text.lower() for marker in success_markers):
         return True, None
 
-    # ถ้ายังมีฟอร์มอยู่ แสดงว่าอาจส่งไม่สำเร็จ
     if "FB_PUBLIC_LOAD_DATA_" in response_text or 'role="form"' in response_text:
         return False, "ฟอร์มยังแสดงผลอยู่ (อาจมีข้อผิดพลาด)"
 
-    # ไม่แน่ใจ ให้ถือว่าสำเร็จถ้า status 200
     return True, None
 
 
@@ -1177,14 +1092,11 @@ def submit_form(submit_url: str, payload: Dict[str, Any], max_retries: int = 2) 
     return False, "ไม่สามารถส่งข้อมูลได้"
 
 
-# ═══════════════════════════════════════════════════════════
-# UI Helpers
-# ═══════════════════════════════════════════════════════════
 def get_ai_answer(ai_answers: Dict[str, Any], entry_id: str) -> Dict[str, Any]:
     data = ai_answers.get(entry_id, {})
     if isinstance(data, dict):
         return data
-    return {"answer": str(data) if data else "", "confidence": 70, "reasoning": "ประมวลผลอัตโนมัติ"}
+    return {"answer": str(data) if data else "", "confidence": 0, "reasoning": "AI ไม่ได้ตอบข้อนี้"}
 
 
 def confidence_color(score: int) -> str:
@@ -1208,9 +1120,6 @@ def render_image_status(img: QuestionImage):
     return "⏳"
 
 
-# ═══════════════════════════════════════════════════════════
-# Main UI
-# ═══════════════════════════════════════════════════════════
 render_header()
 
 with st.container(border=True):
@@ -1221,12 +1130,7 @@ with st.container(border=True):
     st.markdown('<div class="glass-header">PERSONAL DATA & CONTEXT</div>', unsafe_allow_html=True)
     exam_context = st.text_area("EXAM CONTEXT", placeholder="เช่น ฟิสิกส์ ม.6 บทคลื่น...", height=68)
     fast_mode = st.checkbox("โหมดเร็ว", value=True)
-    image_quality = st.selectbox(
-        "คุณภาพรูปภาพ",
-        ["auto", "high", "normal", "low"],
-        index=0,
-        help="auto = ปรับตามประเภทรูป, high = ละเอียดสูง (ช้า), normal = 1024px, low = 512px (เร็ว)"
-    )
+    debug_mode = st.checkbox("โหมด debug", value=False)
 
     col1, col2 = st.columns(2)
     with col1:
@@ -1242,7 +1146,6 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
     else:
         with st.status("SYSTEM PROCESSING...", expanded=True) as status:
             try:
-                # Reset state
                 for key in list(st.session_state.keys()):
                     if key.startswith("ans_"):
                         del st.session_state[key]
@@ -1255,7 +1158,11 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                     form_data, raw_html, my_name, my_student_id, my_no, my_class
                 )
 
-                st.write(f"🖼️ กำลังดาวน์โหลดรูปภาพ ({sum(len(q.images) + sum(len(v) for v in q.choice_images.values()) for q in questions)} รูป)...")
+                total_images = sum(
+                    len(q.images) + sum(len(v) for v in q.choice_images.values())
+                    for q in questions
+                )
+                st.write(f"🖼️ กำลังดาวน์โหลดรูปภาพ ({total_images} รูป)...")
                 img_progress = st.empty()
 
                 def img_cb(done, total):
@@ -1264,13 +1171,15 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                 fetch_and_process_images(questions, img_cb)
                 img_progress.empty()
 
-                ai_answers, ai_errors = {}, []
+                ai_answers, ai_errors, debug_logs = {}, [], []
                 if questions:
                     st.write(f"🤖 AI กำลังวิเคราะห์ {len(questions)} ข้อ...")
                     bar = st.progress(0.0)
-                    def ai_cb(done, total): bar.progress(done / total, text=f"วิเคราะห์ {done}/{total}")
 
-                    ai_answers, ai_errors = analyze_all(
+                    def ai_cb(done, total):
+                        bar.progress(done / total, text=f"วิเคราะห์ {done}/{total}")
+
+                    ai_answers, ai_errors, debug_logs = analyze_all(
                         questions, api_keys, exam_context,
                         "low" if fast_mode else "medium",
                         ai_cb,
@@ -1295,6 +1204,7 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                     "page_count": page_count,
                     "exam_context": exam_context,
                     "submit_url": submit_url,
+                    "debug_logs": debug_logs,
                 })
                 status.update(label="ANALYSIS COMPLETE", state="complete", expanded=False)
 
@@ -1303,21 +1213,29 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                 logger.error(traceback.format_exc())
                 st.error(f"เกิดข้อผิดพลาด: {str(e)}")
 
-# ═══════════════════════════════════════════════════════════
-# Review Section
-# ═══════════════════════════════════════════════════════════
+
 if "questions" in st.session_state:
     st.markdown('<div class="section-title">REVIEW & EDIT</div>', unsafe_allow_html=True)
 
     questions = st.session_state["questions"]
     ai_answers = st.session_state.get("ai_answers", {})
     personal_data_map = st.session_state.get("personal_data_map", {})
+    debug_logs = st.session_state.get("debug_logs", [])
 
-    # สรุปภาพรวม
+    if st.session_state.get("debug_mode") or debug_mode:
+        with st.expander("🔧 Debug Logs", expanded=True):
+            for log in debug_logs:
+                st.text(log)
+            st.write("**Image counts per question:**")
+            for qi, q in enumerate(questions, 1):
+                ready = sum(1 for img in q.images if img.is_ready())
+                total = len(q.images)
+                st.text(f"ข้อ {qi}: {ready}/{total} รูป | choices: {len(q.choices)} | type: {q.q_type}")
+
     total_q = len(questions)
     answered = sum(1 for q in questions if get_ai_answer(ai_answers, q.entry_id).get("answer"))
     avg_conf = 0
-    if answered > 0:
+    if total_q > 0:
         avg_conf = sum(get_ai_answer(ai_answers, q.entry_id).get("confidence", 0) for q in questions) / total_q
 
     with st.container(border=True):
@@ -1327,7 +1245,6 @@ if "questions" in st.session_state:
         c2.metric("AI ตอบแล้ว", answered)
         c3.metric("ความมั่นใจเฉลี่ย", f"{avg_conf:.0f}%")
 
-    # ข้อมูลส่วนตัว
     if personal_data_map:
         with st.container(border=True):
             st.markdown('<div class="glass-header">AUTO-FILLED DATA</div>', unsafe_allow_html=True)
@@ -1336,7 +1253,6 @@ if "questions" in st.session_state:
             for idx, (entry_id, info) in enumerate(items):
                 cols[idx % len(cols)].text_input(info[2], value=info[1], key="input_" + entry_id, disabled=True)
 
-    # Bulk actions
     col_accept, col_reset = st.columns(2)
     with col_accept:
         if st.button("✅ ยอมรับคำตอบ AI ทั้งหมด", use_container_width=True):
@@ -1354,7 +1270,6 @@ if "questions" in st.session_state:
                     del st.session_state[f"ans_{q.entry_id}"]
             st.rerun()
 
-    # แสดงคำถามแต่ละข้อ
     for idx, q in enumerate(questions, 1):
         entry_id = q.entry_id
         ans_data = get_ai_answer(ai_answers, entry_id)
@@ -1363,11 +1278,9 @@ if "questions" in st.session_state:
         reasoning = ans_data.get("reasoning", "")
 
         with st.container(border=True):
-            # Header
             header_html = f'<div class="q-title">{idx}. {html_lib.escape(q.title)}</div>'
             st.markdown(header_html, unsafe_allow_html=True)
 
-            # รูปประกอบคำถาม
             if q.images:
                 st.markdown('<div class="image-gallery">', unsafe_allow_html=True)
                 img_cols = st.columns(min(len(q.images), 3))
@@ -1381,7 +1294,6 @@ if "questions" in st.session_state:
                             st.markdown(f'<div class="image-fallback">❌ โหลดรูปที่ {i+1} ไม่ได้</div>', unsafe_allow_html=True)
                 st.markdown('</div>', unsafe_allow_html=True)
 
-            # Confidence + Reasoning
             if confidence > 0:
                 color = confidence_color(confidence)
                 st.markdown(
@@ -1392,30 +1304,24 @@ if "questions" in st.session_state:
             if reasoning:
                 st.markdown(f'<div class="reasoning-text">💡 {html_lib.escape(reasoning)}</div>', unsafe_allow_html=True)
 
-            # Input
             ans_key = f"ans_{entry_id}"
 
             if q.choices:
-                # แปลง default ให้ตรงกับตัวเลือก
                 if q.is_multi:
                     default_list = default_val if isinstance(default_val, list) else ([default_val] if default_val else [])
-                    # กรองเฉพาะที่มีในตัวเลือก
                     default_list = [d for d in default_list if d in q.choices]
                     st.multiselect("คำตอบ", q.choices, default=default_list, key=ans_key)
                 else:
                     default_str = str(default_val) if default_val else None
                     if default_str not in q.choices:
-                        # ลอง match กับตัวเลือก
                         matched_idx, matched = match_choice(default_str, q.choices)
                         if matched:
                             default_str = q.choices[matched_idx]
-                        else:
-                            default_str = None
-                    st.radio("คำตอบ", q.choices, index=q.choices.index(default_str) if default_str in q.choices else 0, key=ans_key)
+                    index = q.choices.index(default_str) if default_str in q.choices else 0
+                    st.radio("คำตอบ", q.choices, index=index, key=ans_key)
             else:
                 st.text_input("คำตอบ", value=str(default_val), key=ans_key)
 
-    # Submit button
     if st.button("TRANSMIT DATA", type="primary", use_container_width=True):
         with st.spinner("กำลังส่งข้อมูล..."):
             final_answers = {eid: info[1] for eid, info in personal_data_map.items()}
@@ -1425,7 +1331,7 @@ if "questions" in st.session_state:
                 val = st.session_state.get(f"ans_{q.entry_id}", "")
                 final_answers[q.entry_id] = val
                 if q.is_required and (not val or (isinstance(val, list) and not val)):
-                    missing_required.append(f"ข้อ {q.entry_id}")
+                    missing_required.append(f"ข้อ {idx}")
 
             if missing_required:
                 st.error(f"กรุณากรอกข้อบังคับให้ครบ: {', '.join(missing_required[:5])}{'...' if len(missing_required) > 5 else ''}")
