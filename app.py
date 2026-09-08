@@ -1,11 +1,10 @@
 """
-app.py — EZEXAM Auto Form System (Hotfix v4)
+app.py — EZEXAM Auto Form System (Hotfix v5)
 =============================================
-แก้ไข:
-- ใช้ชื่อโมเดล Gemini ที่รองรับปัจจุบัน (gemini-2.5-flash, gemini-2.5-pro)
-- ดึงรูปภาพจาก HTML img tags โดยตรง
-- ใช้ global URL pool fallback แบบเดิมที่เคยทำงานได้
-- เพิ่ม debug แสดงจำนวน global URLs
+แก้ไขอย่างจริงจัง:
+- Dynamic model listing จาก Google API (ไม่เดาชื่อโมเดล)
+- ดึงรูปภาพแบบเดิมที่เคยใช้ได้ + กรองรูปที่ไม่ใช่
+- ค้นหารูปใน FB_PUBLIC_LOAD_DATA_ แบบละเอียด
 """
 from __future__ import annotations
 
@@ -49,16 +48,6 @@ TYPE_DROPDOWN = 3
 TYPE_TEXT = 0
 TYPE_PARAGRAPH = 1
 
-# ═══════════════════════════════════════════════════════════
-# ชื่อโมเดลที่รองรับปัจจุบัน (ตรวจสอบจาก Google AI ก.ย. 2025)
-# ═══════════════════════════════════════════════════════════
-MODELS_TO_TRY = [
-    "gemini-2.5-flash",                       # stable, แนะนำหลัก
-    "gemini-2.5-pro",                         # stable, แรงกว่า
-    "gemini-2.5-flash-lite-preview-06-17",    # preview ราคาถูก
-    "gemini-2.0-flash-preview-image-generation",  # รองรับรูปภาพ
-]
-
 CHUNK_SIZE = 2
 MAX_PARALLEL_WORKERS = 2
 MAX_MODEL_ATTEMPTS = 3
@@ -70,12 +59,19 @@ MAX_IMAGE_DIM_TEXT = 1536
 MAX_IMAGE_FILE_SIZE = 4 * 1024 * 1024
 JPEG_QUALITY = 82
 
-IMG_URL_PATTERNS = [
-    re.compile(r'https?://lh\d?\.?googleusercontent\.com/[^\s"\'<>\\)]+', re.IGNORECASE),
-    re.compile(r'https?://\w+\.googleusercontent\.com/[^\s"\'<>\\)]+', re.IGNORECASE),
-    re.compile(r'https?://drive\.google\.com/uc\?export=view&id=[\w-]+', re.IGNORECASE),
-]
+# Regex แบบเดิมที่เคยใช้ได้
+IMG_URL_RE = re.compile(r'https://lh\d?\.?googleusercontent\.com/[^\s"\'<>\\]+')
+
 BASE64_IMG_RE = re.compile(r'data:image/(?P<mime>[\w+]+);base64,(?P<data>[A-Za-z0-9+/=]+)')
+
+# URL ที่ไม่ใช่รูปคำถาม ให้กรองออก
+URL_IGNORE_PATTERNS = [
+    re.compile(r'gstatic\.com/images/branding', re.I),
+    re.compile(r'googlelogo', re.I),
+    re.compile(r'google\.com/images', re.I),
+    re.compile(r'favicon', re.I),
+    re.compile(r'avatar', re.I),
+]
 
 try:
     _ = types.ThinkingConfig
@@ -130,7 +126,6 @@ class Question:
     branch_map: Dict[str, int] = field(default_factory=dict)
     choice_images: Dict[int, List[QuestionImage]] = field(default_factory=dict)
     q_type: int = TYPE_TEXT
-    has_media: bool = False
 
 
 def safe_get(obj: Any, path: List[Union[int, str]], default: Any = None) -> Any:
@@ -153,6 +148,16 @@ def clean_text(text: Any) -> str:
     return s.strip()
 
 
+def is_valid_image_url(url: str) -> bool:
+    """กรอง URL ที่ไม่ใช่รูปคำถามออก"""
+    if not url or len(url) < 10:
+        return False
+    for pattern in URL_IGNORE_PATTERNS:
+        if pattern.search(url):
+            return False
+    return True
+
+
 def extract_base64_images(text: str) -> List[Tuple[str, bytes]]:
     results = []
     for m in BASE64_IMG_RE.finditer(text):
@@ -166,45 +171,16 @@ def extract_base64_images(text: str) -> List[Tuple[str, bytes]]:
     return results
 
 
-def find_all_image_urls(text: str) -> List[str]:
-    found = []
-    for pattern in IMG_URL_PATTERNS:
-        found.extend(pattern.findall(text))
+def find_image_urls_in_text(text: str) -> List[str]:
+    """หา image URLs จากข้อความ โดยใช้ regex แบบเดิม"""
+    if not text:
+        return []
+    found = IMG_URL_RE.findall(text)
     seen = set()
     unique = []
     for url in found:
         url = url.rstrip('"\'\\),;> ')
-        if url not in seen and len(url) > 10:
-            seen.add(url)
-            unique.append(url)
-    return unique
-
-
-def extract_image_urls_from_html(html: str) -> List[str]:
-    """ดึง image URLs จาก HTML img tags โดยตรง"""
-    urls = []
-    
-    # 1. จาก src attribute
-    src_pattern = re.compile(r'<img[^>]+src=["\'](https?://[^"\']+)["\']', re.IGNORECASE)
-    urls.extend(src_pattern.findall(html))
-    
-    # 2. จาก data-src (lazy loading)
-    datasrc_pattern = re.compile(r'<img[^>]+data-src=["\'](https?://[^"\']+)["\']', re.IGNORECASE)
-    urls.extend(datasrc_pattern.findall(html))
-    
-    # 3. จาก background-image url
-    bg_pattern = re.compile(r'background-image:\s*url\(["\']?(https?://[^"\')]+)["\']?\)', re.IGNORECASE)
-    urls.extend(bg_pattern.findall(html))
-    
-    # 4. จาก generic URL patterns
-    urls.extend(find_all_image_urls(html))
-    
-    # กรองซ้ำ
-    seen = set()
-    unique = []
-    for url in urls:
-        url = url.rstrip('"\'\\),;> ')
-        if url not in seen and len(url) > 10:
+        if url not in seen and is_valid_image_url(url):
             seen.add(url)
             unique.append(url)
     return unique
@@ -372,13 +348,14 @@ def process_image_from_url(url: Optional[str], raw_bytes: Optional[bytes] = None
     )
 
 
-def find_image_urls_recursive(obj: Any, max_depth: int = 8) -> List[str]:
+def find_image_urls_recursive(obj: Any, max_depth: int = 10) -> List[str]:
+    """ค้นหา image URLs ใน nested structure แบบ recursive"""
     found = []
     if max_depth <= 0:
         return found
 
     if isinstance(obj, str):
-        return find_all_image_urls(obj)
+        return find_image_urls_in_text(obj)
     elif isinstance(obj, list):
         for item in obj:
             found.extend(find_image_urls_recursive(item, max_depth - 1))
@@ -395,14 +372,9 @@ def find_image_urls_recursive(obj: Any, max_depth: int = 8) -> List[str]:
     return unique
 
 
-def extract_images_from_entry(
-    entry: Any,
-    global_url_pool: List[str],
-    global_index_ptr: List[int],
-    html: str,
-) -> Tuple[List[QuestionImage], Dict[int, List[QuestionImage]]]:
+def extract_images_from_entry(entry: Any, global_urls: List[str], global_index_ptr: List[int]) -> Tuple[List[QuestionImage], Dict[int, List[QuestionImage]]]:
     """
-    ดึงรูปภาพจาก entry พร้อม fallback จาก global pool
+    ดึงรูปภาพจาก entry โดยใช้ logic หลักจากโค้ดเดิม
     """
     question_images: List[QuestionImage] = []
     choice_images: Dict[int, List[QuestionImage]] = {}
@@ -410,15 +382,7 @@ def extract_images_from_entry(
     if not entry:
         return question_images, choice_images
 
-    # ตรวจ has_media flag
-    has_media = False
-    for mf in [9, 13, 10, 11, 12]:
-        media_val = safe_get(entry, [mf])
-        if media_val:
-            has_media = True
-            break
-
-    # 1. ค้นหา URLs แบบ recursive ทั้ง entry
+    # 1. หา URL จาก entry โดยตรง (recursive)
     entry_urls = find_image_urls_recursive(entry)
 
     # 2. หา base64
@@ -448,9 +412,12 @@ def extract_images_from_entry(
             status="pending",
         ))
 
-    # 4. ถ้ามี has_media แต่ไม่เจอ URL ใดๆ ให้ใช้ global URL pool
-    if has_media and not question_images and global_index_ptr[0] < len(global_url_pool):
-        u = global_url_pool[global_index_ptr[0]]
+    # 4. ตรวจ has_media flag (logic หลักจากโค้ดเดิม)
+    has_media = len(entry) > 9 and bool(entry[9])
+
+    # 5. ถ้ามี has_media แต่ไม่เจอ URL ใดๆ ให้ใช้ global URL pool
+    if has_media and not question_images and global_index_ptr[0] < len(global_urls):
+        u = global_urls[global_index_ptr[0]]
         global_index_ptr[0] += 1
         question_images.append(QuestionImage(
             source="global_fallback",
@@ -460,7 +427,7 @@ def extract_images_from_entry(
             status="pending",
         ))
 
-    # 5. หา URL จากตัวเลือก
+    # 6. หา URL จากตัวเลือก
     choices_raw = safe_get(entry, [4, 0, 1])
     if choices_raw and isinstance(choices_raw, list):
         for ci, choice in enumerate(choices_raw):
@@ -643,9 +610,9 @@ def parse_form(
     if not isinstance(entries, list):
         raise RuntimeError("ไม่พบรายการคำถามในฟอร์ม")
 
-    # ดึง global image URLs จาก HTML หลายวิธี
+    # ดึง global image URLs จาก HTML แบบเดิม
     html_no_meta = re.sub(r'<meta[^>]*property="og:image"[^>]*>', '', raw_html)
-    global_urls = extract_image_urls_from_html(html_no_meta)
+    global_urls = [u for u in IMG_URL_RE.findall(html_no_meta) if is_valid_image_url(u)]
     global_index_ptr = [0]
 
     questions: List[Question] = []
@@ -690,18 +657,12 @@ def parse_form(
         is_multi = q_type == TYPE_CHECKBOX
         is_required = bool(safe_get(item, [4, 0, 2], False)) or bool(safe_get(item, [5], False))
 
-        has_media = False
-        for mf in [9, 13, 10, 11, 12]:
-            if safe_get(item, [mf]):
-                has_media = True
-                break
-
         p_info = check_personal_info(full_title, choices, my_name, my_student_id, my_no, my_class)
         if p_info:
             personal_data_map[entry_id] = p_info
             continue
 
-        q_images, c_images = extract_images_from_entry(item, global_urls, global_index_ptr, raw_html)
+        q_images, c_images = extract_images_from_entry(item, global_urls, global_index_ptr)
 
         branch_map: Dict[str, int] = {}
         if choices_raw and isinstance(choices_raw, list):
@@ -724,7 +685,6 @@ def parse_form(
             branch_map=branch_map,
             choice_images=c_images,
             q_type=q_type,
-            has_media=has_media,
         ))
 
     default_next: List[int] = []
@@ -774,6 +734,66 @@ def simulate_page_history(
         current = nxt
 
     return ",".join(str(p) for p in visited)
+
+
+def get_available_models(api_key: str) -> List[str]:
+    """
+    ถาม Google API ว่า API key นี้ใช้โมเดลไหนได้บ้าง
+    """
+    try:
+        client = genai.Client(api_key=api_key)
+        models = []
+        for m in client.models.list():
+            name = m.name
+            if name.startswith("models/"):
+                name = name[7:]
+
+            # ตรวจสอบว่ารองรับ generateContent หรือไม่
+            supported = False
+            if hasattr(m, "supported_actions") and m.supported_actions:
+                supported = "generateContent" in m.supported_actions
+            elif hasattr(m, "supported_generation_methods") and m.supported_generation_methods:
+                supported = "generateContent" in m.supported_generation_methods
+            else:
+                # ถ้าไม่มีข้อมูล ให้ลองเพิ่มเข้าไปก่อน
+                supported = True
+
+            if supported:
+                models.append(name)
+
+        logger.info(f"Available models: {models}")
+        return models
+    except Exception as e:
+        logger.warning(f"ไม่สามารถ list models ได้: {e}")
+        return []
+
+
+def pick_best_model(available: List[str]) -> Optional[str]:
+    """เลือกโมเดลที่ดีที่สุดจากรายการที่มี"""
+    if not available:
+        return None
+
+    # ลำดับความต้องการ: flash ก่อน (เร็ว+ถูก) แล้วค่อย pro
+    preferences = [
+        "gemini-2.5-flash",
+        "gemini-2.0-flash",
+        "gemini-1.5-flash",
+        "gemini-2.5-pro",
+        "gemini-2.0-pro",
+        "gemini-1.5-pro",
+    ]
+
+    for pref in preferences:
+        for model in available:
+            if model == pref or model.startswith(pref + "-"):
+                return model
+
+    # ถ้าไม่ตรง preference ให้เอาอันแรกที่เป็น flash
+    for model in available:
+        if "flash" in model.lower():
+            return model
+
+    return available[0]
 
 
 def build_system_instruction(exam_context: str) -> str:
@@ -878,6 +898,7 @@ def call_gemini_chunk(
     api_key: str,
     exam_context: str,
     chunk: List[Tuple[int, Question]],
+    model_name: str,
     thinking_level: str = "low",
 ) -> Dict[str, Any]:
     client = genai.Client(api_key=api_key, http_options=types.HttpOptions(timeout=120000))
@@ -905,56 +926,52 @@ def call_gemini_chunk(
 
     last_err: Optional[Exception] = None
 
-    for model_name in MODELS_TO_TRY:
-        for attempt in range(MAX_MODEL_ATTEMPTS):
-            try:
-                logger.info(f"Calling {model_name} (attempt {attempt + 1}) for {len(chunk)} questions")
-                resp = client.models.generate_content(
-                    model=model_name,
-                    contents=contents,
-                    config=gen_config,
-                )
+    for attempt in range(MAX_MODEL_ATTEMPTS):
+        try:
+            logger.info(f"Calling {model_name} (attempt {attempt + 1}) for {len(chunk)} questions")
+            resp = client.models.generate_content(
+                model=model_name,
+                contents=contents,
+                config=gen_config,
+            )
 
-                if not resp or not resp.text:
-                    raise RuntimeError("โมเดลตอบกลับเป็นค่าว่าง")
+            if not resp or not resp.text:
+                raise RuntimeError("โมเดลตอบกลับเป็นค่าว่าง")
 
-                data = parse_ai_response(resp.text)
+            data = parse_ai_response(resp.text)
 
-                if "answers" not in data:
-                    raise RuntimeError(f"คำตอบไม่มี key 'answers': {list(data.keys())}")
+            if "answers" not in data:
+                raise RuntimeError(f"คำตอบไม่มี key 'answers': {list(data.keys())}")
 
-                result: Dict[str, Any] = {}
-                for ans in data.get("answers", []):
-                    eid = ans.get("entry_id")
-                    if eid:
-                        result[eid] = {
-                            "answer": ans.get("answer", ""),
-                            "confidence": max(0, min(100, int(ans.get("confidence", 70)))),
-                            "reasoning": ans.get("reasoning", "ไม่มีคำอธิบาย"),
-                        }
-                return result
+            result: Dict[str, Any] = {}
+            for ans in data.get("answers", []):
+                eid = ans.get("entry_id")
+                if eid:
+                    result[eid] = {
+                        "answer": ans.get("answer", ""),
+                        "confidence": max(0, min(100, int(ans.get("confidence", 70)))),
+                        "reasoning": ans.get("reasoning", "ไม่มีคำอธิบาย"),
+                    }
+            return result
 
-            except Exception as err:
-                last_err = err
-                msg = str(err).lower()
-                logger.warning(f"{model_name} attempt {attempt + 1} failed: {err}")
+        except Exception as err:
+            last_err = err
+            msg = str(err).lower()
+            logger.warning(f"{model_name} attempt {attempt + 1} failed: {err}")
 
-                if "429" in msg or "resource_exhausted" in msg or "quota" in msg:
-                    sleep_time = BACKOFF_SEC[min(attempt, len(BACKOFF_SEC) - 1)]
-                    logger.info(f"Rate limited, sleeping {sleep_time}s")
-                    time.sleep(sleep_time)
-                    continue
+            if "429" in msg or "resource_exhausted" in msg or "quota" in msg:
+                sleep_time = BACKOFF_SEC[min(attempt, len(BACKOFF_SEC) - 1)]
+                logger.info(f"Rate limited, sleeping {sleep_time}s")
+                time.sleep(sleep_time)
+                continue
 
-                if any(code in msg for code in ["503", "504", "502", "500", "deadline"]) and attempt < MAX_MODEL_ATTEMPTS - 1:
-                    time.sleep(5)
-                    continue
+            if any(code in msg for code in ["503", "504", "502", "500", "deadline"]) and attempt < MAX_MODEL_ATTEMPTS - 1:
+                time.sleep(5)
+                continue
 
-                if "not found" in msg or "not supported" in msg:
-                    break
+            break
 
-                break
-
-    raise last_err or RuntimeError("โมเดลไม่ตอบสนองหลังจากลองทุกตัวเลือก")
+    raise last_err or RuntimeError(f"โมเดล {model_name} ไม่ตอบสนอง")
 
 
 def analyze_all(
@@ -973,11 +990,28 @@ def analyze_all(
     if not chunks:
         return results, errors, debug_logs
 
+    # หาโมเดลที่ใช้ได้จาก key แรก
+    available_models = get_available_models(keys[0])
+    model_name = pick_best_model(available_models)
+
+    if model_name:
+        debug_logs.append(f"✅ Available models: {available_models}")
+        debug_logs.append(f"✅ Selected model: {model_name}")
+    else:
+        # Fallback ถ้า list ไม่ได้
+        fallback_models = ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro"]
+        model_name = pick_best_model(fallback_models)
+        debug_logs.append(f"⚠️ ใช้ fallback model: {model_name}")
+
+    if not model_name:
+        errors.append("ไม่พบโมเดลที่ใช้ได้")
+        return results, errors, debug_logs
+
     workers = min(MAX_PARALLEL_WORKERS, len(keys), len(chunks))
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {
-            pool.submit(call_gemini_chunk, keys[i % len(keys)], exam_context, chunk, thinking_level): chunk
+            pool.submit(call_gemini_chunk, keys[i % len(keys)], exam_context, chunk, model_name, thinking_level): chunk
             for i, chunk in enumerate(chunks)
         }
 
@@ -1271,7 +1305,7 @@ if "questions" in st.session_state:
             for qi, q in enumerate(questions, 1):
                 ready = sum(1 for img in q.images if img.is_ready())
                 total = len(q.images)
-                st.text(f"ข้อ {qi}: {ready}/{total} รูป | has_media: {q.has_media} | source: {[img.source for img in q.images]} | choices: {len(q.choices)} | type: {q.q_type}")
+                st.text(f"ข้อ {qi}: {ready}/{total} รูป | source: {[img.source for img in q.images]} | choices: {len(q.choices)} | type: {q.q_type}")
 
     total_q = len(questions)
     answered = sum(1 for q in questions if get_ai_answer(ai_answers, q.entry_id).get("answer"))
