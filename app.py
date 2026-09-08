@@ -1,10 +1,10 @@
 """
-app.py — EZEXAM Auto Form System (Hotfix v6)
+app.py — EZEXAM Auto Form System (Hotfix v7)
 =============================================
 แก้ไข:
-- ใช้โมเดล gemini-3.6-flash ตามที่ Google แนะนำ
-- ดึงรูปภาพจาก FB_PUBLIC_LOAD_DATA_ โดยตรง
-- ค้นหา image URLs ในทุก field ของ entry
+- ลองโมเดลหลายตัวอัตโนมัติจนกว่าจะสำเร็จ
+- ดึงรูปภาพหลายรูปแบบ + อัปโหลดรูปเองได้
+- แสดง raw entry สำหรับ debug
 """
 from __future__ import annotations
 
@@ -59,9 +59,13 @@ MAX_IMAGE_DIM_TEXT = 1536
 MAX_IMAGE_FILE_SIZE = 4 * 1024 * 1024
 JPEG_QUALITY = 82
 
-# Regex หลักสำหรับ Google Form images
-IMG_URL_RE = re.compile(r'https://lh\d?\.?googleusercontent\.com/[^\s"\'<>\\]+')
-
+# Regex หลายรูปแบบสำหรับรูปภาพ
+IMG_URL_PATTERNS = [
+    re.compile(r'https?://lh\d?\.?googleusercontent\.com/[^\s"\'<>\\)]+', re.IGNORECASE),
+    re.compile(r'https?://\w+\.googleusercontent\.com/[^\s"\'<>\\)]+', re.IGNORECASE),
+    re.compile(r'https?://drive\.google\.com/uc\?export=view&id=[\w-]+', re.IGNORECASE),
+    re.compile(r'https?://\w+\.gstatic\.com/[^\s"\'<>\\)]+', re.IGNORECASE),
+]
 BASE64_IMG_RE = re.compile(r'data:image/(?P<mime>[\w+]+);base64,(?P<data>[A-Za-z0-9+/=]+)')
 
 # URL ที่ไม่ใช่รูปคำถาม ให้กรองออก
@@ -71,6 +75,7 @@ URL_IGNORE_PATTERNS = [
     re.compile(r'google\.com/images', re.I),
     re.compile(r'favicon', re.I),
     re.compile(r'avatar', re.I),
+    re.compile(r'/logos/', re.I),
 ]
 
 try:
@@ -126,6 +131,7 @@ class Question:
     branch_map: Dict[str, int] = field(default_factory=dict)
     choice_images: Dict[int, List[QuestionImage]] = field(default_factory=dict)
     q_type: int = TYPE_TEXT
+    raw_entry: Any = None
 
 
 def safe_get(obj: Any, path: List[Union[int, str]], default: Any = None) -> Any:
@@ -173,7 +179,9 @@ def extract_base64_images(text: str) -> List[Tuple[str, bytes]]:
 def find_image_urls_in_text(text: str) -> List[str]:
     if not text:
         return []
-    found = IMG_URL_RE.findall(text)
+    found = []
+    for pattern in IMG_URL_PATTERNS:
+        found.extend(pattern.findall(text))
     seen = set()
     unique = []
     for url in found:
@@ -346,7 +354,7 @@ def process_image_from_url(url: Optional[str], raw_bytes: Optional[bytes] = None
     )
 
 
-def find_image_urls_recursive(obj: Any, max_depth: int = 12) -> List[str]:
+def find_image_urls_recursive(obj: Any, max_depth: int = 15) -> List[str]:
     """ค้นหา image URLs ใน nested structure แบบ recursive"""
     found = []
     if max_depth <= 0:
@@ -371,9 +379,6 @@ def find_image_urls_recursive(obj: Any, max_depth: int = 12) -> List[str]:
 
 
 def extract_images_from_entry(entry: Any, global_urls: List[str], global_index_ptr: List[int]) -> Tuple[List[QuestionImage], Dict[int, List[QuestionImage]]]:
-    """
-    ดึงรูปภาพจาก entry โดยใช้ logic หลักจากโค้ดเดิม
-    """
     question_images: List[QuestionImage] = []
     choice_images: Dict[int, List[QuestionImage]] = {}
 
@@ -410,7 +415,7 @@ def extract_images_from_entry(entry: Any, global_urls: List[str], global_index_p
             status="pending",
         ))
 
-    # 4. ตรวจ has_media flag (logic หลักจากโค้ดเดิม)
+    # 4. ตรวจ has_media flag
     has_media = len(entry) > 9 and bool(entry[9])
 
     # 5. ถ้ามี has_media แต่ไม่เจอ URL ใดๆ ให้ใช้ global URL pool
@@ -608,9 +613,9 @@ def parse_form(
     if not isinstance(entries, list):
         raise RuntimeError("ไม่พบรายการคำถามในฟอร์ม")
 
-    # ดึง global image URLs จาก HTML แบบเดิม
+    # ดึง global image URLs จาก HTML
     html_no_meta = re.sub(r'<meta[^>]*property="og:image"[^>]*>', '', raw_html)
-    global_urls = [u for u in IMG_URL_RE.findall(html_no_meta) if is_valid_image_url(u)]
+    global_urls = [u for u in find_image_urls_in_text(html_no_meta) if is_valid_image_url(u)]
     global_index_ptr = [0]
 
     questions: List[Question] = []
@@ -683,6 +688,7 @@ def parse_form(
             branch_map=branch_map,
             choice_images=c_images,
             q_type=q_type,
+            raw_entry=item,
         ))
 
     default_next: List[int] = []
@@ -765,12 +771,13 @@ def pick_best_model(available: List[str]) -> Optional[str]:
     if not available:
         return None
 
-    # Google แนะนำให้ใช้ gemini-3.6-flash สำหรับ new users
     preferences = [
         "gemini-3.6-flash",
         "gemini-3.5-flash",
         "gemini-3.1-flash",
         "gemini-3-flash-preview",
+        "gemini-3.7-flash",
+        "gemini-3.8-flash",
         "gemini-2.5-flash",
         "gemini-2.0-flash",
         "gemini-1.5-flash",
@@ -990,47 +997,67 @@ def analyze_all(
         return results, errors, debug_logs
 
     available_models = get_available_models(keys[0])
-    model_name = pick_best_model(available_models)
+    debug_logs.append(f"ℹ️ Available models: {available_models}")
 
-    if model_name:
-        debug_logs.append(f"✅ Available models: {available_models}")
-        debug_logs.append(f"✅ Selected model: {model_name}")
-    else:
-        fallback_models = ["gemini-3.6-flash", "gemini-3.5-flash", "gemini-2.5-flash"]
-        model_name = pick_best_model(fallback_models)
-        debug_logs.append(f"⚠️ ใช้ fallback model: {model_name}")
+    # ลองโมเดลหลายตัวจนกว่าจะสำเร็จ
+    model_candidates = []
+    best_model = pick_best_model(available_models)
+    if best_model:
+        model_candidates.append(best_model)
 
-    if not model_name:
-        errors.append("ไม่พบโมเดลที่ใช้ได้")
-        return results, errors, debug_logs
+    # เพิ่ม candidates อื่นๆ
+    for model in available_models:
+        if model not in model_candidates and "flash" in model.lower():
+            model_candidates.append(model)
+
+    if not model_candidates:
+        model_candidates = ["gemini-3.6-flash", "gemini-3.5-flash", "gemini-2.5-flash"]
+
+    debug_logs.append(f"🎯 Model candidates: {model_candidates}")
 
     workers = min(MAX_PARALLEL_WORKERS, len(keys), len(chunks))
 
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = {
-            pool.submit(call_gemini_chunk, keys[i % len(keys)], exam_context, chunk, model_name, thinking_level): chunk
-            for i, chunk in enumerate(chunks)
-        }
+    # ลองทีละโมเดล ถ้าโมเดลแรกล้มเหลวทุก chunk ให้ลองโมเดลถัดไป
+    for model_name in model_candidates:
+        debug_logs.append(f"🚀 Trying model: {model_name}")
+        results = {}
+        errors = []
+        model_success = False
 
-        done = 0
-        for fut in as_completed(futures):
-            done += 1
-            if progress_cb:
-                progress_cb(done, len(chunks))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {
+                pool.submit(call_gemini_chunk, keys[i % len(keys)], exam_context, chunk, model_name, thinking_level): (i, chunk)
+                for i, chunk in enumerate(chunks)
+            }
 
-            try:
-                chunk_result = fut.result()
-                if isinstance(chunk_result, dict):
-                    results.update(chunk_result)
-                    debug_logs.append(f"✅ Chunk {done}: ได้คำตอบ {len(chunk_result)} ข้อ")
-                else:
-                    errors.append("ผลลัพธ์จาก AI ไม่ถูกต้อง")
-                    debug_logs.append(f"❌ Chunk {done}: ผลลัพธ์ไม่ใช่ dict")
-            except Exception as e:
-                err_msg = f"Chunk {done} error: {str(e)}"
-                errors.append(str(e))
-                debug_logs.append(f"❌ {err_msg}")
+            done = 0
+            for fut in as_completed(futures):
+                chunk_idx, chunk = futures[fut]
+                done += 1
+                if progress_cb:
+                    progress_cb(done, len(chunks))
 
+                try:
+                    chunk_result = fut.result()
+                    if isinstance(chunk_result, dict):
+                        results.update(chunk_result)
+                        debug_logs.append(f"✅ Chunk {chunk_idx+1}: ได้คำตอบ {len(chunk_result)} ข้อ")
+                        model_success = True
+                    else:
+                        errors.append("ผลลัพธ์จาก AI ไม่ถูกต้อง")
+                        debug_logs.append(f"❌ Chunk {chunk_idx+1}: ผลลัพธ์ไม่ใช่ dict")
+                except Exception as e:
+                    err_msg = f"Chunk {chunk_idx+1} error: {str(e)}"
+                    errors.append(str(e))
+                    debug_logs.append(f"❌ {err_msg}")
+
+        if model_success:
+            debug_logs.append(f"✅ ใช้โมเดล {model_name} สำเร็จ")
+            return results, errors, debug_logs
+        else:
+            debug_logs.append(f"⚠️ โมเดล {model_name} ล้มเหลวทุก chunk ลองโมเดลถัดไป")
+
+    debug_logs.append("❌ ทุกโมเดลล้มเหลว")
     return results, errors, debug_logs
 
 
@@ -1304,6 +1331,13 @@ if "questions" in st.session_state:
                 total = len(q.images)
                 st.text(f"ข้อ {qi}: {ready}/{total} รูป | source: {[img.source for img in q.images]} | choices: {len(q.choices)} | type: {q.q_type}")
 
+            # แสดง raw entry ของข้อที่มีคำว่า "รูป" หรือ "ภาพ"
+            st.write("**Raw entries for image questions:**")
+            for qi, q in enumerate(questions, 1):
+                if "รูป" in q.title or "ภาพ" in q.title:
+                    with st.expander(f"ข้อ {qi} raw entry"):
+                        st.json(q.raw_entry)
+
     total_q = len(questions)
     answered = sum(1 for q in questions if get_ai_answer(ai_answers, q.entry_id).get("answer"))
     avg_conf = 0
@@ -1341,6 +1375,20 @@ if "questions" in st.session_state:
                 if f"ans_{q.entry_id}" in st.session_state:
                     del st.session_state[f"ans_{q.entry_id}"]
             st.rerun()
+
+    # อัปโหลดรูปเองสำหรับข้อที่มีรูปแต่ดึงไม่ได้
+    for qi, q in enumerate(questions, 1):
+        if ("รูป" in q.title or "ภาพ" in q.title) and not q.images:
+            uploaded = st.file_uploader(f"อัปโหลดรูปสำหรับข้อ {qi}", type=["jpg", "jpeg", "png", "webp"], key=f"upload_{q.entry_id}")
+            if uploaded:
+                q.images.append(QuestionImage(
+                    source="manual_upload",
+                    url=None,
+                    data=uploaded.getvalue(),
+                    mime_type=uploaded.type or "image/jpeg",
+                    status="ok",
+                ))
+                st.success(f"✅ อัปโหลดรูปข้อ {qi} สำเร็จ")
 
     for idx, q in enumerate(questions, 1):
         entry_id = q.entry_id
