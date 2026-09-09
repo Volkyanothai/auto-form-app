@@ -1,10 +1,11 @@
 """
-app.py — EZEXAM Auto Form System (Final Fix)
-=============================================
-- เร็วขึ้น: ใช้โมเดลเดียวที่ดีที่สุด ไม่ลองซ้ำ
+app.py — EZEXAM Auto Form System (Final Fix v2)
+=================================================
+- เร็วขึ้น: ใช้โมเดลเดียวที่ดีที่สุด ไม่ลองซ้ำ (แต่ตรวจสอบจริงก่อนใช้ ไม่เชื่อ models.list())
 - Progress bar ตรง
 - รูปภาพอัปโหลดเองได้สะดวก
 - รองรับ checkbox
+- แก้ปัญหา: โมเดล gemini-2.5-flash ถูกปิดสำหรับ API key ใหม่ (404 NOT_FOUND)
 """
 from __future__ import annotations
 
@@ -58,6 +59,23 @@ MAX_IMAGE_DIM = 1024
 MAX_IMAGE_DIM_TEXT = 1536
 MAX_IMAGE_FILE_SIZE = 4 * 1024 * 1024
 JPEG_QUALITY = 82
+
+# โมเดลที่ยังใช้งานได้จริงสำหรับ API key ทั้งเก่าและใหม่ (เรียงจากที่แนะนำสุดไปหาสำรอง)
+# หมายเหตุ: "gemini-flash-latest" / "gemini-flash-lite-latest" เป็น alias ที่ Google
+# คอยอัปเดตให้ชี้ไปยังโมเดล flash รุ่นล่าสุดที่ยัง active อยู่เสมอ ทำให้ไม่ต้องแก้โค้ดทุกครั้งที่มีการ
+# ปลดโมเดลรุ่นเก่า (เช่นกรณี gemini-2.5-flash ถูกปิดสำหรับผู้ใช้ใหม่)
+MODEL_CANDIDATES: List[str] = [
+    "gemini-flash-latest",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash",
+    "gemini-2.5-flash",
+    "gemini-3-flash-preview",
+    "gemini-2.0-flash",
+    "gemini-flash-lite-latest",
+    "gemini-2.5-pro",
+    "gemini-1.5-flash",
+    "gemini-1.5-pro",
+]
 
 BASE64_IMG_RE = re.compile(r'data:image/(?P<mime>[\w+]+);base64,(?P<data>[A-Za-z0-9+/=]+)')
 
@@ -616,54 +634,41 @@ def simulate_page_history(
     return ",".join(str(p) for p in visited)
 
 
-def get_available_models(api_key: str) -> List[str]:
+def verify_model_works(api_key: str, model_name: str) -> bool:
+    """
+    ตรวจสอบว่าโมเดลใช้งานได้จริงกับคีย์นี้หรือไม่ โดยยิง request จริงแบบสั้นที่สุด
+    (models.list() ไม่น่าเชื่อถือ เพราะอาจแสดงโมเดลที่ถูกปิดใช้งานสำหรับคีย์ใหม่แล้วก็ได้)
+    """
     try:
         client = genai.Client(api_key=api_key)
-        models = []
-        for m in client.models.list():
-            name = m.name
-            if name.startswith("models/"):
-                name = name[7:]
-
-            supported = False
-            if hasattr(m, "supported_actions") and m.supported_actions:
-                supported = "generateContent" in m.supported_actions
-            elif hasattr(m, "supported_generation_methods") and m.supported_generation_methods:
-                supported = "generateContent" in m.supported_generation_methods
-            else:
-                supported = True
-
-            if supported:
-                models.append(name)
-
-        return models
-    except Exception:
-        return []
+        client.models.generate_content(
+            model=model_name,
+            contents=[types.Part.from_text(text="ping")],
+            config=types.GenerateContentConfig(max_output_tokens=5),
+        )
+        return True
+    except Exception as e:
+        msg = str(e).lower()
+        bad_signals = [
+            "404", "not_found", "no longer available", "not supported",
+            "does not exist", "is not found", "unsupported model",
+        ]
+        if any(s in msg for s in bad_signals):
+            return False
+        # ข้อผิดพลาดอื่น (เช่น 429 quota, 500 ชั่วคราว) ไม่ถือว่าโมเดลใช้งานไม่ได้
+        return True
 
 
-def pick_best_model(available: List[str]) -> Optional[str]:
-    if not available:
+@st.cache_resource(ttl=3600, show_spinner=False)
+def pick_best_model(keys: Tuple[str, ...]) -> Optional[str]:
+    """เลือกโมเดลตัวแรกใน MODEL_CANDIDATES ที่ยิงจริงแล้วใช้งานได้ พร้อม cache ไว้ 1 ชม."""
+    if not keys:
         return None
-
-    # เรียงลำดับโมเดลที่น่าจะใช้ได้จริง
-    preferences = [
-        "gemini-2.5-flash",
-        "gemini-2.0-flash",
-        "gemini-1.5-flash",
-        "gemini-2.5-pro",
-        "gemini-1.5-pro",
-    ]
-
-    for pref in preferences:
-        for model in available:
-            if model == pref or model.startswith(pref + "-"):
-                return model
-
-    for model in available:
-        if "flash" in model.lower():
+    test_key = keys[0]
+    for model in MODEL_CANDIDATES:
+        if verify_model_works(test_key, model):
             return model
-
-    return available[0]
+    return None
 
 
 def build_system_instruction(exam_context: str) -> str:
@@ -758,7 +763,7 @@ def call_gemini_chunk(
     chunk: List[Tuple[int, Question]],
     model_name: str,
 ) -> Dict[str, Any]:
-    client = genai.Client(api_key=api_key, http_options=types.HttpOptions(timeout=torch.float32 if False else 120000))
+    client = genai.Client(api_key=api_key, http_options=types.HttpOptions(timeout=120000))
 
     contents: List[types.Part] = [types.Part.from_text(text=build_system_instruction(exam_context))]
     for idx, q in chunk:
@@ -838,14 +843,14 @@ def analyze_all(
     if not chunks:
         return results, errors, debug_logs
 
-    available_models = get_available_models(keys[0])
-    model_name = pick_best_model(available_models)
+    model_name = pick_best_model(tuple(keys))
 
     if not model_name:
-        errors.append("ไม่พบโมเดลที่ใช้ได้")
+        errors.append("ไม่พบโมเดลที่ใช้งานได้เลย (API Key อาจมีปัญหา หรือโมเดลทั้งหมดถูกปิดใช้งาน)")
+        debug_logs.append("❌ ตรวจสอบโมเดลทั้งหมดใน MODEL_CANDIDATES แล้วไม่พบโมเดลที่ใช้งานได้จริง")
         return results, errors, debug_logs
 
-    debug_logs.append(f"✅ ใช้โมเดล: {model_name}")
+    debug_logs.append(f"✅ ใช้โมเดล: {model_name} (ตรวจสอบแล้วว่าใช้งานได้จริง)")
 
     workers = min(MAX_PARALLEL_WORKERS, len(keys), len(chunks))
 
@@ -1194,11 +1199,11 @@ if "questions" in st.session_state:
             final_answers = {eid: info[1] for eid, info in personal_data_map.items()}
             missing_required = []
 
-            for q in questions:
+            for qidx, q in enumerate(questions, 1):
                 val = st.session_state.get(f"ans_{q.entry_id}", "")
                 final_answers[q.entry_id] = val
                 if q.is_required and (not val or (isinstance(val, list) and not val)):
-                    missing_required.append(f"ข้อ {idx}")
+                    missing_required.append(f"ข้อ {qidx}")
 
             if missing_required:
                 st.error(f"กรุณากรอกข้อบังคับให้ครบ: {', '.join(missing_required[:5])}{'...' if len(missing_required) > 5 else ''}")
