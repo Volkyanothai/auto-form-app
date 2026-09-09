@@ -1,11 +1,11 @@
 """
-app.py — EZEXAM Auto Form System (Image Re-analyze Fix)
-========================================================
-แก้ไข:
-- รูปที่อัปโหลดเองถูก process/compress ก่อนแสดงและส่งให้ AI
-- มีปุ่ม "วิเคราะห์ใหม่เฉพาะข้อนี้" หลังอัปโหลดรูป
-- Key rotation + model fallback ดีขึ้น
-- Retry 429/503 อัตโนมัติ
+app.py — EZEXAM Auto Form System (Final Fix v6)
+=================================================
+v1-v5: (ดู changelog เดิม — โมเดล/คีย์/โควตา/รูปภาพ)
+v6: แก้ปัญหา "กดวิเคราะห์ข้อนี้ใหม่แล้วคำตอบไม่เปลี่ยน"
+     -> Streamlit จะ "ยึด" ค่า widget ที่มี key ไว้ใน session_state เสมอ
+        เมิน index=/value= ที่ส่งเข้าไปใหม่ทุกครั้งถ้า key เคย render มาก่อนแล้ว
+        ต้องเซ็ต st.session_state[ans_key] ตรงๆก่อน rerun เท่านั้น ถึงจะอัปเดตค่าที่แสดงได้จริง
 """
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ import io
 import json
 import logging
 import re
+import threading
 import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -49,10 +50,10 @@ TYPE_DROPDOWN = 3
 TYPE_TEXT = 0
 TYPE_PARAGRAPH = 1
 
-CHUNK_SIZE = 2
+CHUNK_SIZE = 3
 MAX_PARALLEL_WORKERS = 2
-MAX_MODEL_ATTEMPTS = 3
-BACKOFF_SEC = [3, 6, 12]
+MAX_MODEL_ATTEMPTS = 2
+BACKOFF_SEC = [3, 6]
 SUBMIT_TIMEOUT = 30
 IMAGE_TIMEOUT = 10
 MAX_IMAGE_DIM = 1024
@@ -60,7 +61,35 @@ MAX_IMAGE_DIM_TEXT = 1536
 MAX_IMAGE_FILE_SIZE = 4 * 1024 * 1024
 JPEG_QUALITY = 82
 
+MODEL_CANDIDATES: List[str] = [
+    "gemini-flash-latest",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash",
+    "gemini-2.5-flash",
+    "gemini-3-flash-preview",
+    "gemini-2.0-flash",
+    "gemini-flash-lite-latest",
+    "gemini-2.5-pro",
+    "gemini-1.5-flash",
+    "gemini-1.5-pro",
+]
+
+DEAD_KEY_SIGNALS = [
+    "permission_denied",
+    "403",
+    "api_key_invalid",
+    "invalid api key",
+    "unregistered callers",
+    "unauthenticated",
+    "401",
+    "denied access",
+]
+
 BASE64_IMG_RE = re.compile(r'data:image/(?P<mime>[\w+]+);base64,(?P<data>[A-Za-z0-9+/=]+)')
+
+GOOGLE_IMG_URL_RE = re.compile(
+    r'https?://[a-zA-Z0-9.-]*(?:googleusercontent|ggpht)\.com/[^\s"\'\\<>]+'
+)
 
 try:
     _ = types.ThinkingConfig
@@ -148,6 +177,12 @@ def extract_base64_images(text: str) -> List[Tuple[str, bytes]]:
         except Exception:
             pass
     return results
+
+
+def normalize_google_image_url(url: str) -> str:
+    url = url.rstrip('\\').rstrip('/')
+    base = re.sub(r'=(?:w\d+(?:-h\d+)?|h\d+|s\d+)(?:-[a-zA-Z]\w*)*$', '', url)
+    return base + '=s1024'
 
 
 def validate_image(raw_bytes: bytes) -> Tuple[bool, Optional[str], Optional[Tuple[int, int]]]:
@@ -249,23 +284,15 @@ def process_image_from_url(url: Optional[str], raw_bytes: Optional[bytes] = None
 
     if raw_bytes is None:
         return QuestionImage(
-            source="question",
-            url=url,
-            data=None,
-            mime_type="image/jpeg",
-            status="failed",
-            error="ดาวน์โหลดรูปไม่ได้",
+            source="question", url=url, data=None, mime_type="image/jpeg",
+            status="failed", error="ดาวน์โหลดรูปไม่ได้",
         )
 
     valid, fmt, size = validate_image(raw_bytes)
     if not valid:
         return QuestionImage(
-            source="question",
-            url=url,
-            data=None,
-            mime_type="image/jpeg",
-            status="failed",
-            error="ไฟล์ไม่ใช่รูปภาพ",
+            source="question", url=url, data=None, mime_type="image/jpeg",
+            status="failed", error="ไฟล์ไม่ใช่รูปภาพ",
         )
 
     max_dim = MAX_IMAGE_DIM_TEXT if fmt in ("PNG", "GIF", "BMP") else MAX_IMAGE_DIM
@@ -273,23 +300,24 @@ def process_image_from_url(url: Optional[str], raw_bytes: Optional[bytes] = None
 
     if data is None:
         return QuestionImage(
-            source="question",
-            url=url,
-            data=None,
-            mime_type="image/jpeg",
-            status="failed",
-            error="บีบอัดรูปไม่ได้",
+            source="question", url=url, data=None, mime_type="image/jpeg",
+            status="failed", error="บีบอัดรูปไม่ได้",
         )
 
     return QuestionImage(
-        source="question",
-        url=url,
-        data=data,
-        mime_type=mime,
-        width=size[0] if size else None,
-        height=size[1] if size else None,
+        source="question", url=url, data=data, mime_type=mime,
+        width=size[0] if size else None, height=size[1] if size else None,
         status=status,
     )
+
+
+def _download_google_image_url(raw_url: str) -> QuestionImage:
+    normalized = normalize_google_image_url(raw_url)
+    for candidate in dict.fromkeys([normalized, raw_url]):
+        img = process_image_from_url(candidate)
+        if img.is_ready():
+            return img
+    return process_image_from_url(raw_url)
 
 
 def extract_images_from_entry(
@@ -302,46 +330,69 @@ def extract_images_from_entry(
         return question_images, choice_images
 
     entry_json = json.dumps(entry, ensure_ascii=False)
+    choices_raw = safe_get(entry, [4, 0, 1])
 
-    # หา base64 images
+    choice_urls: set = set()
+    if choices_raw and isinstance(choices_raw, list):
+        for choice in choices_raw:
+            if not choice:
+                continue
+            choice_json = json.dumps(choice, ensure_ascii=False)
+            for raw_url in GOOGLE_IMG_URL_RE.findall(choice_json):
+                choice_urls.add(raw_url)
+
+    seen_urls: set = set()
+
     for mime, data in extract_base64_images(entry_json):
         valid, fmt, size = validate_image(data)
         if valid:
             processed, out_mime, status = compress_image(data)
             if processed:
                 question_images.append(QuestionImage(
-                    source="question",
-                    url=None,
-                    data=processed,
-                    mime_type=out_mime,
-                    width=size[0] if size else None,
-                    height=size[1] if size else None,
+                    source="question", url=None, data=processed, mime_type=out_mime,
+                    width=size[0] if size else None, height=size[1] if size else None,
                     status=status,
                 ))
 
-    # หา URL จากตัวเลือก
-    choices_raw = safe_get(entry, [4, 0, 1])
+    for raw_url in GOOGLE_IMG_URL_RE.findall(entry_json):
+        if raw_url in choice_urls or raw_url in seen_urls:
+            continue
+        seen_urls.add(raw_url)
+        question_images.append(_download_google_image_url(raw_url))
+
     if choices_raw and isinstance(choices_raw, list):
         for ci, choice in enumerate(choices_raw):
             if not choice:
                 continue
             choice_json = json.dumps(choice, ensure_ascii=False)
+
             for mime, data in extract_base64_images(choice_json):
                 valid, fmt, size = validate_image(data)
                 if valid:
                     processed, out_mime, status = compress_image(data)
                     if processed:
                         choice_images.setdefault(ci, []).append(QuestionImage(
-                            source="choice",
-                            url=None,
-                            data=processed,
-                            mime_type=out_mime,
-                            width=size[0] if size else None,
-                            height=size[1] if size else None,
+                            source="choice", url=None, data=processed, mime_type=out_mime,
+                            width=size[0] if size else None, height=size[1] if size else None,
                             status=status,
                         ))
 
+            seen_choice_urls: set = set()
+            for raw_url in GOOGLE_IMG_URL_RE.findall(choice_json):
+                if raw_url in seen_choice_urls:
+                    continue
+                seen_choice_urls.add(raw_url)
+                choice_images.setdefault(ci, []).append(_download_google_image_url(raw_url))
+
     return question_images, choice_images
+
+
+def compute_image_stats(questions: List["Question"]) -> Tuple[int, int, int, int]:
+    q_with_images = sum(1 for q in questions if q.images)
+    q_with_ready = sum(1 for q in questions if any(img.is_ready() for img in q.images))
+    total_found = sum(len(q.images) for q in questions)
+    total_ready = sum(sum(1 for img in q.images if img.is_ready()) for q in questions)
+    return q_with_images, q_with_ready, total_found, total_ready
 
 
 def check_personal_info(
@@ -613,60 +664,97 @@ def simulate_page_history(
     return ",".join(str(p) for p in visited)
 
 
-def get_available_models(api_key: str) -> List[str]:
+def is_dead_key_error(msg: str) -> bool:
+    msg_l = msg.lower()
+    return any(s in msg_l for s in DEAD_KEY_SIGNALS)
+
+
+def is_daily_quota_error(msg: str) -> bool:
+    msg_l = msg.lower()
+    if "429" not in msg_l and "resource_exhausted" not in msg_l:
+        return False
+    compact = msg_l.replace("_", "").replace("-", "")
+    return "perday" in compact
+
+
+def is_quota_or_transient_error(msg: str) -> bool:
+    msg_l = msg.lower()
+    if "429" in msg_l or "resource_exhausted" in msg_l or "quota" in msg_l:
+        return True
+    if any(code in msg_l for code in ["503", "504", "502", "500", "deadline"]):
+        return True
+    return False
+
+
+def verify_model_works(api_key: str, model_name: str) -> Tuple[bool, str]:
     try:
         client = genai.Client(api_key=api_key)
-        models = []
-        for m in client.models.list():
-            name = m.name
-            if name.startswith("models/"):
-                name = name[7:]
+        client.models.generate_content(
+            model=model_name,
+            contents=[types.Part.from_text(text="ping")],
+            config=types.GenerateContentConfig(max_output_tokens=5),
+        )
+        return True, "ok"
+    except Exception as e:
+        msg = str(e)
+        msg_l = msg.lower()
+        model_bad_signals = [
+            "404", "not_found", "no longer available", "not supported",
+            "does not exist", "is not found", "unsupported model",
+        ]
+        if is_dead_key_error(msg_l):
+            return False, "key_dead"
+        if any(s in msg_l for s in model_bad_signals):
+            return False, "model_bad"
+        return True, "transient_error"
 
-            supported = False
-            if hasattr(m, "supported_actions") and m.supported_actions:
-                supported = "generateContent" in m.supported_actions
-            elif hasattr(m, "supported_generation_methods") and m.supported_generation_methods:
-                supported = "generateContent" in m.supported_generation_methods
+
+@st.cache_resource(ttl=1800, show_spinner=False)
+def pick_model_and_healthy_keys(keys: Tuple[str, ...]) -> Tuple[Optional[str], List[str], List[str]]:
+    logs: List[str] = []
+    if not keys:
+        return None, [], ["❌ ไม่มี API Key"]
+
+    chosen_model: Optional[str] = None
+
+    for model in MODEL_CANDIDATES:
+        ok, reason = verify_model_works(keys[0], model)
+        if ok:
+            chosen_model = model
+            break
+        if reason == "key_dead":
+            for alt_key in keys[1:]:
+                ok2, reason2 = verify_model_works(alt_key, model)
+                if ok2:
+                    chosen_model = model
+                    break
+            if chosen_model:
+                break
+
+    if not chosen_model:
+        logs.append("❌ ไม่พบโมเดลที่ใช้งานได้เลยกับคีย์ใดๆ")
+        return None, [], logs
+
+    logs.append(f"✅ ใช้โมเดลหลัก: {chosen_model} (จะสลับโมเดลอื่นอัตโนมัติถ้าโควตาต่อวันหมด)")
+
+    healthy_keys: List[str] = []
+    for i, key in enumerate(keys):
+        ok, reason = verify_model_works(key, chosen_model)
+        masked = key[:6] + "..." + key[-4:] if len(key) > 12 else "***"
+        if ok:
+            healthy_keys.append(key)
+            logs.append(f"✅ Key #{i+1} ({masked}): ใช้งานได้")
+        else:
+            if reason == "key_dead":
+                logs.append(f"⛔ Key #{i+1} ({masked}): ถูกปฏิเสธการเข้าถึง — ตัดออกจากการใช้งาน")
             else:
-                supported = True
+                logs.append(f"⚠️ Key #{i+1} ({masked}): ตรวจไม่ผ่าน ({reason})")
 
-            if supported:
-                models.append(name)
+    if not healthy_keys:
+        logs.append("❌ ไม่มีคีย์ใดใช้งานได้เลย")
+        return chosen_model, [], logs
 
-        return models
-    except Exception:
-        return []
-
-
-def pick_best_model(available: List[str]) -> Optional[str]:
-    if not available:
-        return None
-
-    # ลบรุ่นที่มักถูกปิดหรือ quota เต็มเร็วออกจากลำดับต้น
-    preferences = [
-        "gemini-2.0-flash",
-        "gemini-2.5-flash",
-        "gemini-2.5-pro",
-        "gemini-1.5-flash",
-        "gemini-1.5-pro",
-    ]
-
-    # ถ้ามี gemini-3.x-flash ให้ใช้ได้ แต่ชอบติด quota บ่อย ดังนั้น fallback
-    fallback_3x = [m for m in available if m.startswith("gemini-3.")]
-
-    for pref in preferences:
-        for model in available:
-            if model == pref or model.startswith(pref + "-"):
-                return model
-
-    for model in available:
-        if "flash" in model.lower():
-            return model
-
-    if fallback_3x:
-        return fallback_3x[0]
-
-    return available[0]
+    return chosen_model, healthy_keys, logs
 
 
 def build_system_instruction(exam_context: str) -> str:
@@ -690,7 +778,6 @@ def build_system_instruction(exam_context: str) -> str:
   ]
 }}
 8. หากไม่แน่ใจ ให้ตอบตัวเลือกที่น่าจะถูกที่สุดพร้อม confidence ต่ำ
-9. ถ้าข้อใดมีรูปประกอบ ให้ดูรูปประกอบประกอบการตอบด้วย
 """
 
 
@@ -710,6 +797,9 @@ def build_question_parts(idx: int, q: Question) -> List[types.Part]:
         text += "ตัวเลือก:\n"
         for ci, choice in enumerate(q.choices, 1):
             text += f"  {ci}. {choice}\n"
+
+    if q.images and not any(img.is_ready() for img in q.images):
+        text += "(หมายเหตุ: คำถามนี้มีรูปภาพประกอบ แต่ระบบดึงรูปไม่สำเร็จ)\n"
 
     parts.append(types.Part.from_text(text=text))
 
@@ -755,7 +845,7 @@ def parse_ai_response(resp_text: str) -> Dict[str, Any]:
     raise RuntimeError(f"ไม่สามารถแปลงคำตอบ AI ได้: {raw[:200]}")
 
 
-def call_gemini_chunk(
+def call_gemini_chunk_with_key(
     api_key: str,
     exam_context: str,
     chunk: List[Tuple[int, Question]],
@@ -780,75 +870,112 @@ def call_gemini_chunk(
         except Exception:
             pass
 
-    last_err: Optional[Exception] = None
+    resp = client.models.generate_content(
+        model=model_name,
+        contents=contents,
+        config=gen_config,
+    )
 
+    if not resp or not resp.text:
+        raise RuntimeError("โมเดลตอบกลับเป็นค่าว่าง")
+
+    data = parse_ai_response(resp.text)
+
+    if "answers" not in data:
+        raise RuntimeError("คำตอบไม่มี key 'answers'")
+
+    result: Dict[str, Any] = {}
+    for ans in data.get("answers", []):
+        eid = ans.get("entry_id")
+        if eid:
+            result[eid] = {
+                "answer": ans.get("answer", ""),
+                "confidence": max(0, min(100, int(ans.get("confidence", 70)))),
+                "reasoning": ans.get("reasoning", "ไม่มีคำอธิบาย"),
+            }
+    return result
+
+
+def try_key_model(
+    api_key: str,
+    exam_context: str,
+    chunk: List[Tuple[int, Question]],
+    model_name: str,
+) -> Tuple[str, Any]:
+    last_err: Optional[Exception] = None
     for attempt in range(MAX_MODEL_ATTEMPTS):
         try:
-            resp = client.models.generate_content(
-                model=model_name,
-                contents=contents,
-                config=gen_config,
-            )
-
-            if not resp or not resp.text:
-                raise RuntimeError("โมเดลตอบกลับเป็นค่าว่าง")
-
-            data = parse_ai_response(resp.text)
-
-            if "answers" not in data:
-                raise RuntimeError(f"คำตอบไม่มี key 'answers'")
-
-            result: Dict[str, Any] = {}
-            for ans in data.get("answers", []):
-                eid = ans.get("entry_id")
-                if eid:
-                    result[eid] = {
-                        "answer": ans.get("answer", ""),
-                        "confidence": max(0, min(100, int(ans.get("confidence", 70)))),
-                        "reasoning": ans.get("reasoning", "ไม่มีคำอธิบาย"),
-                    }
-            return result
-
+            data = call_gemini_chunk_with_key(api_key, exam_context, chunk, model_name)
+            return "ok", data
         except Exception as err:
+            msg = str(err)
             last_err = err
-            msg = str(err).lower()
 
-            if "429" in msg or "resource_exhausted" in msg or "quota" in msg:
-                time.sleep(BACKOFF_SEC[min(attempt, len(BACKOFF_SEC) - 1)])
-                continue
+            if is_dead_key_error(msg):
+                return "key_dead", err
 
-            if any(code in msg for code in ["503", "504", "502", "500", "deadline"]) and attempt < MAX_MODEL_ATTEMPTS - 1:
-                time.sleep(BACKOFF_SEC[min(attempt, len(BACKOFF_SEC) - 1)])
-                continue
+            if is_daily_quota_error(msg):
+                return "daily_exhausted", err
 
-            break
+            if is_quota_or_transient_error(msg):
+                if attempt < MAX_MODEL_ATTEMPTS - 1:
+                    time.sleep(BACKOFF_SEC[min(attempt, len(BACKOFF_SEC) - 1)])
+                    continue
+                return "transient_fail", err
 
-    raise last_err or RuntimeError(f"โมเดล {model_name} ไม่ตอบสนอง")
+            return "other_fail", err
+
+    return "transient_fail", last_err
 
 
-def reanalyze_single_question(
-    q: Question,
-    api_keys: List[str],
+def call_gemini_chunk(
+    keys: List[str],
+    start_key_idx: int,
     exam_context: str,
-    model_name: Optional[str] = None,
-) -> Dict[str, Any]:
-    """วิเคราะห์ข้อเดียวใหม่ ใช้เมื่ออัปโหลดรูปเพิ่ม"""
-    if model_name is None:
-        available = get_available_models(api_keys[0])
-        model_name = pick_best_model(available)
-        if not model_name:
-            raise RuntimeError("ไม่พบโมเดลที่ใช้ได้")
+    chunk: List[Tuple[int, Question]],
+    model_candidates: List[str],
+    bad_keys: set,
+    bad_keys_lock: threading.Lock,
+    exhausted: set,
+    exhausted_lock: threading.Lock,
+) -> Tuple[Dict[str, Any], str]:
+    n = len(keys)
+    last_err: Optional[Exception] = None
 
-    for key in api_keys:
-        try:
-            return call_gemini_chunk(key, exam_context, [(1, q)], model_name)
-        except Exception as e:
-            msg = str(e).lower()
-            if "429" in msg or "quota" in msg or "permission" in msg or "denied" in msg:
+    for offset in range(n):
+        key_idx = (start_key_idx + offset) % n
+        key = keys[key_idx]
+
+        with bad_keys_lock:
+            if key in bad_keys:
                 continue
-            raise e
 
-    raise RuntimeError("ไม่มี API key ที่ใช้งานได้สำหรับวิเคราะห์ข้อนี้")
+        for model_name in model_candidates:
+            with exhausted_lock:
+                if (key, model_name) in exhausted:
+                    continue
+
+            status, result = try_key_model(key, exam_context, chunk, model_name)
+
+            if status == "ok":
+                return result, model_name
+
+            if status == "key_dead":
+                with bad_keys_lock:
+                    bad_keys.add(key)
+                last_err = result
+                break
+
+            if status == "daily_exhausted":
+                with exhausted_lock:
+                    exhausted.add((key, model_name))
+                last_err = result
+                continue
+
+            last_err = result
+            continue
+
+    raise last_err or RuntimeError("ไม่มีคีย์/โมเดลใดใช้งานได้เลย (โควตาอาจหมดหมดทุกทางแล้ว)")
 
 
 def analyze_all(
@@ -856,7 +983,7 @@ def analyze_all(
     keys: List[str],
     exam_context: str,
     progress_cb=None,
-) -> Tuple[Dict[str, Any], List[str], List[str], Optional[str]]:
+) -> Tuple[Dict[str, Any], List[str], List[str]]:
     indexed = list(enumerate(questions, 1))
     chunks = [indexed[i:i + CHUNK_SIZE] for i in range(0, len(indexed), CHUNK_SIZE)]
     results: Dict[str, Any] = {}
@@ -864,44 +991,38 @@ def analyze_all(
     debug_logs: List[str] = []
 
     if not chunks:
-        return results, errors, debug_logs, None
+        return results, errors, debug_logs
 
-    # ตรวจสอบ key ทุกอันว่าใช้ได้ไหม
-    valid_keys = []
-    key_status = []
-    for i, key in enumerate(keys):
-        try:
-            available = get_available_models(key)
-            if available:
-                valid_keys.append(key)
-                masked = key[:6] + "..." + key[-6:] if len(key) > 12 else key
-                key_status.append(f"✅ Key #{i+1} ({masked}): ใช้งานได้")
-            else:
-                masked = key[:6] + "..." + key[-6:] if len(key) > 12 else key
-                key_status.append(f"⛔ Key #{i+1} ({masked}): ไม่มีโมเดลให้ใช้")
-        except Exception as e:
-            masked = key[:6] + "..." + key[-6:] if len(key) > 12 else key
-            key_status.append(f"⛔ Key #{i+1} ({masked}): ถูกปฏิเสธการเข้าถึง — ตัดออกจากการใช้งาน")
+    model_name, healthy_keys, health_logs = pick_model_and_healthy_keys(tuple(keys))
+    debug_logs.extend(health_logs)
 
-    if not valid_keys:
-        errors.append("ไม่มี API Key ที่ใช้งานได้")
-        return results, errors, debug_logs + key_status, None
+    if not model_name or not healthy_keys:
+        errors.append("ไม่พบโมเดล/คีย์ที่ใช้งานได้เลย (API Key ถูกปฏิเสธการเข้าถึง)")
+        return results, errors, debug_logs
 
-    available_models = get_available_models(valid_keys[0])
-    model_name = pick_best_model(available_models)
+    model_order = [model_name] + [m for m in MODEL_CANDIDATES if m != model_name]
 
-    if not model_name:
-        errors.append("ไม่พบโมเดลที่ใช้ได้")
-        return results, errors, debug_logs + key_status, None
+    bad_keys: set = set()
+    bad_keys_lock = threading.Lock()
+    exhausted: set = set()
+    exhausted_lock = threading.Lock()
 
-    debug_logs.extend(key_status)
-    debug_logs.append(f"✅ ใช้โมเดล: {model_name}")
-
-    workers = min(MAX_PARALLEL_WORKERS, len(valid_keys), len(chunks))
+    workers = min(MAX_PARALLEL_WORKERS, len(healthy_keys), len(chunks))
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {
-            pool.submit(call_gemini_chunk, valid_keys[i % len(valid_keys)], exam_context, chunk, model_name): i
+            pool.submit(
+                call_gemini_chunk,
+                healthy_keys,
+                i % len(healthy_keys),
+                exam_context,
+                chunk,
+                model_order,
+                bad_keys,
+                bad_keys_lock,
+                exhausted,
+                exhausted_lock,
+            ): i
             for i, chunk in enumerate(chunks)
         }
 
@@ -913,10 +1034,11 @@ def analyze_all(
                 progress_cb(done, len(chunks))
 
             try:
-                chunk_result = fut.result()
+                chunk_result, used_model = fut.result()
                 if isinstance(chunk_result, dict):
                     results.update(chunk_result)
-                    debug_logs.append(f"✅ Chunk {chunk_idx+1}/{len(chunks)}: ได้ {len(chunk_result)} ข้อ")
+                    tag = f" (โมเดล: {used_model})" if used_model != model_name else ""
+                    debug_logs.append(f"✅ Chunk {chunk_idx+1}/{len(chunks)}: ได้ {len(chunk_result)} ข้อ{tag}")
                 else:
                     errors.append("ผลลัพธ์จาก AI ไม่ถูกต้อง")
                     debug_logs.append(f"❌ Chunk {chunk_idx+1}/{len(chunks)}: ผลลัพธ์ไม่ใช่ dict")
@@ -925,7 +1047,21 @@ def analyze_all(
                 errors.append(str(e))
                 debug_logs.append(f"❌ {err_msg}")
 
-    return results, errors, debug_logs, model_name
+    if bad_keys:
+        debug_logs.append(f"⛔ พบคีย์ตายระหว่างทำงานเพิ่ม {len(bad_keys)} ตัว (ถูกตัดออกจากการใช้งานแล้ว)")
+
+    if exhausted:
+        exhausted_models = sorted(set(m for _, m in exhausted))
+        debug_logs.append(f"🔁 โควตาต่อวันหมดสำหรับบางคู่ (คีย์,โมเดล) — สลับไปโมเดลอื่นแล้ว ({', '.join(exhausted_models)})")
+
+    all_combo_exhausted = len(exhausted) >= len(healthy_keys) * len(model_order)
+    if all_combo_exhausted and results == {}:
+        debug_logs.append(
+            "🛑 โควตาฟรีต่อวันหมดสำหรับ 'ทุกคีย์ x ทุกโมเดล' แล้ว "
+            "ต้องรอถึงเที่ยงคืนตามเวลา Pacific Time หรือเพิ่ม API Key ที่ใช้งานได้ หรือเปิด Billing"
+        )
+
+    return results, errors, debug_logs
 
 
 def build_submit_payload(
@@ -1025,6 +1161,39 @@ def get_ai_answer(ai_answers: Dict[str, Any], entry_id: str) -> Dict[str, Any]:
     return {"answer": str(data) if data else "", "confidence": 0, "reasoning": "AI ไม่ได้ตอบข้อนี้"}
 
 
+def apply_ai_answer_to_state(q: Question, ans_data: Dict[str, Any]) -> None:
+    """
+    เซ็ตค่าใน st.session_state ของ widget คำตอบโดยตรง
+
+    สำคัญมาก: Streamlit จะ 'ยึด' ค่า widget ที่มี key ไว้ใน session_state เสมอ
+    เมื่อ widget เคยถูก render มาก่อนแล้วครั้งหนึ่ง ทุกครั้งที่ render ซ้ำ (rerun)
+    Streamlit จะ *เมิน* ค่า index=/value= ที่เราส่งเข้าไปใหม่ทันที แล้วใช้ค่าที่
+    ค้างอยู่ใน session_state[key] แสดงแทนเสมอ — ต่อให้ ai_answers เปลี่ยนไปแล้วก็ตาม
+    (นี่คือสาเหตุที่กด "วิเคราะห์ข้อนี้ใหม่" แล้วคำตอบบนจอไม่เปลี่ยน)
+
+    วิธีแก้คือต้องเซ็ต st.session_state[key] ตรงๆ ก่อน rerun เท่านั้น
+    """
+    ans_key = f"ans_{q.entry_id}"
+    ans = ans_data.get("answer", "")
+
+    if q.choices:
+        if q.is_multi:
+            ans_list = ans if isinstance(ans, list) else ([ans] if ans else [])
+            resolved: List[str] = []
+            for a in ans_list:
+                idx_m, matched = match_choice(a, q.choices)
+                if matched:
+                    resolved.append(q.choices[idx_m])
+                elif a in q.choices:
+                    resolved.append(a)
+            st.session_state[ans_key] = resolved
+        else:
+            idx_m, matched = match_choice(ans, q.choices)
+            st.session_state[ans_key] = q.choices[idx_m] if matched else None
+    else:
+        st.session_state[ans_key] = str(ans) if ans else ""
+
+
 def confidence_color(score: int) -> str:
     if score >= 80:
         return "#5fe3d0"
@@ -1063,6 +1232,9 @@ with st.container(border=True):
         my_student_id = st.text_input("STUDENT ID", placeholder="เลขประจำตัว")
         my_class = st.text_input("CLASSROOM", placeholder="เช่น 6/3")
 
+if "manual_images" not in st.session_state:
+    st.session_state["manual_images"] = {}
+
 if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
     if not form_url:
         st.error("กรุณาใส่ลิงก์ Google Form ก่อน")
@@ -1076,10 +1248,29 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                 st.write("🔍 กำลังอ่านโครงสร้างฟอร์ม...")
                 form_data, fbzx, fvv, raw_html, submit_url = fetch_form(form_url)
 
-                st.write("🧩 กำลังสกัดคำถาม...")
+                st.write("🧩 กำลังสกัดคำถามและดาวน์โหลดรูปภาพ...")
                 questions, personal_data_map, default_next, page_count = parse_form(
                     form_data, raw_html, my_name, my_student_id, my_no, my_class
                 )
+
+                manual_images = st.session_state["manual_images"]
+                for q in questions:
+                    if q.entry_id in manual_images:
+                        if not any(img.source == "manual_upload" for img in q.images):
+                            q.images.append(manual_images[q.entry_id])
+
+                parse_logs: List[str] = []
+                qi_stat, qr_stat, ti_stat, tr_stat = compute_image_stats(questions)
+                if qi_stat > 0:
+                    parse_logs.append(
+                        f"🖼️ พบคำถามที่มีรูปภาพ {qi_stat} ข้อ (รวม {ti_stat} รูป) — "
+                        f"ดาวน์โหลด/ประมวลผลสำเร็จ {tr_stat}/{ti_stat} รูป (พร้อมใช้งาน {qr_stat} ข้อ)"
+                    )
+                    st.write(parse_logs[0])
+                    if qr_stat < qi_stat:
+                        warn_msg = f"⚠️ มี {qi_stat - qr_stat} ข้อที่ดึงรูปอัตโนมัติไม่ได้ — เลื่อนลงไปอัปโหลดรูปเองได้ที่ด้านล่างหลังวิเคราะห์เสร็จ"
+                        parse_logs.append(warn_msg)
+                        st.warning(warn_msg)
 
                 st.write(f"🤖 AI กำลังวิเคราะห์ {len(questions)} ข้อ...")
                 bar = st.progress(0.0)
@@ -1087,16 +1278,26 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                 def ai_cb(done, total):
                     bar.progress(done / total, text=f"วิเคราะห์ {done}/{total}")
 
-                ai_answers, ai_errors, debug_logs, model_used = analyze_all(
+                ai_answers, ai_errors, debug_logs = analyze_all(
                     questions, api_keys, exam_context, ai_cb
                 )
+                debug_logs = parse_logs + debug_logs
                 bar.empty()
 
+                answered_count = sum(1 for q in questions if get_ai_answer(ai_answers, q.entry_id).get("answer"))
+                unanswered_count = len(questions) - answered_count
+
                 if ai_errors:
-                    st.warning(f"มี {len(ai_errors)} ข้อที่วิเคราะห์ไม่สำเร็จ")
-                    with st.expander("ดูรายละเอียดข้อผิดพลาด"):
+                    st.warning(f"มีปัญหาบางส่วน — AI ตอบได้ {answered_count}/{len(questions)} ข้อ")
+                    with st.expander("ดูรายละเอียดข้อผิดพลาด", expanded=True):
                         for err in ai_errors:
                             st.code(err)
+                    if unanswered_count > 0:
+                        st.error(
+                            f"⚠️ มี {unanswered_count} ข้อที่ AI ไม่ได้ตอบเลย "
+                            "ถ้า Debug Logs บอกว่าโควตาต่อวันหมดทุกโมเดล/คีย์แล้ว "
+                            "กรุณารอถึงเที่ยงคืน (เวลา Pacific Time) หรือเพิ่ม API Key ใหม่ หรือเปิด Billing"
+                        )
                 else:
                     st.success(f"✅ AI วิเคราะห์สำเร็จ {len(ai_answers)} ข้อ")
 
@@ -1111,7 +1312,6 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                     "exam_context": exam_context,
                     "submit_url": submit_url,
                     "debug_logs": debug_logs,
-                    "model_used": model_used,
                 })
                 status.update(label="ANALYSIS COMPLETE", state="complete", expanded=False)
 
@@ -1128,7 +1328,11 @@ if "questions" in st.session_state:
     ai_answers = st.session_state.get("ai_answers", {})
     personal_data_map = st.session_state.get("personal_data_map", {})
     debug_logs = st.session_state.get("debug_logs", [])
-    model_used = st.session_state.get("model_used", "ไม่ระบุ")
+    manual_images = st.session_state["manual_images"]
+
+    for q in questions:
+        if q.entry_id in manual_images and not any(img.source == "manual_upload" for img in q.images):
+            q.images.append(manual_images[q.entry_id])
 
     if st.session_state.get("debug_mode") or debug_mode:
         with st.expander("🔧 Debug Logs", expanded=True):
@@ -1137,16 +1341,20 @@ if "questions" in st.session_state:
 
     total_q = len(questions)
     answered = sum(1 for q in questions if get_ai_answer(ai_answers, q.entry_id).get("answer"))
+    not_answered = total_q - answered
     avg_conf = 0
     if total_q > 0:
         avg_conf = sum(get_ai_answer(ai_answers, q.entry_id).get("confidence", 0) for q in questions) / total_q
 
     with st.container(border=True):
         st.markdown('<div class="glass-header">ANALYSIS SUMMARY</div>', unsafe_allow_html=True)
-        c1, c2, c3 = st.columns(3)
+        c1, c2, c3, c4 = st.columns(4)
         c1.metric("คำถามทั้งหมด", total_q)
         c2.metric("AI ตอบแล้ว", answered)
-        c3.metric("ความมั่นใจเฉลี่ย", f"{avg_conf:.0f}%")
+        c3.metric("AI ไม่ตอบ ⚠️", not_answered)
+        c4.metric("ความมั่นใจเฉลี่ย", f"{avg_conf:.0f}%")
+        if not_answered > 0:
+            st.warning(f"⚠️ มี {not_answered} ข้อที่ AI ไม่ได้ตอบ กรุณาตอบเองในข้อที่มีเครื่องหมายเตือนสีแดง")
 
     if personal_data_map:
         with st.container(border=True):
@@ -1161,10 +1369,7 @@ if "questions" in st.session_state:
         if st.button("✅ ยอมรับคำตอบ AI ทั้งหมด", use_container_width=True):
             for q in questions:
                 ans_data = get_ai_answer(ai_answers, q.entry_id)
-                ans = ans_data.get("answer", "")
-                if q.is_multi and not isinstance(ans, list):
-                    ans = [ans] if ans else []
-                st.session_state[f"ans_{q.entry_id}"] = ans
+                apply_ai_answer_to_state(q, ans_data)
             st.rerun()
     with col_reset:
         if st.button("🔄 รีเซ็ตคำตอบทั้งหมด", use_container_width=True):
@@ -1173,55 +1378,48 @@ if "questions" in st.session_state:
                     del st.session_state[f"ans_{q.entry_id}"]
             st.rerun()
 
-    # แสดงคำถามทีละข้อ
     for qi, q in enumerate(questions, 1):
+        if not any(img.is_ready() for img in q.images):
+            has_attempted = len(q.images) > 0
+            looks_like_image_q = has_attempted or ("รูป" in q.title or "ภาพ" in q.title)
+            if not looks_like_image_q:
+                continue
+
+            uploaded = st.file_uploader(
+                f"📎 ข้อ {qi}: อัปโหลดรูปเอง (ระบบดึงรูปอัตโนมัติไม่สำเร็จสำหรับข้อนี้)",
+                type=["jpg", "jpeg", "png", "webp"],
+                key=f"upload_{q.entry_id}"
+            )
+            if uploaded:
+                file_marker = getattr(uploaded, "file_id", None) or f"{uploaded.name}_{uploaded.size}"
+                marker_key = f"_upload_marker_{q.entry_id}"
+                if st.session_state.get(marker_key) != file_marker:
+                    st.session_state[marker_key] = file_marker
+                    new_img = QuestionImage(
+                        source="manual_upload",
+                        url=None,
+                        data=uploaded.getvalue(),
+                        mime_type=uploaded.type or "image/jpeg",
+                        status="ok",
+                    )
+                    manual_images[q.entry_id] = new_img
+                    st.session_state["manual_images"] = manual_images
+                    q.images.append(new_img)
+                    st.success(f"✅ อัปโหลดรูปข้อ {qi} สำเร็จ! กดปุ่ม '🔄 วิเคราะห์ข้อนี้ใหม่' ที่ข้อนั้นด้านล่าง")
+                    st.rerun()
+
+    for idx, q in enumerate(questions, 1):
         entry_id = q.entry_id
         ans_data = get_ai_answer(ai_answers, entry_id)
         default_val = ans_data.get("answer", "")
         confidence = ans_data.get("confidence", 0)
         reasoning = ans_data.get("reasoning", "")
+        ai_has_answer = bool(default_val) and (not isinstance(default_val, list) or len(default_val) > 0)
 
         with st.container(border=True):
-            header_html = f'<div class="q-title">{qi}. {html_lib.escape(q.title)}</div>'
+            header_html = f'<div class="q-title">{idx}. {html_lib.escape(q.title)}</div>'
             st.markdown(header_html, unsafe_allow_html=True)
 
-            # ===== ส่วนอัปโหลดรูปเอง (เฉพาะข้อที่มีปัญหารูป) =====
-            needs_upload = False
-            if ("รูป" in q.title or "ภาพ" in q.title) and not any(img.is_ready() for img in q.images):
-                needs_upload = True
-
-            if needs_upload or (q.images and any(img.status == "failed" for img in q.images)):
-                st.info("📎 Google Form เก็บรูปแบบ private blob ดึงอัตโนมัติไม่ได้ กรุณาอัปโหลดรูปเอง")
-                uploaded = st.file_uploader(
-                    f"อัปโหลดรูปสำหรับข้อ {qi}",
-                    type=["jpg", "jpeg", "png", "webp"],
-                    key=f"upload_{q.entry_id}"
-                )
-                if uploaded:
-                    with st.spinner("กำลังประมวลผลรูป..."):
-                        processed = process_image_from_url(None, raw_bytes=uploaded.getvalue())
-                        if processed.is_ready():
-                            q.images = [processed]
-                            st.session_state["questions"] = questions
-                            st.success(f"✅ อัปโหลดรูปข้อ {qi} สำเร็จ")
-                        else:
-                            st.error(f"❌ ประมวลผลรูปไม่สำเร็จ: {processed.error or 'unknown'}")
-
-                    # ปุ่มวิเคราะห์ใหม่
-                    if st.button(f"🤖 วิเคราะห์ข้อ {qi} ใหม่", key=f"reanalyze_{q.entry_id}", type="secondary"):
-                        with st.spinner(f"กำลังวิเคราะห์ข้อ {qi} ใหม่..."):
-                            try:
-                                single_result = reanalyze_single_question(
-                                    q, api_keys, st.session_state.get("exam_context", "")
-                                )
-                                ai_answers.update(single_result)
-                                st.session_state["ai_answers"] = ai_answers
-                                st.success(f"✅ วิเคราะห์ข้อ {qi} ใหม่สำเร็จ")
-                                st.rerun()
-                            except Exception as e:
-                                st.error(f"❌ วิเคราะห์ข้อ {qi} ไม่สำเร็จ: {str(e)}")
-
-            # แสดงรูปภาพ
             if q.images:
                 st.markdown('<div class="image-gallery">', unsafe_allow_html=True)
                 img_cols = st.columns(min(len(q.images), 3))
@@ -1230,48 +1428,79 @@ if "questions" in st.session_state:
                         if img.is_ready():
                             st.image(img.data, use_container_width=True, caption=f"รูป {i+1} {render_image_status(img)}")
                         else:
-                            st.markdown(f'<div class="image-fallback">❌ โหลดรูปที่ {i+1} ไม่ได้</div>', unsafe_allow_html=True)
+                            st.markdown(f'<div class="image-fallback">❌ โหลดรูปที่ {i+1} ไม่ได้ ({img.error or "ไม่ทราบสาเหตุ"})</div>', unsafe_allow_html=True)
                 st.markdown('</div>', unsafe_allow_html=True)
 
-            # แสดง confidence
-            if confidence > 0:
+                if any(img.is_ready() for img in q.images):
+                    if st.button(f"🔄 วิเคราะห์ข้อ {idx} นี้ใหม่ (ใช้รูปล่าสุด)", key=f"reanalyze_{entry_id}"):
+                        with st.spinner("AI กำลังวิเคราะห์ข้อนี้..."):
+                            model_name, healthy_keys, _logs = pick_model_and_healthy_keys(tuple(api_keys))
+                            if not model_name or not healthy_keys:
+                                st.error("ไม่มีโมเดล/คีย์ที่ใช้งานได้ในขณะนี้")
+                            else:
+                                model_order = [model_name] + [m for m in MODEL_CANDIDATES if m != model_name]
+                                bad_keys_local: set = set()
+                                exhausted_local: set = set()
+                                lock_local = threading.Lock()
+                                try:
+                                    result, used_model = call_gemini_chunk(
+                                        healthy_keys, 0,
+                                        st.session_state.get("exam_context", exam_context),
+                                        [(idx, q)], model_order,
+                                        bad_keys_local, lock_local,
+                                        exhausted_local, lock_local,
+                                    )
+                                    if entry_id in result:
+                                        ai_answers[entry_id] = result[entry_id]
+                                        st.session_state["ai_answers"] = ai_answers
+                                        # สำคัญ: ต้องเซ็ต widget state ตรงๆ ไม่งั้นหน้าจอจะไม่อัปเดต
+                                        # (ดูคำอธิบายเต็มในฟังก์ชัน apply_ai_answer_to_state)
+                                        apply_ai_answer_to_state(q, result[entry_id])
+                                        st.success(f"✅ วิเคราะห์สำเร็จ (โมเดล: {used_model}) — คำตอบอัปเดตแล้ว")
+                                    else:
+                                        st.warning("AI ไม่ได้ตอบข้อนี้ ลองใหม่อีกครั้ง")
+                                except Exception as e:
+                                    st.error(f"เกิดข้อผิดพลาด: {e}")
+                        st.rerun()
+
+            if not ai_has_answer:
+                st.markdown(
+                    '<div style="background:#3a1414;border:1px solid #ff6b6b;border-radius:8px;'
+                    'padding:8px 12px;margin-bottom:8px;color:#ff9b9b;font-size:0.9em;">'
+                    '⚠️ AI ยังไม่ตอบข้อนี้ — กรุณาเลือก/พิมพ์คำตอบเอง'
+                    '</div>',
+                    unsafe_allow_html=True,
+                )
+            elif confidence > 0:
                 color = confidence_color(confidence)
                 st.markdown(
                     f'<div class="confidence-track"><div class="confidence-fill" style="width:{confidence}%;background:{color};"></div></div>',
                     unsafe_allow_html=True
                 )
                 st.markdown(f'<div class="confidence-label">ความมั่นใจ: {confidence}%</div>', unsafe_allow_html=True)
-            if reasoning:
+            if reasoning and ai_has_answer:
                 st.markdown(f'<div class="reasoning-text">💡 {html_lib.escape(reasoning)}</div>', unsafe_allow_html=True)
 
             ans_key = f"ans_{entry_id}"
 
             if q.choices:
                 if q.is_multi:
-                    default_list = default_val if isinstance(default_val, list) else ([default_val] if default_val else [])
-                    default_list = [d for d in default_list if d in q.choices]
-                    st.multiselect("คำตอบ (เลือกได้หลายข้อ)", q.choices, default=default_list, key=ans_key)
+                    st.multiselect("คำตอบ (เลือกได้หลายข้อ)", q.choices, key=ans_key)
                 else:
-                    default_str = str(default_val) if default_val else None
-                    if default_str not in q.choices:
-                        matched_idx, matched = match_choice(default_str, q.choices)
-                        if matched:
-                            default_str = q.choices[matched_idx]
-                    index = q.choices.index(default_str) if default_str in q.choices else 0
-                    st.radio("คำตอบ", q.choices, index=index, key=ans_key)
+                    st.radio("คำตอบ", q.choices, key=ans_key)
             else:
-                st.text_input("คำตอบ", value=str(default_val), key=ans_key)
+                st.text_input("คำตอบ", key=ans_key)
 
     if st.button("TRANSMIT DATA", type="primary", use_container_width=True):
         with st.spinner("กำลังส่งข้อมูล..."):
             final_answers = {eid: info[1] for eid, info in personal_data_map.items()}
             missing_required = []
 
-            for q in questions:
+            for qidx, q in enumerate(questions, 1):
                 val = st.session_state.get(f"ans_{q.entry_id}", "")
                 final_answers[q.entry_id] = val
                 if q.is_required and (not val or (isinstance(val, list) and not val)):
-                    missing_required.append(f"ข้อ {idx}")
+                    missing_required.append(f"ข้อ {qidx}")
 
             if missing_required:
                 st.error(f"กรุณากรอกข้อบังคับให้ครบ: {', '.join(missing_required[:5])}{'...' if len(missing_required) > 5 else ''}")
