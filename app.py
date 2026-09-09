@@ -1,11 +1,13 @@
 """
-app.py — EZEXAM Auto Form System (Final Fix v2)
+app.py — EZEXAM Auto Form System (Final Fix v3)
 =================================================
 - เร็วขึ้น: ใช้โมเดลเดียวที่ดีที่สุด ไม่ลองซ้ำ (แต่ตรวจสอบจริงก่อนใช้ ไม่เชื่อ models.list())
 - Progress bar ตรง
 - รูปภาพอัปโหลดเองได้สะดวก
 - รองรับ checkbox
-- แก้ปัญหา: โมเดล gemini-2.5-flash ถูกปิดสำหรับ API key ใหม่ (404 NOT_FOUND)
+- v2: แก้ปัญหาโมเดล gemini-2.5-flash ถูกปิดสำหรับ API key ใหม่ (404 NOT_FOUND)
+- v3: แก้ปัญหา API key บางตัวถูกโปรเจกต์แบน (403 PERMISSION_DENIED) ทำให้บางข้อไม่ได้คำตอบ
+       + แก้ UI ไม่ให้ radio เลือกตัวเลือกแรกมั่วๆเวลา AI ไม่ตอบ (อันตรายสำหรับข้อสอบจริง)
 """
 from __future__ import annotations
 
@@ -16,6 +18,7 @@ import io
 import json
 import logging
 import re
+import threading
 import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -61,9 +64,6 @@ MAX_IMAGE_FILE_SIZE = 4 * 1024 * 1024
 JPEG_QUALITY = 82
 
 # โมเดลที่ยังใช้งานได้จริงสำหรับ API key ทั้งเก่าและใหม่ (เรียงจากที่แนะนำสุดไปหาสำรอง)
-# หมายเหตุ: "gemini-flash-latest" / "gemini-flash-lite-latest" เป็น alias ที่ Google
-# คอยอัปเดตให้ชี้ไปยังโมเดล flash รุ่นล่าสุดที่ยัง active อยู่เสมอ ทำให้ไม่ต้องแก้โค้ดทุกครั้งที่มีการ
-# ปลดโมเดลรุ่นเก่า (เช่นกรณี gemini-2.5-flash ถูกปิดสำหรับผู้ใช้ใหม่)
 MODEL_CANDIDATES: List[str] = [
     "gemini-flash-latest",
     "gemini-3.6-flash",
@@ -75,6 +75,18 @@ MODEL_CANDIDATES: List[str] = [
     "gemini-2.5-pro",
     "gemini-1.5-flash",
     "gemini-1.5-pro",
+]
+
+# สัญญาณที่บอกว่า "คีย์นี้ตายแล้ว/ถูกแบน" ไม่ใช่แค่ error ชั่วคราว -> ต้องตัดออกจากพูลทันที ไม่ใช่แค่ backoff
+DEAD_KEY_SIGNALS = [
+    "permission_denied",
+    "403",
+    "api_key_invalid",
+    "invalid api key",
+    "unregistered callers",
+    "unauthenticated",
+    "401",
+    "denied access",
 ]
 
 BASE64_IMG_RE = re.compile(r'data:image/(?P<mime>[\w+]+);base64,(?P<data>[A-Za-z0-9+/=]+)')
@@ -634,10 +646,27 @@ def simulate_page_history(
     return ",".join(str(p) for p in visited)
 
 
-def verify_model_works(api_key: str, model_name: str) -> bool:
+def is_dead_key_error(msg: str) -> bool:
+    """error พวกนี้แปลว่า 'คีย์นี้ใช้ไม่ได้แล้วแบบถาวร' (ถูกแบน/ไม่ถูกต้อง) ต้องตัดออกจากพูลทันที
+    ไม่ใช่แค่ backoff แล้วลองซ้ำด้วยคีย์เดิมเหมือน quota/503 ปกติ"""
+    msg_l = msg.lower()
+    return any(s in msg_l for s in DEAD_KEY_SIGNALS)
+
+
+def is_quota_or_transient_error(msg: str) -> bool:
+    msg_l = msg.lower()
+    if "429" in msg_l or "resource_exhausted" in msg_l or "quota" in msg_l:
+        return True
+    if any(code in msg_l for code in ["503", "504", "502", "500", "deadline"]):
+        return True
+    return False
+
+
+def verify_model_works(api_key: str, model_name: str) -> Tuple[bool, str]:
     """
-    ตรวจสอบว่าโมเดลใช้งานได้จริงกับคีย์นี้หรือไม่ โดยยิง request จริงแบบสั้นที่สุด
-    (models.list() ไม่น่าเชื่อถือ เพราะอาจแสดงโมเดลที่ถูกปิดใช้งานสำหรับคีย์ใหม่แล้วก็ได้)
+    ตรวจสอบว่าโมเดล+คีย์นี้ใช้งานได้จริงหรือไม่ โดยยิง request จริงแบบสั้นที่สุด
+    (models.list() ไม่น่าเชื่อถือ เพราะอาจแสดงโมเดล/คีย์ที่ถูกปิดใช้งานแล้วก็ได้)
+    คืนค่า (ใช้ได้หรือไม่, เหตุผล)
     """
     try:
         client = genai.Client(api_key=api_key)
@@ -646,29 +675,75 @@ def verify_model_works(api_key: str, model_name: str) -> bool:
             contents=[types.Part.from_text(text="ping")],
             config=types.GenerateContentConfig(max_output_tokens=5),
         )
-        return True
+        return True, "ok"
     except Exception as e:
-        msg = str(e).lower()
-        bad_signals = [
+        msg = str(e)
+        msg_l = msg.lower()
+        model_bad_signals = [
             "404", "not_found", "no longer available", "not supported",
             "does not exist", "is not found", "unsupported model",
         ]
-        if any(s in msg for s in bad_signals):
-            return False
-        # ข้อผิดพลาดอื่น (เช่น 429 quota, 500 ชั่วคราว) ไม่ถือว่าโมเดลใช้งานไม่ได้
-        return True
+        if is_dead_key_error(msg_l):
+            return False, "key_dead"
+        if any(s in msg_l for s in model_bad_signals):
+            return False, "model_bad"
+        # error ชั่วคราวอื่น (429/500/503) ไม่ถือว่าใช้ไม่ได้เด็ดขาด
+        return True, "transient_error"
 
 
-@st.cache_resource(ttl=3600, show_spinner=False)
-def pick_best_model(keys: Tuple[str, ...]) -> Optional[str]:
-    """เลือกโมเดลตัวแรกใน MODEL_CANDIDATES ที่ยิงจริงแล้วใช้งานได้ พร้อม cache ไว้ 1 ชม."""
+@st.cache_resource(ttl=1800, show_spinner=False)
+def pick_model_and_healthy_keys(keys: Tuple[str, ...]) -> Tuple[Optional[str], List[str], List[str]]:
+    """
+    หาโมเดลที่ใช้งานได้ + ตรวจทุกคีย์จริงว่าใช้ได้ไหม (ไม่ใช่เช็คแค่ตัวแรก)
+    คืนค่า: (model_name, healthy_keys, logs)
+    """
+    logs: List[str] = []
     if not keys:
-        return None
-    test_key = keys[0]
+        return None, [], ["❌ ไม่มี API Key"]
+
+    chosen_model: Optional[str] = None
+
+    # 1) หาโมเดลที่ใช้ได้ก่อน โดยลองกับคีย์แรกที่ยังไม่ตาย
     for model in MODEL_CANDIDATES:
-        if verify_model_works(test_key, model):
-            return model
-    return None
+        ok, reason = verify_model_works(keys[0], model)
+        if ok:
+            chosen_model = model
+            break
+        if reason == "key_dead":
+            # คีย์แรกตาย ลองหาโมเดลด้วยคีย์อื่นแทน
+            for alt_key in keys[1:]:
+                ok2, reason2 = verify_model_works(alt_key, model)
+                if ok2:
+                    chosen_model = model
+                    break
+            if chosen_model:
+                break
+
+    if not chosen_model:
+        logs.append("❌ ไม่พบโมเดลที่ใช้งานได้เลยกับคีย์ใดๆ")
+        return None, [], logs
+
+    logs.append(f"✅ ใช้โมเดล: {chosen_model}")
+
+    # 2) ตรวจทุกคีย์จริงว่ายังใช้ได้กับโมเดลนี้ไหม
+    healthy_keys: List[str] = []
+    for i, key in enumerate(keys):
+        ok, reason = verify_model_works(key, chosen_model)
+        masked = key[:6] + "..." + key[-4:] if len(key) > 12 else "***"
+        if ok:
+            healthy_keys.append(key)
+            logs.append(f"✅ Key #{i+1} ({masked}): ใช้งานได้")
+        else:
+            if reason == "key_dead":
+                logs.append(f"⛔ Key #{i+1} ({masked}): ถูกปฏิเสธการเข้าถึง (โปรเจกต์ถูกแบน/คีย์ไม่ได้ restrict/ไม่มี billing) — ตัดออกจากการใช้งาน")
+            else:
+                logs.append(f"⚠️ Key #{i+1} ({masked}): ตรวจไม่ผ่าน ({reason})")
+
+    if not healthy_keys:
+        logs.append("❌ ไม่มีคีย์ใดใช้งานได้เลย")
+        return chosen_model, [], logs
+
+    return chosen_model, healthy_keys, logs
 
 
 def build_system_instruction(exam_context: str) -> str:
@@ -757,7 +832,7 @@ def parse_ai_response(resp_text: str) -> Dict[str, Any]:
     raise RuntimeError(f"ไม่สามารถแปลงคำตอบ AI ได้: {raw[:200]}")
 
 
-def call_gemini_chunk(
+def call_gemini_chunk_with_key(
     api_key: str,
     exam_context: str,
     chunk: List[Tuple[int, Question]],
@@ -782,50 +857,78 @@ def call_gemini_chunk(
         except Exception:
             pass
 
+    resp = client.models.generate_content(
+        model=model_name,
+        contents=contents,
+        config=gen_config,
+    )
+
+    if not resp or not resp.text:
+        raise RuntimeError("โมเดลตอบกลับเป็นค่าว่าง")
+
+    data = parse_ai_response(resp.text)
+
+    if "answers" not in data:
+        raise RuntimeError("คำตอบไม่มี key 'answers'")
+
+    result: Dict[str, Any] = {}
+    for ans in data.get("answers", []):
+        eid = ans.get("entry_id")
+        if eid:
+            result[eid] = {
+                "answer": ans.get("answer", ""),
+                "confidence": max(0, min(100, int(ans.get("confidence", 70)))),
+                "reasoning": ans.get("reasoning", "ไม่มีคำอธิบาย"),
+            }
+    return result
+
+
+def call_gemini_chunk(
+    keys: List[str],
+    start_key_idx: int,
+    exam_context: str,
+    chunk: List[Tuple[int, Question]],
+    model_name: str,
+    bad_keys: set,
+    bad_keys_lock: threading.Lock,
+) -> Dict[str, Any]:
+    """
+    พยายามเรียก Gemini โดยหมุนไปใช้คีย์อื่นในพูลถ้าคีย์ปัจจุบัน 'ตายแบบถาวร'
+    (403/401 ฯลฯ) แทนที่จะทิ้งทั้งชังก์ไปเลยแบบเดิม
+    """
+    n = len(keys)
     last_err: Optional[Exception] = None
 
-    for attempt in range(MAX_MODEL_ATTEMPTS):
-        try:
-            resp = client.models.generate_content(
-                model=model_name,
-                contents=contents,
-                config=gen_config,
-            )
+    for offset in range(n):
+        key_idx = (start_key_idx + offset) % n
+        key = keys[key_idx]
 
-            if not resp or not resp.text:
-                raise RuntimeError("โมเดลตอบกลับเป็นค่าว่าง")
-
-            data = parse_ai_response(resp.text)
-
-            if "answers" not in data:
-                raise RuntimeError(f"คำตอบไม่มี key 'answers'")
-
-            result: Dict[str, Any] = {}
-            for ans in data.get("answers", []):
-                eid = ans.get("entry_id")
-                if eid:
-                    result[eid] = {
-                        "answer": ans.get("answer", ""),
-                        "confidence": max(0, min(100, int(ans.get("confidence", 70)))),
-                        "reasoning": ans.get("reasoning", "ไม่มีคำอธิบาย"),
-                    }
-            return result
-
-        except Exception as err:
-            last_err = err
-            msg = str(err).lower()
-
-            if "429" in msg or "resource_exhausted" in msg or "quota" in msg:
-                time.sleep(BACKOFF_SEC[min(attempt, len(BACKOFF_SEC) - 1)])
+        with bad_keys_lock:
+            if key in bad_keys:
                 continue
 
-            if any(code in msg for code in ["503", "504", "502", "500", "deadline"]) and attempt < MAX_MODEL_ATTEMPTS - 1:
-                time.sleep(3)
-                continue
+        for attempt in range(MAX_MODEL_ATTEMPTS):
+            try:
+                return call_gemini_chunk_with_key(key, exam_context, chunk, model_name)
+            except Exception as err:
+                last_err = err
+                msg = str(err)
 
-            break
+                if is_dead_key_error(msg):
+                    with bad_keys_lock:
+                        bad_keys.add(key)
+                    break  # เลิกลองคีย์นี้ ไปคีย์ถัดไปเลย
 
-    raise last_err or RuntimeError(f"โมเดล {model_name} ไม่ตอบสนอง")
+                if is_quota_or_transient_error(msg):
+                    if attempt < MAX_MODEL_ATTEMPTS - 1:
+                        time.sleep(BACKOFF_SEC[min(attempt, len(BACKOFF_SEC) - 1)])
+                        continue
+                    break  # หมดโควตาลองใหม่กับคีย์นี้ไม่ไหวแล้ว ไปคีย์ถัดไป
+
+                # error อื่นที่ไม่รู้จัก ไม่ลองซ้ำคีย์เดิม ไปคีย์ถัดไปเลย
+                break
+
+    raise last_err or RuntimeError("ไม่มีคีย์ใดใช้งานได้เลย")
 
 
 def analyze_all(
@@ -843,20 +946,30 @@ def analyze_all(
     if not chunks:
         return results, errors, debug_logs
 
-    model_name = pick_best_model(tuple(keys))
+    model_name, healthy_keys, health_logs = pick_model_and_healthy_keys(tuple(keys))
+    debug_logs.extend(health_logs)
 
-    if not model_name:
-        errors.append("ไม่พบโมเดลที่ใช้งานได้เลย (API Key อาจมีปัญหา หรือโมเดลทั้งหมดถูกปิดใช้งาน)")
-        debug_logs.append("❌ ตรวจสอบโมเดลทั้งหมดใน MODEL_CANDIDATES แล้วไม่พบโมเดลที่ใช้งานได้จริง")
+    if not model_name or not healthy_keys:
+        errors.append("ไม่พบโมเดล/คีย์ที่ใช้งานได้เลย (API Key ถูกปฏิเสธการเข้าถึง — ดูวิธีแก้ในรายละเอียด error)")
         return results, errors, debug_logs
 
-    debug_logs.append(f"✅ ใช้โมเดล: {model_name} (ตรวจสอบแล้วว่าใช้งานได้จริง)")
+    bad_keys: set = set()
+    bad_keys_lock = threading.Lock()
 
-    workers = min(MAX_PARALLEL_WORKERS, len(keys), len(chunks))
+    workers = min(MAX_PARALLEL_WORKERS, len(healthy_keys), len(chunks))
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {
-            pool.submit(call_gemini_chunk, keys[i % len(keys)], exam_context, chunk, model_name): i
+            pool.submit(
+                call_gemini_chunk,
+                healthy_keys,
+                i % len(healthy_keys),
+                exam_context,
+                chunk,
+                model_name,
+                bad_keys,
+                bad_keys_lock,
+            ): i
             for i, chunk in enumerate(chunks)
         }
 
@@ -879,6 +992,9 @@ def analyze_all(
                 err_msg = f"Chunk {chunk_idx+1}/{len(chunks)} error: {str(e)}"
                 errors.append(str(e))
                 debug_logs.append(f"❌ {err_msg}")
+
+    if bad_keys:
+        debug_logs.append(f"⛔ พบคีย์ตายระหว่างทำงานเพิ่ม {len(bad_keys)} ตัว (ถูกตัดออกจากการใช้งานแล้ว)")
 
     return results, errors, debug_logs
 
@@ -1047,11 +1163,19 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                 )
                 bar.empty()
 
+                answered_count = sum(1 for q in questions if get_ai_answer(ai_answers, q.entry_id).get("answer"))
+                unanswered_count = len(questions) - answered_count
+
                 if ai_errors:
-                    st.warning(f"มี {len(ai_errors)} ข้อที่วิเคราะห์ไม่สำเร็จ")
-                    with st.expander("ดูรายละเอียดข้อผิดพลาด"):
+                    st.warning(f"มีปัญหาบางส่วน — AI ตอบได้ {answered_count}/{len(questions)} ข้อ")
+                    with st.expander("ดูรายละเอียดข้อผิดพลาด", expanded=True):
                         for err in ai_errors:
                             st.code(err)
+                    if unanswered_count > 0:
+                        st.error(
+                            f"⚠️ มี {unanswered_count} ข้อที่ AI ไม่ได้ตอบเลย กรุณาตรวจสอบและตอบเองด้านล่าง "
+                            "(ระบบจะไม่เลือกคำตอบแทนให้ เพื่อป้องกันการตอบผิดโดยไม่รู้ตัว)"
+                        )
                 else:
                     st.success(f"✅ AI วิเคราะห์สำเร็จ {len(ai_answers)} ข้อ")
 
@@ -1090,16 +1214,20 @@ if "questions" in st.session_state:
 
     total_q = len(questions)
     answered = sum(1 for q in questions if get_ai_answer(ai_answers, q.entry_id).get("answer"))
+    not_answered = total_q - answered
     avg_conf = 0
     if total_q > 0:
         avg_conf = sum(get_ai_answer(ai_answers, q.entry_id).get("confidence", 0) for q in questions) / total_q
 
     with st.container(border=True):
         st.markdown('<div class="glass-header">ANALYSIS SUMMARY</div>', unsafe_allow_html=True)
-        c1, c2, c3 = st.columns(3)
+        c1, c2, c3, c4 = st.columns(4)
         c1.metric("คำถามทั้งหมด", total_q)
         c2.metric("AI ตอบแล้ว", answered)
-        c3.metric("ความมั่นใจเฉลี่ย", f"{avg_conf:.0f}%")
+        c3.metric("AI ไม่ตอบ ⚠️", not_answered)
+        c4.metric("ความมั่นใจเฉลี่ย", f"{avg_conf:.0f}%")
+        if not_answered > 0:
+            st.warning(f"⚠️ มี {not_answered} ข้อที่ AI ไม่ได้ตอบ (ดู error ใน Debug Logs) กรุณาตอบเองในข้อที่มีเครื่องหมายเตือนสีแดง")
 
     if personal_data_map:
         with st.container(border=True):
@@ -1150,6 +1278,7 @@ if "questions" in st.session_state:
         default_val = ans_data.get("answer", "")
         confidence = ans_data.get("confidence", 0)
         reasoning = ans_data.get("reasoning", "")
+        ai_has_answer = bool(default_val) and (not isinstance(default_val, list) or len(default_val) > 0)
 
         with st.container(border=True):
             header_html = f'<div class="q-title">{idx}. {html_lib.escape(q.title)}</div>'
@@ -1166,14 +1295,22 @@ if "questions" in st.session_state:
                             st.markdown(f'<div class="image-fallback">❌ โหลดรูปที่ {i+1} ไม่ได้</div>', unsafe_allow_html=True)
                 st.markdown('</div>', unsafe_allow_html=True)
 
-            if confidence > 0:
+            if not ai_has_answer:
+                st.markdown(
+                    '<div style="background:#3a1414;border:1px solid #ff6b6b;border-radius:8px;'
+                    'padding:8px 12px;margin-bottom:8px;color:#ff9b9b;font-size:0.9em;">'
+                    '⚠️ AI ยังไม่ตอบข้อนี้ (อาจเกิดจาก API error) — กรุณาเลือก/พิมพ์คำตอบเอง'
+                    '</div>',
+                    unsafe_allow_html=True,
+                )
+            elif confidence > 0:
                 color = confidence_color(confidence)
                 st.markdown(
                     f'<div class="confidence-track"><div class="confidence-fill" style="width:{confidence}%;background:{color};"></div></div>',
                     unsafe_allow_html=True
                 )
                 st.markdown(f'<div class="confidence-label">ความมั่นใจ: {confidence}%</div>', unsafe_allow_html=True)
-            if reasoning:
+            if reasoning and ai_has_answer:
                 st.markdown(f'<div class="reasoning-text">💡 {html_lib.escape(reasoning)}</div>', unsafe_allow_html=True)
 
             ans_key = f"ans_{entry_id}"
@@ -1189,10 +1326,20 @@ if "questions" in st.session_state:
                         matched_idx, matched = match_choice(default_str, q.choices)
                         if matched:
                             default_str = q.choices[matched_idx]
-                    index = q.choices.index(default_str) if default_str in q.choices else 0
-                    st.radio("คำตอบ", q.choices, index=index, key=ans_key)
+
+                    if default_str in q.choices:
+                        # มีคำตอบ AI จริง -> เลือกให้ตามนั้น
+                        st.radio("คำตอบ", q.choices, index=q.choices.index(default_str), key=ans_key)
+                    else:
+                        # AI ไม่ตอบ -> ห้าม fallback เลือกตัวเลือกแรกให้แบบเงียบๆ (เสี่ยงตอบผิดโดยไม่รู้ตัว)
+                        st.radio("คำตอบ", q.choices, index=None, key=ans_key)
             else:
-                st.text_input("คำตอบ", value=str(default_val), key=ans_key)
+                st.text_input(
+                    "คำตอบ",
+                    value=str(default_val) if ai_has_answer else "",
+                    placeholder="" if ai_has_answer else "AI ไม่ได้ตอบ กรุณาพิมพ์คำตอบเอง",
+                    key=ans_key,
+                )
 
     if st.button("TRANSMIT DATA", type="primary", use_container_width=True):
         with st.spinner("กำลังส่งข้อมูล..."):
