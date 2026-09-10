@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import base64
 import difflib
+import hashlib
 import html as html_lib
 import io
 import json
@@ -1256,8 +1257,8 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                 manual_images = st.session_state["manual_images"]
                 for q in questions:
                     if q.entry_id in manual_images:
-                        if not any(img.source == "manual_upload" for img in q.images):
-                            q.images.append(manual_images[q.entry_id])
+                        q.images = [img for img in q.images if img.source != "manual_upload"]
+                        q.images.append(manual_images[q.entry_id])
 
                 parse_logs: List[str] = []
                 qi_stat, qr_stat, ti_stat, tr_stat = compute_image_stats(questions)
@@ -1331,7 +1332,8 @@ if "questions" in st.session_state:
     manual_images = st.session_state["manual_images"]
 
     for q in questions:
-        if q.entry_id in manual_images and not any(img.source == "manual_upload" for img in q.images):
+        if q.entry_id in manual_images:
+            q.images = [img for img in q.images if img.source != "manual_upload"]
             q.images.append(manual_images[q.entry_id])
 
     if st.session_state.get("debug_mode") or debug_mode:
@@ -1377,36 +1379,6 @@ if "questions" in st.session_state:
                 if f"ans_{q.entry_id}" in st.session_state:
                     del st.session_state[f"ans_{q.entry_id}"]
             st.rerun()
-
-    for qi, q in enumerate(questions, 1):
-        if not any(img.is_ready() for img in q.images):
-            has_attempted = len(q.images) > 0
-            looks_like_image_q = has_attempted or ("รูป" in q.title or "ภาพ" in q.title)
-            if not looks_like_image_q:
-                continue
-
-            uploaded = st.file_uploader(
-                f"📎 ข้อ {qi}: อัปโหลดรูปเอง (ระบบดึงรูปอัตโนมัติไม่สำเร็จสำหรับข้อนี้)",
-                type=["jpg", "jpeg", "png", "webp"],
-                key=f"upload_{q.entry_id}"
-            )
-            if uploaded:
-                file_marker = getattr(uploaded, "file_id", None) or f"{uploaded.name}_{uploaded.size}"
-                marker_key = f"_upload_marker_{q.entry_id}"
-                if st.session_state.get(marker_key) != file_marker:
-                    st.session_state[marker_key] = file_marker
-                    new_img = QuestionImage(
-                        source="manual_upload",
-                        url=None,
-                        data=uploaded.getvalue(),
-                        mime_type=uploaded.type or "image/jpeg",
-                        status="ok",
-                    )
-                    manual_images[q.entry_id] = new_img
-                    st.session_state["manual_images"] = manual_images
-                    q.images.append(new_img)
-                    st.success(f"✅ อัปโหลดรูปข้อ {qi} สำเร็จ! กดปุ่ม '🔄 วิเคราะห์ข้อนี้ใหม่' ที่ข้อนั้นด้านล่าง")
-                    st.rerun()
 
     for idx, q in enumerate(questions, 1):
         entry_id = q.entry_id
@@ -1462,6 +1434,52 @@ if "questions" in st.session_state:
                                 except Exception as e:
                                     st.error(f"เกิดข้อผิดพลาด: {e}")
                         st.rerun()
+
+            has_ready_image = any(img.is_ready() for img in q.images)
+            looks_like_image_q = bool(q.images) or ("รูป" in q.title or "ภาพ" in q.title)
+            if looks_like_image_q:
+                with st.expander(
+                    ("📎 เพิ่มรูปเอง" if not has_ready_image else "📎 เปลี่ยน/เพิ่มรูปเอง")
+                    + f" — ข้อ {idx}",
+                    expanded=not has_ready_image,
+                ):
+                    uploaded = st.file_uploader(
+                        "เลือกไฟล์รูปภาพ (jpg, jpeg, png, webp)",
+                        type=["jpg", "jpeg", "png", "webp"],
+                        key=f"upload_{entry_id}",
+                    )
+                    if uploaded is not None:
+                        raw_bytes = uploaded.getvalue()
+                        file_hash = hashlib.md5(raw_bytes).hexdigest()
+                        marker_key = f"_upload_marker_{entry_id}"
+                        if st.session_state.get(marker_key) != file_hash:
+                            valid, fmt, size = validate_image(raw_bytes)
+                            if not valid:
+                                st.error("❌ ไฟล์นี้เปิดเป็นรูปภาพไม่ได้ กรุณาลองไฟล์อื่น (jpg, jpeg, png, webp)")
+                            else:
+                                max_dim = MAX_IMAGE_DIM_TEXT if fmt in ("PNG", "GIF", "BMP") else MAX_IMAGE_DIM
+                                processed, out_mime, status = compress_image(raw_bytes, max_dim=max_dim)
+                                if not processed:
+                                    st.error("❌ ประมวลผลรูปไม่สำเร็จ กรุณาลองไฟล์อื่นหรือไฟล์ที่มีขนาดเล็กลง")
+                                else:
+                                    st.session_state[marker_key] = file_hash
+                                    new_img = QuestionImage(
+                                        source="manual_upload",
+                                        url=None,
+                                        data=processed,
+                                        mime_type=out_mime,
+                                        width=size[0] if size else None,
+                                        height=size[1] if size else None,
+                                        status=status,
+                                    )
+                                    manual_images[entry_id] = new_img
+                                    st.session_state["manual_images"] = manual_images
+                                    q.images = [img for img in q.images if img.source != "manual_upload"]
+                                    q.images.append(new_img)
+                                    st.success(
+                                        f"✅ อัปโหลดรูปข้อ {idx} สำเร็จ! กดปุ่ม '🔄 วิเคราะห์ข้อนี้ใหม่' ด้านบนเพื่อให้ AI ใช้รูปนี้"
+                                    )
+                                    st.rerun()
 
             if not ai_has_answer:
                 st.markdown(
