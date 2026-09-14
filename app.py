@@ -1538,6 +1538,13 @@ if "questions" in st.session_state:
 
             ans_key = f"ans_{entry_id}"
 
+            # สำคัญ: ต้อง seed ค่าเริ่มต้นจากคำตอบ AI เข้า session_state
+            # ก่อนที่ widget (key=ans_key) จะถูก render ครั้งแรก มิฉะนั้น
+            # st.radio/st.multiselect/st.text_input จะไม่มีค่าเริ่มต้นเลย
+            # (radio จะตกไปที่ index 0, text_input จะว่างเปล่า)
+            if ans_key not in st.session_state:
+                apply_ai_answer_to_state(q, ans_data)
+
             if q.choices:
                 if q.is_multi:
                     st.multiselect("คำตอบ (เลือกได้หลายข้อ)", q.choices, key=ans_key)
