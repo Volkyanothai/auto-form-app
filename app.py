@@ -493,10 +493,45 @@ def match_choice(ai_answer: Any, choices: List[str]) -> Tuple[int, bool]:
 
 
 def fetch_form(form_url: str) -> Tuple[dict, str, str, str, str]:
-    if "docs.google.com/forms" not in form_url:
-        raise RuntimeError("ลิงก์นี้ไม่ใช่ Google Form")
+    """
+    รองรับทั้งลิงก์ Google Forms แบบเต็ม และลิงก์ย่อ forms.gle
 
-    res = requests.get(form_url, allow_redirects=True, headers=UA, timeout=20)
+    จุดสำคัญ:
+    - forms.gle เป็น URL redirect จึงห้ามตรวจโดเมนจาก URL ที่ผู้ใช้กรอกก่อน request
+    - ตรวจสอบ URL หลัง redirect (res.url) แทน
+    - ใช้ URL หลัง redirect ต่อไปในการสร้าง formResponse
+    """
+    form_url = (form_url or "").strip()
+    if not form_url:
+        raise RuntimeError("กรุณาใส่ลิงก์ Google Form")
+
+    if not re.match(r"^https?://", form_url, re.IGNORECASE):
+        form_url = "https://" + form_url
+
+    try:
+        res = requests.get(
+            form_url,
+            allow_redirects=True,
+            headers=UA,
+            timeout=20,
+        )
+        res.raise_for_status()
+    except requests.exceptions.RequestException as e:
+        raise RuntimeError(f"เปิดลิงก์ Google Form ไม่สำเร็จ: {e}")
+
+    resolved_url = res.url
+    parsed = requests.utils.urlparse(resolved_url)
+
+    is_google_form = (
+        parsed.netloc.lower() in {"docs.google.com", "forms.google.com"}
+        and parsed.path.startswith("/forms/")
+    )
+
+    if not is_google_form:
+        raise RuntimeError(
+            "ลิงก์นี้ไม่ใช่ Google Form หรือไม่สามารถ redirect ไปยัง Google Form ได้"
+        )
+
     raw_html = res.text
 
     m = re.search(r'FB_PUBLIC_LOAD_DATA_\s*=\s*(.*?);\s*</script>', raw_html, re.DOTALL)
@@ -519,8 +554,10 @@ def fetch_form(form_url: str) -> Tuple[dict, str, str, str, str]:
     if fvv_m:
         fvv = fvv_m.group(1)
 
-    submit_url = form_url.replace("viewform", "formResponse") if "viewform" in form_url else (
-        form_url if "formResponse" in form_url else form_url.rstrip("/") + "/formResponse"
+    # ใช้ URL หลัง redirect เสมอ เพื่อให้ forms.gle และ URL ที่มี query string
+    # ทำงานเหมือนกัน และคง query parameters ที่ Google Forms ต้องการไว้
+    submit_url = resolved_url.replace("viewform", "formResponse") if "viewform" in resolved_url else (
+        resolved_url if "formResponse" in resolved_url else resolved_url.rstrip("/") + "/formResponse"
     )
 
     return form_data, fbzx, fvv, raw_html, submit_url
