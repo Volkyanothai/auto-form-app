@@ -547,7 +547,7 @@ def fetch_form(form_url: str) -> Tuple[dict, str, str, str, str]:
 
     fbzx = ""
     fvv = "1"
-    fbzx_m = re.search(r'name="fbzx"\s+value="(\d+)"', raw_html)
+    fbzx_m = re.search(r'name="fbzx"\s+value="([-\d]+)"', raw_html)
     fvv_m = re.search(r'name="fvv"\s+value="(\d+)"', raw_html)
     if fbzx_m:
         fbzx = fbzx_m.group(1)
