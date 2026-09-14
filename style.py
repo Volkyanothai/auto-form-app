@@ -1,9 +1,9 @@
 """
-style.py — EZEXAM UI (Phase 0+1 Overhaul)
-=========================================
-- แก้ไข logo processing ให้ปลอดภัยและเร็วขึ้น
-- เพิ่ม styles สำหรับ confidence bar, reasoning, image gallery
-- Responsive ที่ดีขึ้น
+style.py — EZEXAM UI (Prismatic Glass & Blueprint Sketching Edition)
+====================================================================
+- อัปเกรดดีไซน์ขอบกระจกสีรุ้ง (Prismatic Glass) วิ่งอัตโนมัติ
+- รองรับ iPad เต็มรูปแบบ (Tap-to-flare แทน Hover)
+- ปรับแต่งหน้าจอ Loading เป็นสไตล์ Blueprint Sketching
 """
 import base64
 import io
@@ -17,7 +17,6 @@ LOGO_COLOR = "auto"     # "auto" = ตรวจเอง | "white" = บัง�
 STRIP_WHITE = True      # ลบพื้นหลังขาวทึบออกอัตโนมัติ
 # ════════════════════════════════════
 
-
 def _find_logo():
     for name in LOGO_FILES:
         p = Path(name)
@@ -25,52 +24,36 @@ def _find_logo():
             return p
     return None
 
-
 def _strip_white_bg(img, tol=34):
-    """ลบพื้นหลังขาวทึบ -> โปร่งใส โดยใช้ numpy เพื่อความเร็ว"""
     try:
         import numpy as np
         from PIL import Image
     except ImportError:
         return img
-
     w, h = img.size
     if w < 2 or h < 2:
         return img
-
     arr = np.array(img)
     if arr.shape[-1] != 4:
         return img
-
-    # ตรวจ 4 มุม
     corners = [arr[0, 0], arr[0, -1], arr[-1, 0], arr[-1, -1]]
     solid = [c for c in corners if c[3] > 8]
     if not solid:
         return img
-
     r0 = int(np.mean([c[0] for c in solid]))
     g0 = int(np.mean([c[1] for c in solid]))
     b0 = int(np.mean([c[2] for c in solid]))
-
     if not (r0 > 224 and g0 > 224 and b0 > 224):
         return img
-
-    # สร้าง mask
     diff = np.max(np.abs(arr[:, :, :3].astype(np.int16) - [r0, g0, b0]), axis=2)
     alpha = arr[:, :, 3].astype(np.float32)
-
-    # พื้นหลังขาว -> โปร่งใส
     mask_bg = diff <= tol
     alpha[mask_bg] = 0
-
-    # ขอบเขต -> โปร่งใสแบบ gradient
     mask_edge = (diff > tol) & (diff <= tol * 2)
     ratio = (diff[mask_edge] - tol) / tol
     alpha[mask_edge] = alpha[mask_edge] * ratio
-
     arr[:, :, 3] = alpha.astype(np.uint8)
     return Image.fromarray(arr)
-
 
 def _is_dark(img):
     try:
@@ -89,9 +72,7 @@ def _is_dark(img):
     except Exception:
         return False
 
-
 def _to_white(img):
-    """แปลงสีรูปเป็นขาว โดยเก็บ alpha channel"""
     try:
         from PIL import Image
         r, g, b, a = img.split()
@@ -101,7 +82,6 @@ def _to_white(img):
         return Image.merge("RGBA", (white_r, white_g, white_b, a))
     except Exception:
         return img
-
 
 @st.cache_data(show_spinner=False)
 def _logo_uri() -> str:
@@ -115,7 +95,6 @@ def _logo_uri() -> str:
         from PIL import Image
     except Exception:
         return "data:image/png;base64," + base64.b64encode(raw).decode()
-
     try:
         img = Image.open(io.BytesIO(raw)).convert("RGBA")
         if max(img.size) > 1000:
@@ -133,13 +112,11 @@ def _logo_uri() -> str:
     except Exception:
         return "data:image/png;base64," + base64.b64encode(raw).decode()
 
-
 def _raw(html_code: str) -> None:
     try:
         st.html(html_code)
     except Exception:
         st.markdown(html_code, unsafe_allow_html=True)
-
 
 CSS = """<style>
 @import url('https://fonts.googleapis.com/css2?family=Sora:wght@300;400;500;600;700;800&family=Noto+Sans+Thai:wght@300;400;500;600;700&display=swap');
@@ -147,8 +124,6 @@ html,body,p,h1,h2,h3,h4,h5,h6,label,input,textarea,li,button,span,div{font-famil
 
 /* ═══ BACKGROUND ═══ */
 .stApp{background:radial-gradient(1200px 760px at 8% -14%,rgba(44,84,230,.24),transparent 62%),radial-gradient(940px 680px at 94% 4%,rgba(95,227,208,.10),transparent 64%),radial-gradient(800px 600px at 50% 114%,rgba(108,80,242,.16),transparent 66%),linear-gradient(172deg,#03060f 0%,#070d22 44%,#04081a 100%);background-attachment:fixed;color:#e7edfb;}
-.stApp::before{content:"";position:fixed;inset:-25%;z-index:0;pointer-events:none;background:radial-gradient(34% 27% at 20% 26%,rgba(58,104,255,.22),transparent 70%),radial-gradient(30% 24% at 80% 66%,rgba(95,227,208,.11),transparent 70%),radial-gradient(26% 22% at 58% 10%,rgba(132,90,255,.15),transparent 70%);filter:blur(84px);animation:aurora 32s ease-in-out infinite alternate;}
-@keyframes aurora{0%{transform:translate3d(0,0,0) scale(1);opacity:.7}50%{transform:translate3d(-3%,3%,0) scale(1.1);opacity:.92}100%{transform:translate3d(3%,-2%,0) scale(1.04);opacity:.78}}
 [data-testid="stAppViewContainer"]>.main{position:relative;z-index:1;}
 [data-testid="stHeader"]{background:transparent;}
 #MainMenu,footer{visibility:hidden;}
@@ -157,57 +132,118 @@ html,body,p,h1,h2,h3,h4,h5,h6,label,input,textarea,li,button,span,div{font-famil
 .block-container{padding:1.2rem 1rem 4rem;max-width:900px;}
 
 /* ═══ HERO ═══ */
-.hero{position:relative;overflow:hidden;border-radius:24px;padding:1.75rem 1.4rem 1.4rem;margin:0 0 1.35rem;background:linear-gradient(158deg,rgba(22,42,90,.52),rgba(6,12,30,.44));border:1px solid rgba(140,175,255,.12);backdrop-filter:blur(24px) saturate(150%);-webkit-backdrop-filter:blur(24px) saturate(150%);box-shadow:0 24px 64px rgba(0,0,0,.5),inset 0 1px 0 rgba(255,255,255,.075);animation:rise .7s cubic-bezier(.2,.8,.2,1) both;}
-.hero::before{content:"";position:absolute;inset:0;pointer-events:none;background-image:linear-gradient(rgba(140,175,255,.05) 1px,transparent 1px),linear-gradient(90deg,rgba(140,175,255,.05) 1px,transparent 1px);background-size:30px 30px;-webkit-mask-image:radial-gradient(ellipse 70% 65% at 50% 42%,#000 0%,transparent 78%);mask-image:radial-gradient(ellipse 70% 65% at 50% 42%,#000 0%,transparent 78%);}
-.hero::after{content:"";position:absolute;top:0;left:18%;right:18%;height:1px;background:linear-gradient(90deg,transparent,rgba(127,179,255,.85),rgba(232,201,138,.7),transparent);}
-.hero-aura{position:absolute;left:50%;top:-46%;width:118%;height:150%;transform:translateX(-50%);pointer-events:none;background:radial-gradient(48% 42% at 50% 50%,rgba(88,138,255,.20),transparent 72%);filter:blur(24px);}
+.hero{position:relative;overflow:hidden;border-radius:24px;padding:1.75rem 1.4rem 1.4rem;margin:0 0 1.35rem;background:linear-gradient(158deg,rgba(22,42,90,.52),rgba(6,12,30,.44));border:1px solid rgba(140,175,255,.12);backdrop-filter:blur(24px) saturate(150%);-webkit-backdrop-filter:blur(24px) saturate(150%);box-shadow:0 24px 64px rgba(0,0,0,.5),inset 0 1px 0 rgba(255,255,255,.075);}
 .hero-inner{position:relative;z-index:2;display:flex;flex-direction:column;align-items:center;gap:.95rem;}
-
 .hero-logo-wrap{position:relative;overflow:hidden;width:100%;display:flex;justify-content:center;padding:.15rem 0;}
-.hero-logo-wrap::after{content:"";position:absolute;top:-40%;bottom:-40%;left:-45%;width:30%;transform:skewX(-18deg);background:linear-gradient(100deg,transparent,rgba(255,255,255,.16),transparent);animation:sheen 9s ease-in-out infinite;pointer-events:none;}
-@keyframes sheen{0%,76%{left:-45%}100%{left:115%}}
 .hero-logo{width:min(76%,300px);height:auto;display:block;filter:drop-shadow(0 5px 22px rgba(120,170,255,.34));animation:float 7s ease-in-out infinite;}
 @keyframes float{0%,100%{transform:translateY(0)}50%{transform:translateY(-5px)}}
-
 .wordmark{display:flex;align-items:baseline;gap:.12em;font-size:2.5rem;font-weight:800;letter-spacing:-1px;line-height:1;}
 .wordmark .a{color:#fff;}
 .wordmark .b{background:linear-gradient(110deg,#8fbcff,#e8c98a);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;}
-
 .hero-meta{display:flex;align-items:center;justify-content:center;gap:.65rem;flex-wrap:wrap;}
 .hero-pill{display:inline-flex;align-items:center;gap:.45rem;padding:.33rem .72rem;border-radius:99px;background:rgba(95,227,208,.08);border:1px solid rgba(95,227,208,.24);color:#8ff0e0;font-size:.6rem;font-weight:700;letter-spacing:1.5px;}
-.hero-pill i{width:6px;height:6px;border-radius:50%;background:#5fe3d0;box-shadow:0 0 9px #5fe3d0;animation:pulse 2.2s ease-in-out infinite;}
-@keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.4;transform:scale(.8)}}
-.hero-sep{width:3px;height:3px;border-radius:50%;background:rgba(140,175,255,.35);}
 .hero-tag{font-size:.6rem;font-weight:600;letter-spacing:2.1px;color:#7c8db3;text-transform:uppercase;}
-.hero-line{width:54px;height:2px;border-radius:99px;background:linear-gradient(90deg,#7fb3ff,#e8c98a);box-shadow:0 0 14px rgba(232,201,138,.42);}
 
-/* ═══ CARDS ═══ */
-div[data-testid="stVerticalBlockBorderWrapper"]{background:linear-gradient(155deg,rgba(18,33,68,.6),rgba(8,15,38,.46));border:1px solid rgba(140,175,255,.12);border-radius:19px;padding:1.4rem;backdrop-filter:blur(18px) saturate(145%);-webkit-backdrop-filter:blur(18px) saturate(145%);box-shadow:0 16px 44px rgba(0,0,0,.4),inset 0 1px 0 rgba(255,255,255,.065);transition:transform .35s cubic-bezier(.2,.8,.2,1),box-shadow .35s,border-color .35s;animation:rise .6s ease both;}
-div[data-testid="stVerticalBlockBorderWrapper"]:hover{transform:translateY(-3px);border-color:rgba(127,179,255,.32);box-shadow:0 24px 60px rgba(0,0,0,.55),0 0 22px rgba(127,179,255,.11);}
-@keyframes rise{from{opacity:0;transform:translateY(18px)}to{opacity:1;transform:none}}
+/* ═══ PRISMATIC GLASS CARDS (IPAD OPTIMIZED) ═══ */
+div[data-testid="stVerticalBlockBorderWrapper"] {
+    background: 
+        linear-gradient(155deg, rgba(16,28,60,.75), rgba(6,12,30,.65)) padding-box,
+        linear-gradient(120deg, rgba(127,179,255,0.25), rgba(95,227,208,0.5), rgba(232,201,138,0.5), rgba(132,90,255,0.5), rgba(127,179,255,0.25)) border-box;
+    border: 1.5px solid transparent;
+    border-radius: 20px;
+    padding: 1.4rem;
+    backdrop-filter: blur(24px) saturate(150%);
+    -webkit-backdrop-filter: blur(24px) saturate(150%);
+    background-size: 200% 200%;
+    animation: gradientBorder 6s linear infinite;
+    box-shadow: 0 16px 44px rgba(0,0,0,.5);
+    transition: transform 0.2s cubic-bezier(.2,.8,.2,1);
+}
+@keyframes gradientBorder {
+    0% { background-position: 0% 50%; }
+    50% { background-position: 100% 50%; }
+    100% { background-position: 0% 50%; }
+}
+/* Tap-to-Flare for iPad */
+div[data-testid="stVerticalBlockBorderWrapper"]:active {
+    transform: scale(0.99);
+    background: 
+        linear-gradient(155deg, rgba(16,28,60,.85), rgba(6,12,30,.80)) padding-box,
+        linear-gradient(120deg, rgba(127,179,255,0.9), rgba(95,227,208,1), rgba(232,201,138,1), rgba(132,90,255,1), rgba(127,179,255,0.9)) border-box;
+    animation: gradientBorder 1s linear infinite;
+}
 
 .glass-header{display:flex;align-items:center;gap:.55rem;font-size:.72rem;font-weight:700;letter-spacing:1.5px;color:#7fb3ff;margin-bottom:1.05rem;text-transform:uppercase;}
 .glass-header::before{content:"";flex:0 0 auto;width:5px;height:5px;border-radius:50%;background:#7fb3ff;box-shadow:0 0 9px rgba(127,179,255,.9);}
-.glass-header::after{content:"";flex:1 1 auto;height:1px;background:linear-gradient(90deg,rgba(127,179,255,.26),transparent);}
 .q-title{font-size:1.04rem;font-weight:600;line-height:1.68;color:#e7edfb;margin-bottom:.8rem;}
 
-/* ═══ BUTTON ═══ */
+/* ═══ BLUEPRINT SKETCHING (LOADING STATE) ═══ */
+[data-testid="stStatusWidget"] {
+    background: linear-gradient(135deg, rgba(6, 12, 30, 0.95), rgba(10, 20, 44, 0.98)) !important;
+    border: 1px solid rgba(127, 179, 255, 0.4) !important;
+    border-radius: 16px !important;
+    position: relative;
+    overflow: hidden;
+    box-shadow: 0 0 30px rgba(127, 179, 255, 0.15);
+}
+/* Grid Overlay */
+[data-testid="stStatusWidget"]::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background-image: 
+        linear-gradient(rgba(127, 179, 255, 0.15) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(127, 179, 255, 0.15) 1px, transparent 1px);
+    background-size: 24px 24px;
+    z-index: 0;
+    pointer-events: none;
+    animation: gridPan 15s linear infinite;
+}
+@keyframes gridPan {
+    0% { background-position: 0 0; }
+    100% { background-position: 48px 48px; }
+}
+/* Ensure Text is above grid */
+[data-testid="stStatusWidget"] * {
+    position: relative;
+    z-index: 1;
+}
+/* Sketching Laser (Progress Bar) */
+.stProgress > div > div > div > div {
+    background: linear-gradient(90deg, transparent 0%, rgba(95,227,208,0.7) 40%, rgba(232,201,138,1) 85%, #ffffff 100%) !important;
+    border-radius: 99px;
+    height: 4px;
+    box-shadow: 0 0 12px rgba(95,227,208,0.8), 0 0 24px rgba(232,201,138,0.6);
+    position: relative;
+    overflow: visible !important;
+}
+/* The Laser Head */
+.stProgress > div > div > div > div::after {
+    content: "";
+    position: absolute;
+    right: -6px;
+    top: -5px;
+    width: 14px;
+    height: 14px;
+    background: #ffffff;
+    border-radius: 50%;
+    box-shadow: 0 0 15px 4px rgba(232,201,138,0.9), 0 0 25px 6px rgba(255,255,255,0.8);
+    animation: laserPulse 0.35s ease-in-out infinite alternate;
+}
+@keyframes laserPulse {
+    0% { transform: scale(0.7); opacity: 0.8; }
+    100% { transform: scale(1.4); opacity: 1; }
+}
+
+/* ═══ BUTTONS ═══ */
 div.stButton>button{width:100%;border-radius:13px;padding:.88rem 1.2rem;font-weight:700;font-size:.96rem;letter-spacing:1px;color:#04101e;border:none;background:linear-gradient(120deg,#8fbcff 0%,#b8d6ff 44%,#e8c98a 100%);box-shadow:0 12px 30px rgba(127,179,255,.26);transition:transform .2s,box-shadow .3s,filter .3s;}
-div.stButton>button:hover{transform:translateY(-2px);filter:brightness(1.06);box-shadow:0 18px 42px rgba(127,179,255,.4);}
-div.stButton>button:active{transform:translateY(1px) scale(.99);}
+div.stButton>button:active{transform:translateY(2px) scale(.98); filter:brightness(1.15);}
 
 /* ═══ INPUTS ═══ */
 .stTextInput input,.stTextArea textarea,.stSelectbox div[data-baseweb="select"]>div{background:rgba(7,14,34,.66);border:1px solid rgba(140,175,255,.14);border-radius:12px;color:#e7edfb;transition:border-color .25s,box-shadow .25s,background .25s;}
-.stTextInput input:hover,.stTextArea textarea:hover{border-color:rgba(140,175,255,.28);}
 .stTextInput input:focus,.stTextArea textarea:focus{border-color:#7fb3ff;background:rgba(9,18,44,.86);box-shadow:0 0 0 3px rgba(127,179,255,.15);}
 .stTextInput label p,.stSelectbox label p,.stTextArea label p{color:#8698bd;font-size:.68rem;font-weight:700;letter-spacing:1.1px;text-transform:uppercase;}
 .stTextInput input:disabled{-webkit-appearance:none;appearance:none;background-color:rgba(7,14,34,.8)!important;color:#e7edfb!important;-webkit-text-fill-color:#e7edfb!important;opacity:1!important;border:1px solid rgba(140,175,255,.17)!important;}
-
-/* ═══ IMAGE GALLERY ═══ */
-.image-gallery{margin:.6rem 0 1rem;}
-.image-gallery [data-testid="stImage"]{border-radius:12px;overflow:hidden;border:1px solid rgba(140,175,255,.15);box-shadow:0 8px 24px rgba(0,0,0,.3);}
-.image-fallback{padding:.7rem 1rem;border-radius:10px;background:rgba(255,107,107,.08);border:1px solid rgba(255,107,107,.25);color:#ff9e9e;font-size:.82rem;margin:.3rem 0;}
-.image-fallback a{color:#8fbcff;text-decoration:underline;}
 
 /* ═══ CONFIDENCE & REASONING ═══ */
 .confidence-track{width:100%;height:6px;background:rgba(255,255,255,.055);border-radius:99px;overflow:hidden;margin:.4rem 0 .25rem;}
@@ -216,54 +252,24 @@ div.stButton>button:active{transform:translateY(1px) scale(.99);}
 .confidence-label{font-size:.72rem;color:#8698bd;margin-bottom:.6rem;}
 .reasoning-text{color:#c2d0ee;font-size:.85rem;line-height:1.65;background:rgba(127,179,255,.085);padding:11px 15px;border-radius:11px;border-left:3px solid #7fb3ff;margin-bottom:12px;}
 
-/* ═══ METRICS ═══ */
+/* ═══ OTHERS ═══ */
 [data-testid="stMetric"]{background:rgba(127,179,255,.06);border:1px solid rgba(140,175,255,.12);border-radius:12px;padding:.6rem;}
-[data-testid="stMetricLabel"]{font-size:.65rem!important;letter-spacing:1.2px;text-transform:uppercase;color:#8698bd;}
-[data-testid="stMetricValue"]{font-size:1.6rem!important;font-weight:700;color:#e7edfb;}
-
-/* ═══ RESULT ═══ */
-.score-box{position:relative;overflow:hidden;text-align:center;padding:2rem 1.2rem;border-radius:22px;margin:1.2rem 0;background:linear-gradient(150deg,rgba(232,201,138,.13),rgba(127,179,255,.08));border:1px solid rgba(232,201,138,.28);backdrop-filter:blur(20px);box-shadow:0 22px 58px rgba(0,0,0,.48),0 0 42px rgba(232,201,138,.11);animation:pop .7s cubic-bezier(.2,1.2,.3,1) both;}
-.score-box::after{content:"";position:absolute;top:0;left:22%;right:22%;height:1px;background:linear-gradient(90deg,transparent,rgba(232,201,138,.8),transparent);}
-.score-val{font-size:3.3rem;font-weight:800;line-height:1;background:linear-gradient(120deg,#e8c98a,#fff 48%,#7fb3ff);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;}
-.score-lb{color:#8698bd;font-size:.72rem;letter-spacing:2.5px;text-transform:uppercase;margin-top:.6rem;}
-@keyframes pop{from{opacity:0;transform:scale(.9)}to{opacity:1;transform:none}}
-.score-link{display:block;text-align:center;padding:13px;border-radius:12px;background:rgba(127,179,255,.085);border:1px solid rgba(127,179,255,.28);color:#9cc6ff;text-decoration:none;font-weight:700;letter-spacing:.8px;margin-top:10px;transition:all .3s ease;}
-.score-link:hover{background:rgba(127,179,255,.17);border-color:rgba(127,179,255,.52);transform:translateY(-2px);}
+[data-testid="stExpander"]{background:rgba(10,20,44,.5);border:1px solid rgba(140,175,255,.13);border-radius:13px;}
 .section-title{position:relative;padding-left:14px;font-size:1.28rem;font-weight:700;color:#e7edfb;margin:2rem 0 1rem;}
 .section-title::before{content:"";position:absolute;left:0;top:.2em;bottom:.2em;width:4px;border-radius:99px;background:linear-gradient(180deg,#7fb3ff,#e8c98a);box-shadow:0 0 11px rgba(127,179,255,.5);}
-[data-testid="stStatusWidget"]{background:rgba(10,20,44,.78);border:1px solid rgba(140,175,255,.13);border-radius:13px;}
-[data-testid="stExpander"]{background:rgba(10,20,44,.5);border:1px solid rgba(140,175,255,.13);border-radius:13px;}
-.stProgress>div>div>div>div{background:linear-gradient(90deg,#7fb3ff,#5fe3d0);}
-hr{border-color:rgba(140,175,255,.13);}
-::-webkit-scrollbar{width:9px;}
-::-webkit-scrollbar-track{background:transparent;}
-::-webkit-scrollbar-thumb{background:rgba(127,179,255,.2);border-radius:99px;}
-::-webkit-scrollbar-thumb:hover{background:rgba(127,179,255,.36);}
-
-/* ═══ RADIO / MULTISELECT ═══ */
 .stRadio label span{color:#e7edfb;}
 .stMultiSelect [data-baseweb="tag"]{background:rgba(127,179,255,.2)!important;border-color:rgba(127,179,255,.4)!important;color:#e7edfb!important;}
 
 @media (max-width:640px){
 .block-container{padding:.8rem .65rem 3rem;}
 .hero{padding:1.35rem .95rem 1.15rem;border-radius:20px;}
-.hero::before{background-size:24px 24px;}
-.hero-inner{gap:.8rem;}
-.hero-logo{width:min(84%,255px);}
 .wordmark{font-size:1.95rem;}
-.hero-tag,.hero-pill{font-size:.55rem;letter-spacing:1.3px;}
 div[data-testid="stVerticalBlockBorderWrapper"]{padding:1.05rem;border-radius:16px;}
-div[data-testid="stVerticalBlockBorderWrapper"]:hover{transform:none;}
-.q-title{font-size:.97rem;}
-.score-val{font-size:2.6rem;}
-.section-title{font-size:1.14rem;}
 }
 </style>"""
 
-
 def inject_css() -> None:
     _raw(CSS)
-
 
 def render_header(title: str = "EZEXAM",
                   subtitle: str = "AUTO FORM SYSTEM",
@@ -277,13 +283,10 @@ def render_header(title: str = "EZEXAM",
         mark = ('<div class="wordmark">'
                 '<span class="a">EZ</span><span class="b">EXAM</span></div>')
     _raw(
-        '<div class="hero"><div class="hero-aura"></div><div class="hero-inner">'
+        '<div class="hero"><div class="hero-inner">'
         + mark +
         '<div class="hero-meta">'
         f'<span class="hero-pill"><i></i>{status}</span>'
-        '<span class="hero-sep"></span>'
         f'<span class="hero-tag">{subtitle}</span>'
-        '</div>'
-        '<div class="hero-line"></div>'
-        '</div></div>'
+        '</div></div></div>'
     )
