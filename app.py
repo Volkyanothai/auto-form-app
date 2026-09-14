@@ -1221,9 +1221,22 @@ def apply_ai_answer_to_state(q: Question, ans_data: Dict[str, Any]) -> None:
             for a in ans_list:
                 idx_m, matched = match_choice(a, q.choices)
                 if matched:
-                    resolved.append(q.choices[idx_m])
+                    if q.choices[idx_m] not in resolved:
+                        resolved.append(q.choices[idx_m])
                 elif a in q.choices:
-                    resolved.append(a)
+                    if a not in resolved:
+                        resolved.append(a)
+                else:
+                    # บางครั้ง AI ตอบเป็นสตริงเดียวรวมหลายคำตอบ เช่น "4 และ -4"
+                    # แทนที่จะเป็น array ["4", "-4"] ตามที่สั่งไว้ใน prompt
+                    # ให้ลองตัดด้วยตัวคั่นทั่วไปแล้วจับคู่ทีละชิ้นกับตัวเลือกอีกรอบ
+                    for frag in re.split(r'\s*(?:,|/|\n|;|และ|กับ)\s*', str(a).strip()):
+                        frag = frag.strip()
+                        if not frag:
+                            continue
+                        f_idx, f_matched = match_choice(frag, q.choices)
+                        if f_matched and q.choices[f_idx] not in resolved:
+                            resolved.append(q.choices[f_idx])
             st.session_state[ans_key] = resolved
         else:
             idx_m, matched = match_choice(ans, q.choices)
