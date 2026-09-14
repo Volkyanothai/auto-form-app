@@ -464,6 +464,15 @@ def match_choice(ai_answer: Any, choices: List[str]) -> Tuple[int, bool]:
         if c.lower() == ai_lower:
             return i, True
 
+    # AI มักตอบเป็นประโยคยาว เช่น "x = 4" หรือ "คำตอบคือ 4" แทนที่จะตอบ
+    # ข้อความตัวเลือกเป๊ะๆ ("4") ตามที่สั่งไว้ — ดึง "token" (ตัวเลข/คำ) ออกมา
+    # จากคำตอบ AI แล้วเทียบตรงกับตัวเลือกทีละอัน ก่อนจะลอง fuzzy match ที่แม่นยำน้อยกว่า
+    ai_tokens = re.findall(r'-?\d+(?:\.\d+)?|[ก-ฮa-zA-Z]+', ai_clean)
+    if ai_tokens:
+        for i, c in enumerate(clean_choices):
+            if c in ai_tokens:
+                return i, True
+
     letter_match = re.match(r'^(?:ข้อ\s*)?[\(\[]?([ก-ฮa-zA-Z0-9]+)[\)\].]?\s*(.*)$', ai_clean)
     if letter_match:
         letter = letter_match.group(1)
