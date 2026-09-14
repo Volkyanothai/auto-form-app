@@ -26,6 +26,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 import requests
 import streamlit as st
+import streamlit.components.v1 as components
 from google import genai
 from google.genai import types
 
@@ -1180,29 +1181,38 @@ def check_submit_success(response_text: str, status_code: int) -> Tuple[bool, Op
     return True, None
 
 
-def submit_form(submit_url: str, payload: Dict[str, Any], max_retries: int = 2) -> Tuple[bool, str]:
+def submit_form(submit_url: str, payload: Dict[str, Any], max_retries: int = 2) -> Tuple[bool, str, Optional[str], Optional[str]]:
+    """
+    ส่งคำตอบไปยัง Google Form
+
+    คืนค่า (success, message, confirmation_html, confirmation_url)
+    confirmation_html คือ HTML ดิบของหน้ายืนยันที่ Google ส่งกลับมาหลังส่งฟอร์มสำเร็จ
+    ถ้าฟอร์มเป็นแบบทดสอบ (quiz) ที่ตั้งค่า "แสดงคะแนนทันที" หน้านี้จะมีสคริปต์/ข้อมูล
+    ที่ใช้แสดงคะแนนอยู่ในตัว — เราจึงเก็บ HTML นี้ไว้เพื่อฝังแสดงในแอปภายหลัง
+    แทนที่จะพยายามพาร์สคะแนนเองด้วย regex ซึ่งเปราะบางและอาจไม่ตรงกับทุกฟอร์ม
+    """
     for attempt in range(max_retries + 1):
         try:
             res = requests.post(submit_url, data=payload, headers=UA, timeout=SUBMIT_TIMEOUT)
             success, err = check_submit_success(res.text, res.status_code)
             if success:
-                return True, "ส่งข้อมูลสำเร็จ"
+                return True, "ส่งข้อมูลสำเร็จ", res.text, res.url
             if attempt < max_retries:
                 time.sleep(2 ** attempt)
                 continue
-            return False, err or f"ส่งไม่สำเร็จ (HTTP {res.status_code})"
+            return False, err or f"ส่งไม่สำเร็จ (HTTP {res.status_code})", None, None
         except requests.exceptions.Timeout:
             if attempt < max_retries:
                 time.sleep(2 ** attempt)
                 continue
-            return False, "หมดเวลาการเชื่อมต่อ"
+            return False, "หมดเวลาการเชื่อมต่อ", None, None
         except Exception as e:
             if attempt < max_retries:
                 time.sleep(2 ** attempt)
                 continue
-            return False, f"ข้อผิดพลาด: {str(e)}"
+            return False, f"ข้อผิดพลาด: {str(e)}", None, None
 
-    return False, "ไม่สามารถส่งข้อมูลได้"
+    return False, "ไม่สามารถส่งข้อมูลได้", None, None
 
 
 def get_ai_answer(ai_answers: Dict[str, Any], entry_id: str) -> Dict[str, Any]:
@@ -1605,11 +1615,29 @@ if "questions" in st.session_state:
                     page_history,
                 )
 
-                success, msg = submit_form(st.session_state["submit_url"], payload)
+                success, msg, confirmation_html, confirmation_url = submit_form(
+                    st.session_state["submit_url"], payload
+                )
                 if success:
+                    st.session_state["confirmation_html"] = confirmation_html
+                    st.session_state["confirmation_url"] = confirmation_url
+                    st.session_state["submitted"] = True
                     st.success("🎉 " + msg)
                     st.balloons()
                 else:
                     st.error("❌ " + msg)
                     with st.expander("ดู payload ที่ส่ง"):
                         st.json(payload)
+
+    if st.session_state.get("submitted") and st.session_state.get("confirmation_html"):
+        st.divider()
+        st.markdown('<div class="glass-header">หน้ายืนยันการส่ง / คะแนน</div>', unsafe_allow_html=True)
+        st.caption(
+            "หน้านี้คือหน้ายืนยันจริงที่ Google ส่งกลับมาหลังส่งคำตอบ — ถ้าฟอร์มตั้งเป็นแบบทดสอบ "
+            "(quiz) และเปิด 'แสดงคะแนนทันที' ไว้ คะแนนจะแสดงอยู่ในหน้านี้เลย"
+        )
+        show_score = st.toggle("📊 แสดงหน้ายืนยัน/คะแนน", value=True, key="show_score_toggle")
+        if show_score:
+            components.html(st.session_state["confirmation_html"], height=700, scrolling=True)
+        if st.session_state.get("confirmation_url"):
+            st.link_button("🔗 เปิดหน้านี้ในแท็บใหม่", st.session_state["confirmation_url"], use_container_width=True)
