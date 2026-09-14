@@ -27,6 +27,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 import requests
 import streamlit as st
 import streamlit.components.v1 as components
+from urllib.parse import urlsplit
 from google import genai
 from google.genai import types
 
@@ -1181,13 +1182,46 @@ def check_submit_success(response_text: str, status_code: int) -> Tuple[bool, Op
     return True, None
 
 
-def build_score_page_html(html: str, auto_reveal: bool = True) -> str:
+def build_score_page_html(html: str, base_url: Optional[str] = None, auto_reveal: bool = True) -> str:
     """
-    ฉีดสคริปต์เล็กๆ เข้าไปในหน้ายืนยันของ Google ให้กดปุ่ม 'View score' / 'ดูคะแนน'
-    ให้อัตโนมัติทันทีที่โหลดหน้าเสร็จ (ปุ่มนี้เป็นแค่ toggle ของ Google ที่ทำงานฝั่ง client
-    อยู่แล้ว เราแค่จำลองการคลิกให้ ไม่ได้ไปยิง request เพิ่มเติมแต่อย่างใด)
+    เตรียม HTML หน้ายืนยันของ Google สำหรับฝังแสดงในแอป มี 2 อย่าง:
+
+    1) ใส่แท็ก <base href="..."> ให้ตรงกับ URL จริงของหน้า — จำเป็นมาก เพราะ HTML ที่ได้มา
+       จาก requests.post() มีแต่ตัว markup ไม่มี response headers ติดมาด้วย และสคริปต์/CSS ของ
+       Google มักอ้างด้วย path แบบ relative (เช่น "./abc.js") พอเราเอามาฝังใน iframe (srcdoc)
+       โดยไม่บอก base ให้ browser จะไปมองหาไฟล์เหล่านั้นผิดที่ (relative กับ about:srcdoc)
+       ทำให้สคริปต์ที่ใช้ผูก event ของปุ่ม "View score" โหลดไม่ขึ้น ปุ่มเลยกดแล้วไม่มีอะไรเกิดขึ้น
+       (นี่คือสาเหตุหลักที่กดปุ่มแล้วหน้าไม่เปลี่ยน)
+    2) ฉีดสคริปต์เล็กๆ ให้กดปุ่ม 'View score' / 'ดูคะแนน' ให้อัตโนมัติทันทีที่หน้าโหลดเสร็จ
+
+    หมายเหตุ: ถึง base href จะช่วยให้สคริปต์หลักของ Google โหลดได้ แต่ถ้าสคริปต์นั้นต้องยิง
+    request เพิ่มเติมไปเซิร์ฟเวอร์ Google (ไม่ใช่แค่ใช้ข้อมูลที่ฝังอยู่ในหน้าอยู่แล้ว) อาจโดน
+    บล็อกด้วยนโยบาย cross-origin/cookie ของเบราว์เซอร์ เพราะฉะนั้นถ้าลองแล้วยังไม่ขึ้น
+    วิธีที่ชัวร์ที่สุดคือกดปุ่ม "เปิดหน้านี้ในแท็บใหม่" แทน (เป็นหน้าเดียวกันแต่เปิดตรงๆ
+    ไม่ผ่าน iframe เลยไม่มีปัญหาเรื่องนี้)
     """
-    if not html or not auto_reveal:
+    if not html:
+        return html
+
+    if base_url:
+        try:
+            parts = urlsplit(base_url)
+            base_dir = parts.path.rsplit("/", 1)[0] if "/" in parts.path else ""
+            base_href = f"{parts.scheme}://{parts.netloc}{base_dir}/"
+            base_tag = f'<base href="{html_lib.escape(base_href, quote=True)}">'
+            if "<head>" in html:
+                html = html.replace("<head>", "<head>" + base_tag, 1)
+            else:
+                head_idx = html.find("<head")
+                gt_idx = html.find(">", head_idx) if head_idx != -1 else -1
+                if gt_idx != -1:
+                    html = html[: gt_idx + 1] + base_tag + html[gt_idx + 1 :]
+                else:
+                    html = base_tag + html
+        except Exception:
+            pass
+
+    if not auto_reveal:
         return html
 
     script = """
@@ -1196,14 +1230,15 @@ def build_score_page_html(html: str, auto_reveal: bool = True) -> str:
     var TARGET_TEXTS = ["view score", "ดูคะแนน", "afficher le score", "voir le score"];
     function norm(t) { return (t || "").trim().toLowerCase(); }
     function findAndClick() {
-        var candidates = document.querySelectorAll(
-            'div[role="button"], span[role="button"], a, button, div, span'
-        );
-        for (var i = 0; i < candidates.length; i++) {
-            var el = candidates[i];
-            var txt = norm(el.textContent);
-            if (TARGET_TEXTS.indexOf(txt) !== -1) {
-                try { el.click(); return true; } catch (e) { /* ignore */ }
+        var selectors = ['[role="button"]', 'button', 'a', 'div', 'span'];
+        for (var s = 0; s < selectors.length; s++) {
+            var candidates = document.querySelectorAll(selectors[s]);
+            for (var i = 0; i < candidates.length; i++) {
+                var el = candidates[i];
+                var txt = norm(el.textContent);
+                if (TARGET_TEXTS.indexOf(txt) !== -1) {
+                    try { el.click(); return true; } catch (e) { /* ignore */ }
+                }
             }
         }
         return false;
@@ -1211,7 +1246,7 @@ def build_score_page_html(html: str, auto_reveal: bool = True) -> str:
     var tries = 0;
     var timer = setInterval(function () {
         tries++;
-        if (findAndClick() || tries > 20) clearInterval(timer);
+        if (findAndClick() || tries > 24) clearInterval(timer);
     }, 250);
 })();
 </script>
@@ -1673,14 +1708,20 @@ if "questions" in st.session_state:
         st.divider()
         st.markdown('<div class="glass-header">หน้ายืนยันการส่ง / คะแนน</div>', unsafe_allow_html=True)
         st.caption(
-            "หน้านี้คือหน้ายืนยันจริงที่ Google ส่งกลับมาหลังส่งคำตอบ — ถ้าฟอร์มตั้งเป็นแบบทดสอบ "
-            "(quiz) และเปิด 'แสดงคะแนนทันที' ไว้ ระบบจะกดปุ่ม 'View score' ให้อัตโนมัติเพื่อโชว์คะแนนเลย"
+            "ระบบจะพยายามกดปุ่ม 'View score' ให้อัตโนมัติในหน้าที่ฝังไว้ด้านล่าง — แต่เนื่องจาก "
+            "เป็นการฝังหน้าของ Google ข้ามโดเมน บางครั้งสคริปต์ของ Google อาจโหลดไม่สมบูรณ์ "
+            "ถ้ากดแล้วหน้ายังไม่เปลี่ยน ให้กดปุ่ม '🔗 เปิดหน้านี้ในแท็บใหม่' ด้านล่างแทน "
+            "(เป็นหน้าเดียวกันแต่เปิดตรงๆ ไม่ผ่านการฝัง จะกด View score เองได้ชัวร์กว่า)"
         )
         c1, c2 = st.columns(2)
         show_score = c1.toggle("📊 แสดงหน้ายืนยัน/คะแนน", value=True, key="show_score_toggle")
         auto_reveal = c2.toggle("⚡ กดปุ่ม 'View score' ให้อัตโนมัติ", value=True, key="auto_reveal_toggle")
         if show_score:
-            page_html = build_score_page_html(st.session_state["confirmation_html"], auto_reveal=auto_reveal)
+            page_html = build_score_page_html(
+                st.session_state["confirmation_html"],
+                base_url=st.session_state.get("confirmation_url"),
+                auto_reveal=auto_reveal,
+            )
             components.html(page_html, height=800, scrolling=True)
         if st.session_state.get("confirmation_url"):
-            st.link_button("🔗 เปิดหน้านี้ในแท็บใหม่", st.session_state["confirmation_url"], use_container_width=True)
+            st.link_button("🔗 เปิดหน้านี้ในแท็บใหม่ (แนะนำถ้าคะแนนไม่ขึ้น)", st.session_state["confirmation_url"], use_container_width=True)
