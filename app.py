@@ -1182,23 +1182,19 @@ def check_submit_success(response_text: str, status_code: int) -> Tuple[bool, Op
     return True, None
 
 
-def build_score_page_html(html: str, base_url: Optional[str] = None, auto_reveal: bool = True) -> str:
+def build_score_page_html(html: str, base_url: Optional[str] = None) -> str:
     """
-    เตรียม HTML หน้ายืนยันของ Google สำหรับฝังแสดงในแอป มี 2 อย่าง:
+    เตรียม HTML หน้ายืนยันของ Google สำหรับฝังแสดงในแอป
 
-    1) ใส่แท็ก <base href="..."> ให้ตรงกับ URL จริงของหน้า — จำเป็นมาก เพราะ HTML ที่ได้มา
-       จาก requests.post() มีแต่ตัว markup ไม่มี response headers ติดมาด้วย และสคริปต์/CSS ของ
-       Google มักอ้างด้วย path แบบ relative (เช่น "./abc.js") พอเราเอามาฝังใน iframe (srcdoc)
-       โดยไม่บอก base ให้ browser จะไปมองหาไฟล์เหล่านั้นผิดที่ (relative กับ about:srcdoc)
-       ทำให้สคริปต์ที่ใช้ผูก event ของปุ่ม "View score" โหลดไม่ขึ้น ปุ่มเลยกดแล้วไม่มีอะไรเกิดขึ้น
-       (นี่คือสาเหตุหลักที่กดปุ่มแล้วหน้าไม่เปลี่ยน)
-    2) ฉีดสคริปต์เล็กๆ ให้กดปุ่ม 'View score' / 'ดูคะแนน' ให้อัตโนมัติทันทีที่หน้าโหลดเสร็จ
+    ใส่แท็ก <base href="..."> ให้ตรงกับ URL จริงของหน้า — จำเป็นเพราะ HTML ที่ได้มาจาก
+    requests.post() มีแต่ตัว markup ไม่มี response headers ติดมาด้วย และสคริปต์/CSS ของ
+    Google มักอ้างด้วย path แบบ relative (เช่น "./abc.js") พอเอามาฝังใน iframe (srcdoc)
+    โดยไม่บอก base ให้ browser จะไปมองหาไฟล์เหล่านั้นผิดที่ ทำให้หน้าที่แสดงอาจดูแตกๆ
+    (css/รูปหาย) — ใส่ base ให้ช่วยให้หน้านิ่งดูสมบูรณ์ขึ้น
 
-    หมายเหตุ: ถึง base href จะช่วยให้สคริปต์หลักของ Google โหลดได้ แต่ถ้าสคริปต์นั้นต้องยิง
-    request เพิ่มเติมไปเซิร์ฟเวอร์ Google (ไม่ใช่แค่ใช้ข้อมูลที่ฝังอยู่ในหน้าอยู่แล้ว) อาจโดน
-    บล็อกด้วยนโยบาย cross-origin/cookie ของเบราว์เซอร์ เพราะฉะนั้นถ้าลองแล้วยังไม่ขึ้น
-    วิธีที่ชัวร์ที่สุดคือกดปุ่ม "เปิดหน้านี้ในแท็บใหม่" แทน (เป็นหน้าเดียวกันแต่เปิดตรงๆ
-    ไม่ผ่าน iframe เลยไม่มีปัญหาเรื่องนี้)
+    หมายเหตุ: ตั้งใจไม่กดปุ่ม 'View score' ให้อัตโนมัติอีกต่อไป เพราะปุ่มนั้นเป็นลิงก์ที่
+    Google ตั้งให้พาออกจาก iframe ไปแทนที่หน้าแอปทั้งหน้า (กันไม่ให้ครอบหน้าคะแนนด้วย iframe)
+    ผู้ใช้ต้องกดปุ่ม "เปิดหน้านี้ในแท็บใหม่" เองถ้าอยากดูคะแนน จะได้ไม่โดนเด้งออกจากแอปโดยไม่ตั้งใจ
     """
     if not html:
         return html
@@ -1221,56 +1217,7 @@ def build_score_page_html(html: str, base_url: Optional[str] = None, auto_reveal
         except Exception:
             pass
 
-    if not auto_reveal:
-        return html
-
-    script = """
-<script>
-(function () {
-    var TARGET_TEXTS = ["view score", "ดูคะแนน", "afficher le score", "voir le score"];
-    function norm(t) { return (t || "").trim().toLowerCase(); }
-    function findLinkHref(el) {
-        var node = el;
-        for (var depth = 0; node && depth < 4; depth++) {
-            if (node.tagName === "A" && node.getAttribute("href")) return node.getAttribute("href");
-            node = node.parentElement;
-        }
-        return null;
-    }
-    function findAndTrigger() {
-        var selectors = ['[role="button"]', 'button', 'a', 'div', 'span'];
-        for (var s = 0; s < selectors.length; s++) {
-            var candidates = document.querySelectorAll(selectors[s]);
-            for (var i = 0; i < candidates.length; i++) {
-                var el = candidates[i];
-                var txt = norm(el.textContent);
-                if (TARGET_TEXTS.indexOf(txt) !== -1) {
-                    // ถ้าเป็นลิงก์จริง (มี href) ให้เปิดแท็บใหม่แทนการคลิกตรงๆ
-                    // เพราะ Google บางหน้าตั้ง target ให้ทะลุออกจาก iframe ไปแทนที่หน้าแอปเราทั้งหน้า
-                    var href = findLinkHref(el);
-                    if (href) {
-                        try {
-                            window.open(new URL(href, document.baseURI).href, "_blank");
-                            return true;
-                        } catch (e) { /* fall through to plain click */ }
-                    }
-                    try { el.click(); return true; } catch (e) { /* ignore */ }
-                }
-            }
-        }
-        return false;
-    }
-    var tries = 0;
-    var timer = setInterval(function () {
-        tries++;
-        if (findAndTrigger() || tries > 24) clearInterval(timer);
-    }, 250);
-})();
-</script>
-"""
-    if "</body>" in html:
-        return html.replace("</body>", script + "</body>")
-    return html + script
+    return html
 
 
 def submit_form(submit_url: str, payload: Dict[str, Any], max_retries: int = 2) -> Tuple[bool, str, Optional[str], Optional[str]]:
@@ -1723,22 +1670,17 @@ if "questions" in st.session_state:
 
     if st.session_state.get("submitted") and st.session_state.get("confirmation_html"):
         st.divider()
-        st.markdown('<div class="glass-header">หน้ายืนยันการส่ง / คะแนน</div>', unsafe_allow_html=True)
+        st.markdown('<div class="glass-header">หน้ายืนยันการส่ง</div>', unsafe_allow_html=True)
         st.caption(
-            "ระบบจะพยายามกดปุ่ม 'View score' ให้อัตโนมัติในหน้าที่ฝังไว้ด้านล่าง — ถ้าปุ่มนั้นเป็นลิงก์ "
-            "ที่ปกติจะพาออกจากหน้าไปเว็บคะแนนของ Google (ทำให้แอปนี้หายไปทั้งหน้า) ระบบจะเปิดมันเป็น "
-            "แท็บใหม่ให้แทน เพื่อไม่ให้หน้าแอปของคุณหายไป — ถ้าเบราว์เซอร์บล็อก pop-up ให้อนุญาตแท็บ "
-            "ที่เด้งขึ้นมา หรือกดปุ่ม '🔗 เปิดหน้านี้ในแท็บใหม่' ด้านล่างแทนได้เลย"
+            "นี่คือหน้ายืนยันจริงที่ Google ส่งกลับมาหลังบันทึกคำตอบสำเร็จ — ถ้าอยากดูคะแนน "
+            "ให้กดปุ่ม '🔗 ดูคะแนน' ด้านล่างเอง (เปิดเป็นแท็บใหม่ ไม่กระทบหน้าแอปนี้)"
         )
-        c1, c2 = st.columns(2)
-        show_score = c1.toggle("📊 แสดงหน้ายืนยัน/คะแนน", value=True, key="show_score_toggle")
-        auto_reveal = c2.toggle("⚡ กดปุ่ม 'View score' ให้อัตโนมัติ", value=True, key="auto_reveal_toggle")
+        show_score = st.toggle("📄 แสดงหน้ายืนยัน", value=True, key="show_score_toggle")
         if show_score:
             page_html = build_score_page_html(
                 st.session_state["confirmation_html"],
                 base_url=st.session_state.get("confirmation_url"),
-                auto_reveal=auto_reveal,
             )
-            components.html(page_html, height=800, scrolling=True)
+            components.html(page_html, height=500, scrolling=True)
         if st.session_state.get("confirmation_url"):
-            st.link_button("🔗 เปิดหน้านี้ในแท็บใหม่ (แนะนำถ้าคะแนนไม่ขึ้น)", st.session_state["confirmation_url"], use_container_width=True)
+            st.link_button("🔗 ดูคะแนน (เปิดแท็บใหม่)", st.session_state["confirmation_url"], use_container_width=True)
