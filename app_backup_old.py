@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import base64
 import difflib
+import hashlib
 import html as html_lib
 import io
 import json
@@ -492,10 +493,45 @@ def match_choice(ai_answer: Any, choices: List[str]) -> Tuple[int, bool]:
 
 
 def fetch_form(form_url: str) -> Tuple[dict, str, str, str, str]:
-    if "docs.google.com/forms" not in form_url:
-        raise RuntimeError("ลิงก์นี้ไม่ใช่ Google Form")
+    """
+    รองรับทั้งลิงก์ Google Forms แบบเต็ม และลิงก์ย่อ forms.gle
 
-    res = requests.get(form_url, allow_redirects=True, headers=UA, timeout=20)
+    จุดสำคัญ:
+    - forms.gle เป็น URL redirect จึงห้ามตรวจโดเมนจาก URL ที่ผู้ใช้กรอกก่อน request
+    - ตรวจสอบ URL หลัง redirect (res.url) แทน
+    - ใช้ URL หลัง redirect ต่อไปในการสร้าง formResponse
+    """
+    form_url = (form_url or "").strip()
+    if not form_url:
+        raise RuntimeError("กรุณาใส่ลิงก์ Google Form")
+
+    if not re.match(r"^https?://", form_url, re.IGNORECASE):
+        form_url = "https://" + form_url
+
+    try:
+        res = requests.get(
+            form_url,
+            allow_redirects=True,
+            headers=UA,
+            timeout=20,
+        )
+        res.raise_for_status()
+    except requests.exceptions.RequestException as e:
+        raise RuntimeError(f"เปิดลิงก์ Google Form ไม่สำเร็จ: {e}")
+
+    resolved_url = res.url
+    parsed = requests.utils.urlparse(resolved_url)
+
+    is_google_form = (
+        parsed.netloc.lower() in {"docs.google.com", "forms.google.com"}
+        and parsed.path.startswith("/forms/")
+    )
+
+    if not is_google_form:
+        raise RuntimeError(
+            "ลิงก์นี้ไม่ใช่ Google Form หรือไม่สามารถ redirect ไปยัง Google Form ได้"
+        )
+
     raw_html = res.text
 
     m = re.search(r'FB_PUBLIC_LOAD_DATA_\s*=\s*(.*?);\s*</script>', raw_html, re.DOTALL)
@@ -511,15 +547,17 @@ def fetch_form(form_url: str) -> Tuple[dict, str, str, str, str]:
 
     fbzx = ""
     fvv = "1"
-    fbzx_m = re.search(r'name="fbzx"\s+value="(\d+)"', raw_html)
+    fbzx_m = re.search(r'name="fbzx"\s+value="([-\d]+)"', raw_html)
     fvv_m = re.search(r'name="fvv"\s+value="(\d+)"', raw_html)
     if fbzx_m:
         fbzx = fbzx_m.group(1)
     if fvv_m:
         fvv = fvv_m.group(1)
 
-    submit_url = form_url.replace("viewform", "formResponse") if "viewform" in form_url else (
-        form_url if "formResponse" in form_url else form_url.rstrip("/") + "/formResponse"
+    # ใช้ URL หลัง redirect เสมอ เพื่อให้ forms.gle และ URL ที่มี query string
+    # ทำงานเหมือนกัน และคง query parameters ที่ Google Forms ต้องการไว้
+    submit_url = resolved_url.replace("viewform", "formResponse") if "viewform" in resolved_url else (
+        resolved_url if "formResponse" in resolved_url else resolved_url.rstrip("/") + "/formResponse"
     )
 
     return form_data, fbzx, fvv, raw_html, submit_url
@@ -1256,8 +1294,8 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                 manual_images = st.session_state["manual_images"]
                 for q in questions:
                     if q.entry_id in manual_images:
-                        if not any(img.source == "manual_upload" for img in q.images):
-                            q.images.append(manual_images[q.entry_id])
+                        q.images = [img for img in q.images if img.source != "manual_upload"]
+                        q.images.append(manual_images[q.entry_id])
 
                 parse_logs: List[str] = []
                 qi_stat, qr_stat, ti_stat, tr_stat = compute_image_stats(questions)
@@ -1331,7 +1369,8 @@ if "questions" in st.session_state:
     manual_images = st.session_state["manual_images"]
 
     for q in questions:
-        if q.entry_id in manual_images and not any(img.source == "manual_upload" for img in q.images):
+        if q.entry_id in manual_images:
+            q.images = [img for img in q.images if img.source != "manual_upload"]
             q.images.append(manual_images[q.entry_id])
 
     if st.session_state.get("debug_mode") or debug_mode:
@@ -1377,36 +1416,6 @@ if "questions" in st.session_state:
                 if f"ans_{q.entry_id}" in st.session_state:
                     del st.session_state[f"ans_{q.entry_id}"]
             st.rerun()
-
-    for qi, q in enumerate(questions, 1):
-        if not any(img.is_ready() for img in q.images):
-            has_attempted = len(q.images) > 0
-            looks_like_image_q = has_attempted or ("รูป" in q.title or "ภาพ" in q.title)
-            if not looks_like_image_q:
-                continue
-
-            uploaded = st.file_uploader(
-                f"📎 ข้อ {qi}: อัปโหลดรูปเอง (ระบบดึงรูปอัตโนมัติไม่สำเร็จสำหรับข้อนี้)",
-                type=["jpg", "jpeg", "png", "webp"],
-                key=f"upload_{q.entry_id}"
-            )
-            if uploaded:
-                file_marker = getattr(uploaded, "file_id", None) or f"{uploaded.name}_{uploaded.size}"
-                marker_key = f"_upload_marker_{q.entry_id}"
-                if st.session_state.get(marker_key) != file_marker:
-                    st.session_state[marker_key] = file_marker
-                    new_img = QuestionImage(
-                        source="manual_upload",
-                        url=None,
-                        data=uploaded.getvalue(),
-                        mime_type=uploaded.type or "image/jpeg",
-                        status="ok",
-                    )
-                    manual_images[q.entry_id] = new_img
-                    st.session_state["manual_images"] = manual_images
-                    q.images.append(new_img)
-                    st.success(f"✅ อัปโหลดรูปข้อ {qi} สำเร็จ! กดปุ่ม '🔄 วิเคราะห์ข้อนี้ใหม่' ที่ข้อนั้นด้านล่าง")
-                    st.rerun()
 
     for idx, q in enumerate(questions, 1):
         entry_id = q.entry_id
@@ -1463,6 +1472,52 @@ if "questions" in st.session_state:
                                     st.error(f"เกิดข้อผิดพลาด: {e}")
                         st.rerun()
 
+            has_ready_image = any(img.is_ready() for img in q.images)
+            looks_like_image_q = bool(q.images) or ("รูป" in q.title or "ภาพ" in q.title)
+            if looks_like_image_q:
+                with st.expander(
+                    ("📎 เพิ่มรูปเอง" if not has_ready_image else "📎 เปลี่ยน/เพิ่มรูปเอง")
+                    + f" — ข้อ {idx}",
+                    expanded=not has_ready_image,
+                ):
+                    uploaded = st.file_uploader(
+                        "เลือกไฟล์รูปภาพ (jpg, jpeg, png, webp)",
+                        type=["jpg", "jpeg", "png", "webp"],
+                        key=f"upload_{entry_id}",
+                    )
+                    if uploaded is not None:
+                        raw_bytes = uploaded.getvalue()
+                        file_hash = hashlib.md5(raw_bytes).hexdigest()
+                        marker_key = f"_upload_marker_{entry_id}"
+                        if st.session_state.get(marker_key) != file_hash:
+                            valid, fmt, size = validate_image(raw_bytes)
+                            if not valid:
+                                st.error("❌ ไฟล์นี้เปิดเป็นรูปภาพไม่ได้ กรุณาลองไฟล์อื่น (jpg, jpeg, png, webp)")
+                            else:
+                                max_dim = MAX_IMAGE_DIM_TEXT if fmt in ("PNG", "GIF", "BMP") else MAX_IMAGE_DIM
+                                processed, out_mime, status = compress_image(raw_bytes, max_dim=max_dim)
+                                if not processed:
+                                    st.error("❌ ประมวลผลรูปไม่สำเร็จ กรุณาลองไฟล์อื่นหรือไฟล์ที่มีขนาดเล็กลง")
+                                else:
+                                    st.session_state[marker_key] = file_hash
+                                    new_img = QuestionImage(
+                                        source="manual_upload",
+                                        url=None,
+                                        data=processed,
+                                        mime_type=out_mime,
+                                        width=size[0] if size else None,
+                                        height=size[1] if size else None,
+                                        status=status,
+                                    )
+                                    manual_images[entry_id] = new_img
+                                    st.session_state["manual_images"] = manual_images
+                                    q.images = [img for img in q.images if img.source != "manual_upload"]
+                                    q.images.append(new_img)
+                                    st.success(
+                                        f"✅ อัปโหลดรูปข้อ {idx} สำเร็จ! กดปุ่ม '🔄 วิเคราะห์ข้อนี้ใหม่' ด้านบนเพื่อให้ AI ใช้รูปนี้"
+                                    )
+                                    st.rerun()
+
             if not ai_has_answer:
                 st.markdown(
                     '<div style="background:#3a1414;border:1px solid #ff6b6b;border-radius:8px;'
@@ -1482,6 +1537,13 @@ if "questions" in st.session_state:
                 st.markdown(f'<div class="reasoning-text">💡 {html_lib.escape(reasoning)}</div>', unsafe_allow_html=True)
 
             ans_key = f"ans_{entry_id}"
+
+            # สำคัญ: ต้อง seed ค่าเริ่มต้นจากคำตอบ AI เข้า session_state
+            # ก่อนที่ widget (key=ans_key) จะถูก render ครั้งแรก มิฉะนั้น
+            # st.radio/st.multiselect/st.text_input จะไม่มีค่าเริ่มต้นเลย
+            # (radio จะตกไปที่ index 0, text_input จะว่างเปล่า)
+            if ans_key not in st.session_state:
+                apply_ai_answer_to_state(q, ans_data)
 
             if q.choices:
                 if q.is_multi:
