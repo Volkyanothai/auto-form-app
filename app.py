@@ -1181,6 +1181,46 @@ def check_submit_success(response_text: str, status_code: int) -> Tuple[bool, Op
     return True, None
 
 
+def build_score_page_html(html: str, auto_reveal: bool = True) -> str:
+    """
+    ฉีดสคริปต์เล็กๆ เข้าไปในหน้ายืนยันของ Google ให้กดปุ่ม 'View score' / 'ดูคะแนน'
+    ให้อัตโนมัติทันทีที่โหลดหน้าเสร็จ (ปุ่มนี้เป็นแค่ toggle ของ Google ที่ทำงานฝั่ง client
+    อยู่แล้ว เราแค่จำลองการคลิกให้ ไม่ได้ไปยิง request เพิ่มเติมแต่อย่างใด)
+    """
+    if not html or not auto_reveal:
+        return html
+
+    script = """
+<script>
+(function () {
+    var TARGET_TEXTS = ["view score", "ดูคะแนน", "afficher le score", "voir le score"];
+    function norm(t) { return (t || "").trim().toLowerCase(); }
+    function findAndClick() {
+        var candidates = document.querySelectorAll(
+            'div[role="button"], span[role="button"], a, button, div, span'
+        );
+        for (var i = 0; i < candidates.length; i++) {
+            var el = candidates[i];
+            var txt = norm(el.textContent);
+            if (TARGET_TEXTS.indexOf(txt) !== -1) {
+                try { el.click(); return true; } catch (e) { /* ignore */ }
+            }
+        }
+        return false;
+    }
+    var tries = 0;
+    var timer = setInterval(function () {
+        tries++;
+        if (findAndClick() || tries > 20) clearInterval(timer);
+    }, 250);
+})();
+</script>
+"""
+    if "</body>" in html:
+        return html.replace("</body>", script + "</body>")
+    return html + script
+
+
 def submit_form(submit_url: str, payload: Dict[str, Any], max_retries: int = 2) -> Tuple[bool, str, Optional[str], Optional[str]]:
     """
     ส่งคำตอบไปยัง Google Form
@@ -1634,10 +1674,13 @@ if "questions" in st.session_state:
         st.markdown('<div class="glass-header">หน้ายืนยันการส่ง / คะแนน</div>', unsafe_allow_html=True)
         st.caption(
             "หน้านี้คือหน้ายืนยันจริงที่ Google ส่งกลับมาหลังส่งคำตอบ — ถ้าฟอร์มตั้งเป็นแบบทดสอบ "
-            "(quiz) และเปิด 'แสดงคะแนนทันที' ไว้ คะแนนจะแสดงอยู่ในหน้านี้เลย"
+            "(quiz) และเปิด 'แสดงคะแนนทันที' ไว้ ระบบจะกดปุ่ม 'View score' ให้อัตโนมัติเพื่อโชว์คะแนนเลย"
         )
-        show_score = st.toggle("📊 แสดงหน้ายืนยัน/คะแนน", value=True, key="show_score_toggle")
+        c1, c2 = st.columns(2)
+        show_score = c1.toggle("📊 แสดงหน้ายืนยัน/คะแนน", value=True, key="show_score_toggle")
+        auto_reveal = c2.toggle("⚡ กดปุ่ม 'View score' ให้อัตโนมัติ", value=True, key="auto_reveal_toggle")
         if show_score:
-            components.html(st.session_state["confirmation_html"], height=700, scrolling=True)
+            page_html = build_score_page_html(st.session_state["confirmation_html"], auto_reveal=auto_reveal)
+            components.html(page_html, height=800, scrolling=True)
         if st.session_state.get("confirmation_url"):
             st.link_button("🔗 เปิดหน้านี้ในแท็บใหม่", st.session_state["confirmation_url"], use_container_width=True)
