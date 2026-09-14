@@ -1229,7 +1229,15 @@ def build_score_page_html(html: str, base_url: Optional[str] = None, auto_reveal
 (function () {
     var TARGET_TEXTS = ["view score", "ดูคะแนน", "afficher le score", "voir le score"];
     function norm(t) { return (t || "").trim().toLowerCase(); }
-    function findAndClick() {
+    function findLinkHref(el) {
+        var node = el;
+        for (var depth = 0; node && depth < 4; depth++) {
+            if (node.tagName === "A" && node.getAttribute("href")) return node.getAttribute("href");
+            node = node.parentElement;
+        }
+        return null;
+    }
+    function findAndTrigger() {
         var selectors = ['[role="button"]', 'button', 'a', 'div', 'span'];
         for (var s = 0; s < selectors.length; s++) {
             var candidates = document.querySelectorAll(selectors[s]);
@@ -1237,6 +1245,15 @@ def build_score_page_html(html: str, base_url: Optional[str] = None, auto_reveal
                 var el = candidates[i];
                 var txt = norm(el.textContent);
                 if (TARGET_TEXTS.indexOf(txt) !== -1) {
+                    // ถ้าเป็นลิงก์จริง (มี href) ให้เปิดแท็บใหม่แทนการคลิกตรงๆ
+                    // เพราะ Google บางหน้าตั้ง target ให้ทะลุออกจาก iframe ไปแทนที่หน้าแอปเราทั้งหน้า
+                    var href = findLinkHref(el);
+                    if (href) {
+                        try {
+                            window.open(new URL(href, document.baseURI).href, "_blank");
+                            return true;
+                        } catch (e) { /* fall through to plain click */ }
+                    }
                     try { el.click(); return true; } catch (e) { /* ignore */ }
                 }
             }
@@ -1246,7 +1263,7 @@ def build_score_page_html(html: str, base_url: Optional[str] = None, auto_reveal
     var tries = 0;
     var timer = setInterval(function () {
         tries++;
-        if (findAndClick() || tries > 24) clearInterval(timer);
+        if (findAndTrigger() || tries > 24) clearInterval(timer);
     }, 250);
 })();
 </script>
@@ -1708,10 +1725,10 @@ if "questions" in st.session_state:
         st.divider()
         st.markdown('<div class="glass-header">หน้ายืนยันการส่ง / คะแนน</div>', unsafe_allow_html=True)
         st.caption(
-            "ระบบจะพยายามกดปุ่ม 'View score' ให้อัตโนมัติในหน้าที่ฝังไว้ด้านล่าง — แต่เนื่องจาก "
-            "เป็นการฝังหน้าของ Google ข้ามโดเมน บางครั้งสคริปต์ของ Google อาจโหลดไม่สมบูรณ์ "
-            "ถ้ากดแล้วหน้ายังไม่เปลี่ยน ให้กดปุ่ม '🔗 เปิดหน้านี้ในแท็บใหม่' ด้านล่างแทน "
-            "(เป็นหน้าเดียวกันแต่เปิดตรงๆ ไม่ผ่านการฝัง จะกด View score เองได้ชัวร์กว่า)"
+            "ระบบจะพยายามกดปุ่ม 'View score' ให้อัตโนมัติในหน้าที่ฝังไว้ด้านล่าง — ถ้าปุ่มนั้นเป็นลิงก์ "
+            "ที่ปกติจะพาออกจากหน้าไปเว็บคะแนนของ Google (ทำให้แอปนี้หายไปทั้งหน้า) ระบบจะเปิดมันเป็น "
+            "แท็บใหม่ให้แทน เพื่อไม่ให้หน้าแอปของคุณหายไป — ถ้าเบราว์เซอร์บล็อก pop-up ให้อนุญาตแท็บ "
+            "ที่เด้งขึ้นมา หรือกดปุ่ม '🔗 เปิดหน้านี้ในแท็บใหม่' ด้านล่างแทนได้เลย"
         )
         c1, c2 = st.columns(2)
         show_score = c1.toggle("📊 แสดงหน้ายืนยัน/คะแนน", value=True, key="show_score_toggle")
