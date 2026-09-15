@@ -235,10 +235,13 @@ div[data-testid="stVerticalBlockBorderWrapper"]:active {
    - ::after วาดเส้นสแกนเรืองแสงไล่จากใต้แถบหัวลงล่างวนซ้ำ
    - ข้อความ status ทุกบรรทัดเปลี่ยนเป็น monospace เรืองแสงมี "> " นำหน้า
    - progress bar กลายเป็นบล็อกข้อมูลเรืองแสงแทนเส้นเรียบ
-   หมายเหตุ: testid ของ Streamlit (stStatusWidget, stMarkdownContainer,
-   stSpinner) อาจเปลี่ยนไปตามเวอร์ชัน ถ้าเอฟเฟกต์ไหนไม่ขึ้นให้ inspect
-   element แล้วส่ง class จริงมา จะปรับ selector ให้ตรงอีกที */
-[data-testid="stStatusWidget"] {
+   แก้บั๊กจากรอบก่อน: st.status() ของ Streamlit จริงๆ render ด้วย
+   data-testid="stExpander" (มันสร้างจากคอมโพเนนต์ expander ข้างใน) ส่วน
+   testid="stStatusWidget" ที่ใช้ผิดไปคือแถบ "กำลังรันสคริปต์" มุมขวาบน
+   ของแอป Streamlit เอง คนละตัวกันเลย เลยไม่มีอะไรเปลี่ยนสักจุด — ด้านล่าง
+   นี้แก้เป็น stExpander แล้ว แต่ถ้าแอปมี st.expander() จุดอื่นด้วย มันจะ
+   โดนสไตล์ terminal นี้ไปด้วย บอกได้ถ้าอยากให้แยกสไตล์เฉพาะจุดนี้จุดเดียว */
+[data-testid="stExpander"] {
     background: linear-gradient(160deg, #05080f 0%, #071019 100%) !important;
     border: 1px solid rgba(var(--teal-rgb),.35) !important;
     border-radius: 14px !important;
@@ -248,7 +251,7 @@ div[data-testid="stVerticalBlockBorderWrapper"]:active {
     box-shadow: 0 0 0 1px rgba(var(--teal-rgb),.08), 0 0 34px rgba(var(--teal-rgb),.18), 0 20px 50px rgba(0,0,0,.55);
     animation: termFlicker 5s infinite;
 }
-[data-testid="stStatusWidget"]::before {
+[data-testid="stExpander"]::before {
     content: "◉ ◉ ◉   ezexam_core.sys — decrypting";
     position: absolute;
     top: 0; left: 0; right: 0; height: 2rem;
@@ -263,7 +266,7 @@ div[data-testid="stVerticalBlockBorderWrapper"]:active {
     border-bottom: 1px solid rgba(var(--teal-rgb),.18);
     z-index: 2;
 }
-[data-testid="stStatusWidget"]::after {
+[data-testid="stExpander"]::after {
     content: "";
     position: absolute;
     left: 0; right: 0;
@@ -287,8 +290,9 @@ div[data-testid="stVerticalBlockBorderWrapper"]:active {
     97%   { filter: brightness(.88); }
     97.5% { filter: brightness(1.08); }
 }
-[data-testid="stStatusWidget"] [data-testid="stMarkdownContainer"] p,
-[data-testid="stStatusWidget"] label p {
+[data-testid="stExpander"] [data-testid="stMarkdownContainer"] p,
+[data-testid="stExpander"] label p,
+[data-testid="stExpander"] summary p {
     font-family: var(--mono) !important;
     font-size: .82rem;
     letter-spacing: .01em;
@@ -298,13 +302,13 @@ div[data-testid="stVerticalBlockBorderWrapper"]:active {
     position: relative;
     z-index: 1;
 }
-[data-testid="stStatusWidget"] [data-testid="stMarkdownContainer"] p::before {
+[data-testid="stExpander"] [data-testid="stMarkdownContainer"] p::before {
     content: "> ";
     color: var(--gold);
     font-weight: 700;
     text-shadow: 0 0 8px rgba(var(--gold-rgb),.5);
 }
-[data-testid="stStatusWidget"] [data-testid="stSpinner"] svg {
+[data-testid="stExpander"] svg {
     color: var(--teal) !important;
     filter: drop-shadow(0 0 6px rgba(var(--teal-rgb),.85));
 }
@@ -355,7 +359,6 @@ div.stButton>button:focus-visible{outline:2px solid var(--blue-soft);outline-off
 
 /* ═══ OTHERS ═══ */
 [data-testid="stMetric"]{background:rgba(var(--blue-rgb),.06);border:1px solid var(--glass-border);border-radius:12px;padding:.6rem;}
-[data-testid="stExpander"]{background:rgba(10,20,44,.5);border:1px solid rgba(140,175,255,.13);border-radius:13px;}
 .section-title{position:relative;padding-left:14px;font-size:1.28rem;font-weight:700;color:var(--ink);margin:2rem 0 1rem;}
 .section-title::before{content:"";position:absolute;left:0;top:.2em;bottom:.2em;width:4px;border-radius:99px;background:linear-gradient(180deg,var(--blue),var(--gold));box-shadow:0 0 11px rgba(var(--blue-rgb),.5);}
 .stRadio label span{color:var(--ink);}
