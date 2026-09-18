@@ -619,7 +619,10 @@ def check_personal_info(
     # list and are sent to Gemini. Keep the patterns narrow to avoid treating
     # questions such as "ชื่อเมืองหลวง..." as personal data.
     name_field = bool(re.fullmatch(
-        r"(?:กรอก\s*)?(?:ชื่อ|ชื่อ\s*[-–/]?\s*นามสกุล|ชื่อผู้ตอบ|ชื่อผู้ทำแบบทดสอบ|ชื่อนักเรียน|name|full\s*name)\s*",
+        r"(?:กรอก\s*)?(?:"
+        r"ชื่อ(?:จริง)?\s*(?:(?:[-–/]|และ)\s*)?(?:นามสกุล|สกุล)?"
+        r"|ชื่อผู้ตอบ|ชื่อผู้ทำแบบทดสอบ|ชื่อนักเรียน|name|full\s*name"
+        r")\s*",
         field_title,
     ))
     student_id_field = bool(re.fullmatch(
@@ -1846,6 +1849,18 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                         warn_msg = f"⚠️ มี {qi_stat - qr_stat} ข้อที่ดึงรูปอัตโนมัติไม่ได้ — เลื่อนลงไปอัปโหลดรูปเองได้ที่ด้านล่างหลังวิเคราะห์เสร็จ"
                         parse_logs.append(warn_msg)
                         st.warning(warn_msg)
+                else:
+                    hinted_image_questions = sum(
+                        1 for question in questions
+                        if "รูป" in question.title or "ภาพ" in question.title
+                    )
+                    if hinted_image_questions:
+                        warn_msg = (
+                            f"⚠️ พบข้อความที่น่าจะอ้างถึงรูป {hinted_image_questions} ข้อ "
+                            "แต่ดึงรูปอัตโนมัติไม่ได้ — สามารถแนบรูปให้แต่ละข้อในหน้า Review ได้"
+                        )
+                        parse_logs.append(warn_msg)
+                        st.warning(warn_msg)
 
                 st.write(f"🤖 AI กำลังวิเคราะห์ {len(questions)} ข้อ...")
                 bar = st.progress(0.0)
@@ -2039,11 +2054,15 @@ if "questions" in st.session_state:
                     st.rerun()
 
             looks_like_image_q = bool(all_question_images) or ("รูป" in q.title or "ภาพ" in q.title)
-            if looks_like_image_q:
+            # เปิด fallback ให้ทุกข้อเสมอ เพราะบางฟอร์มใช้รูปเป็นโจทย์โดยที่
+            # ชื่อคำถามไม่มีคำว่า "รูป/ภาพ" และ Google อาจซ่อน URL ไว้หลัง JS
+            # จนตรวจอัตโนมัติไม่พบ โดยค่าเริ่มต้นยังพับไว้จึงไม่รบกวนหน้า Review
+            offer_manual_image_upload = True
+            if offer_manual_image_upload:
                 with st.expander(
                     ("📎 เพิ่มรูปเอง" if not has_ready_image else "📎 เปลี่ยน/เพิ่มรูปเอง")
                     + f" — ข้อ {idx}",
-                    expanded=not has_ready_image,
+                    expanded=looks_like_image_q and not has_ready_image,
                 ):
                     uploaded = st.file_uploader(
                         "เลือกไฟล์รูปภาพ (jpg, jpeg, png, webp)",
