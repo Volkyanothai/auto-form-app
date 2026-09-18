@@ -31,7 +31,11 @@ from urllib.parse import urlsplit
 from google import genai
 from google.genai import types
 
-from analysis_validation import AI_RESPONSE_SCHEMA, normalize_model_answers
+from analysis_validation import (
+    AI_RESPONSE_SCHEMA,
+    build_balanced_batches,
+    normalize_model_answers,
+)
 from style import inject_css, render_header
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -54,11 +58,11 @@ TYPE_DROPDOWN = 3
 TYPE_TEXT = 0
 TYPE_PARAGRAPH = 1
 
-CHUNK_SIZE = 3
 MAX_PARALLEL_WORKERS = 2
-MAX_MODEL_ATTEMPTS = 2
 MAX_REPAIR_ATTEMPTS = 1
-BACKOFF_SEC = [3, 6]
+MAX_ROUTE_ATTEMPTS = 2
+MAX_IMAGE_WORKERS = 6
+ANALYSIS_TIMEOUT_MS = 30_000
 SUBMIT_TIMEOUT = 30
 IMAGE_TIMEOUT = 10
 MAX_IMAGE_DIM = 1024
@@ -67,16 +71,8 @@ MAX_IMAGE_FILE_SIZE = 4 * 1024 * 1024
 JPEG_QUALITY = 82
 
 MODEL_CANDIDATES: List[str] = [
-    "gemini-flash-latest",
-    "gemini-3.6-flash",
-    "gemini-3.5-flash",
+    "gemini-3.8-flash",
     "gemini-2.5-flash",
-    "gemini-3-flash-preview",
-    "gemini-2.0-flash",
-    "gemini-flash-lite-latest",
-    "gemini-2.5-pro",
-    "gemini-1.5-flash",
-    "gemini-1.5-pro",
 ]
 
 DEAD_KEY_SIGNALS = [
@@ -596,6 +592,7 @@ def parse_form(
 
     questions: List[Question] = []
     personal_data_map: Dict[str, Tuple[str, str, str]] = {}
+    image_jobs: List[Tuple[int, Any, Dict[int, int]]] = []
 
     pages_meta = [{"own_id": None, "next_raw": None}]
     page_id_to_index: Dict[Any, int] = {}
@@ -649,13 +646,6 @@ def parse_form(
             personal_data_map[entry_id] = p_info
             continue
 
-        q_images, raw_choice_images = extract_images_from_entry(item)
-        c_images = {
-            choice_index_map[raw_index]: images
-            for raw_index, images in raw_choice_images.items()
-            if raw_index in choice_index_map
-        }
-
         branch_map: Dict[str, int] = {}
         if choices_raw and isinstance(choices_raw, list):
             for c in choices_raw:
@@ -665,6 +655,7 @@ def parse_form(
                     elif c[2] in page_id_to_index:
                         branch_map[str(c[0])] = page_id_to_index[c[2]]
 
+        question_index = len(questions)
         questions.append(Question(
             entry_id=entry_id,
             title=full_title,
@@ -673,11 +664,41 @@ def parse_form(
             is_multi=is_multi,
             is_required=is_required,
             page_index=current_page,
-            images=q_images,
+            images=[],
             branch_map=branch_map,
-            choice_images=c_images,
+            choice_images={},
             q_type=q_type,
         ))
+        image_jobs.append((question_index, item, choice_index_map))
+
+    # การดาวน์โหลดรูปเป็นงาน I/O จึงทำพร้อมกันได้อย่างปลอดภัย การทำทีละข้อ
+    # ทำให้ฟอร์มที่มีรูปเสียเวลา timeout สะสมทีละ 10 วินาที
+    if image_jobs:
+        image_workers = min(MAX_IMAGE_WORKERS, len(image_jobs))
+        with ThreadPoolExecutor(max_workers=image_workers) as image_pool:
+            futures = {
+                image_pool.submit(extract_images_from_entry, item): (
+                    question_index,
+                    choice_index_map,
+                )
+                for question_index, item, choice_index_map in image_jobs
+            }
+            for future in as_completed(futures):
+                question_index, choice_index_map = futures[future]
+                try:
+                    q_images, raw_choice_images = future.result()
+                    questions[question_index].images = q_images
+                    questions[question_index].choice_images = {
+                        choice_index_map[raw_index]: images
+                        for raw_index, images in raw_choice_images.items()
+                        if raw_index in choice_index_map
+                    }
+                except Exception as e:
+                    logger.warning(
+                        "โหลดรูปของคำถาม %s ไม่สำเร็จ: %s",
+                        questions[question_index].entry_id,
+                        e,
+                    )
 
     default_next: List[int] = []
     for i, meta in enumerate(pages_meta):
@@ -750,77 +771,12 @@ def is_quota_or_transient_error(msg: str) -> bool:
     return False
 
 
-def verify_model_works(api_key: str, model_name: str) -> Tuple[bool, str]:
-    try:
-        client = genai.Client(api_key=api_key)
-        client.models.generate_content(
-            model=model_name,
-            contents=[types.Part.from_text(text="ping")],
-            config=types.GenerateContentConfig(max_output_tokens=5),
-        )
-        return True, "ok"
-    except Exception as e:
-        msg = str(e)
-        msg_l = msg.lower()
-        model_bad_signals = [
-            "404", "not_found", "no longer available", "not supported",
-            "does not exist", "is not found", "unsupported model",
-        ]
-        if is_dead_key_error(msg_l):
-            return False, "key_dead"
-        if any(s in msg_l for s in model_bad_signals):
-            return False, "model_bad"
-        return False, "transient_error"
-
-
-@st.cache_resource(ttl=1800, show_spinner=False)
-def pick_model_and_healthy_keys(keys: Tuple[str, ...]) -> Tuple[Optional[str], List[str], List[str]]:
-    logs: List[str] = []
-    if not keys:
-        return None, [], ["❌ ไม่มี API Key"]
-
-    chosen_model: Optional[str] = None
-    verified_key_index: Optional[int] = None
-
-    for model in MODEL_CANDIDATES:
-        for key_index, key in enumerate(keys):
-            ok, reason = verify_model_works(key, model)
-            if ok:
-                chosen_model = model
-                verified_key_index = key_index
-                break
-            # ถ้า model ไม่มีอยู่จริง การลองด้วย key อื่นจะไม่ช่วย
-            if reason == "model_bad":
-                break
-        if chosen_model:
-            break
-
-    if not chosen_model:
-        logs.append("❌ ไม่พบโมเดลที่ใช้งานได้เลยกับคีย์ใดๆ")
-        return None, [], logs
-
-    logs.append(f"✅ ใช้โมเดลหลัก: {chosen_model} (จะสลับโมเดลอื่นอัตโนมัติถ้าโควตาต่อวันหมด)")
-
-    healthy_keys: List[str] = []
-    for i, key in enumerate(keys):
-        if i == verified_key_index:
-            ok, reason = True, "ok"
-        else:
-            ok, reason = verify_model_works(key, chosen_model)
-        if ok:
-            healthy_keys.append(key)
-            logs.append(f"✅ Key #{i+1}: ใช้งานได้")
-        else:
-            if reason == "key_dead":
-                logs.append(f"⛔ Key #{i+1}: ถูกปฏิเสธการเข้าถึง — ตัดออกจากการใช้งาน")
-            else:
-                logs.append(f"⚠️ Key #{i+1}: ตรวจไม่ผ่าน ({reason})")
-
-    if not healthy_keys:
-        logs.append("❌ ไม่มีคีย์ใดใช้งานได้เลย")
-        return chosen_model, [], logs
-
-    return chosen_model, healthy_keys, logs
+def is_model_unavailable_error(msg: str) -> bool:
+    msg_l = msg.lower()
+    return any(s in msg_l for s in [
+        "404", "not_found", "no longer available", "not supported",
+        "does not exist", "is not found", "unsupported model",
+    ])
 
 
 def build_system_instruction(exam_context: str) -> str:
@@ -935,7 +891,10 @@ def call_gemini_chunk_with_key(
     chunk: List[Tuple[int, Question]],
     model_name: str,
 ) -> Dict[str, Any]:
-    client = genai.Client(api_key=api_key, http_options=types.HttpOptions(timeout=120000))
+    client = genai.Client(
+        api_key=api_key,
+        http_options=types.HttpOptions(timeout=ANALYSIS_TIMEOUT_MS),
+    )
 
     contents: List[types.Part] = []
     for idx, q in chunk:
@@ -983,30 +942,20 @@ def try_key_model(
     chunk: List[Tuple[int, Question]],
     model_name: str,
 ) -> Tuple[str, Any]:
-    last_err: Optional[Exception] = None
-    for attempt in range(MAX_MODEL_ATTEMPTS):
-        try:
-            data = call_gemini_chunk_with_key(api_key, exam_context, chunk, model_name)
-            return "ok", data
-        except Exception as err:
-            msg = str(err)
-            last_err = err
-
-            if is_dead_key_error(msg):
-                return "key_dead", err
-
-            if is_daily_quota_error(msg):
-                return "daily_exhausted", err
-
-            if is_quota_or_transient_error(msg):
-                if attempt < MAX_MODEL_ATTEMPTS - 1:
-                    time.sleep(BACKOFF_SEC[min(attempt, len(BACKOFF_SEC) - 1)])
-                    continue
-                return "transient_fail", err
-
-            return "other_fail", err
-
-    return "transient_fail", last_err
+    try:
+        data = call_gemini_chunk_with_key(api_key, exam_context, chunk, model_name)
+        return "ok", data
+    except Exception as err:
+        msg = str(err)
+        if is_dead_key_error(msg):
+            return "key_dead", err
+        if is_daily_quota_error(msg):
+            return "daily_exhausted", err
+        if is_model_unavailable_error(msg):
+            return "model_bad", err
+        if is_quota_or_transient_error(msg):
+            return "transient_fail", err
+        return "other_fail", err
 
 
 def call_gemini_chunk(
@@ -1019,9 +968,11 @@ def call_gemini_chunk(
     bad_keys_lock: threading.Lock,
     exhausted: set,
     exhausted_lock: threading.Lock,
+    max_route_attempts: int = MAX_ROUTE_ATTEMPTS,
 ) -> Tuple[Dict[str, Any], str]:
     n = len(keys)
     last_err: Optional[Exception] = None
+    routes_tried = 0
 
     for offset in range(n):
         key_idx = (start_key_idx + offset) % n
@@ -1032,10 +983,13 @@ def call_gemini_chunk(
                 continue
 
         for model_name in model_candidates:
+            if routes_tried >= max_route_attempts:
+                break
             with exhausted_lock:
                 if (key, model_name) in exhausted:
                     continue
 
+            routes_tried += 1
             status, result = try_key_model(key, exam_context, chunk, model_name)
 
             if status == "ok":
@@ -1053,10 +1007,29 @@ def call_gemini_chunk(
                 last_err = result
                 continue
 
+            if status == "model_bad":
+                last_err = result
+                continue
+
             last_err = result
             continue
 
+        if routes_tried >= max_route_attempts:
+            break
+
     raise last_err or RuntimeError("ไม่มีคีย์/โมเดลใดใช้งานได้เลย (โควตาอาจหมดหมดทุกทางแล้ว)")
+
+
+def _ready_image_count(item: Tuple[int, Question]) -> int:
+    _, question = item
+    question_images = sum(1 for image in question.images if image.is_ready())
+    choice_images = sum(
+        1
+        for images in question.choice_images.values()
+        for image in images
+        if image.is_ready()
+    )
+    return question_images + choice_images
 
 
 def analyze_all(
@@ -1066,7 +1039,7 @@ def analyze_all(
     progress_cb=None,
 ) -> Tuple[Dict[str, Any], List[str], List[str]]:
     indexed = list(enumerate(questions, 1))
-    chunks = [indexed[i:i + CHUNK_SIZE] for i in range(0, len(indexed), CHUNK_SIZE)]
+    chunks = build_balanced_batches(indexed, _ready_image_count)
     results: Dict[str, Any] = {}
     errors: List[str] = []
     first_pass_errors: List[str] = []
@@ -1074,106 +1047,114 @@ def analyze_all(
 
     if not chunks:
         return results, errors, debug_logs
+    if not keys:
+        return results, ["ไม่มี API Key ที่ใช้งานได้"], ["❌ ไม่มี API Key"]
 
-    model_name, healthy_keys, health_logs = pick_model_and_healthy_keys(tuple(keys))
-    debug_logs.extend(health_logs)
-
-    if not model_name or not healthy_keys:
-        errors.append("ไม่พบโมเดล/คีย์ที่ใช้งานได้เลย (API Key ถูกปฏิเสธการเข้าถึง)")
-        return results, errors, debug_logs
-
-    model_order = [model_name] + [m for m in MODEL_CANDIDATES if m != model_name]
+    # ไม่ยิง ping ตรวจโมเดลล่วงหน้า เพราะเท่ากับเพิ่ม API call และ latency
+    # ทุกครั้งโดยไม่ช่วยวิเคราะห์คำถามจริง การเรียกงานจริงด้านล่างจะเป็นตัวตรวจเอง
+    debug_logs.append(
+        f"⚡ แบ่ง {len(indexed)} ข้อเป็น {len(chunks)} ชุด "
+        f"(โมเดลหลัก: {MODEL_CANDIDATES[0]})"
+    )
 
     bad_keys: set = set()
     bad_keys_lock = threading.Lock()
     exhausted: set = set()
     exhausted_lock = threading.Lock()
 
-    workers = min(MAX_PARALLEL_WORKERS, len(healthy_keys), len(chunks))
+    def run_chunks(
+        chunk_set: List[List[Tuple[int, Question]]],
+        phase: str,
+        report_progress: bool = False,
+        route_limit: int = MAX_ROUTE_ATTEMPTS,
+    ) -> Tuple[Dict[str, Any], List[str], set]:
+        phase_results: Dict[str, Any] = {}
+        phase_errors: List[str] = []
+        completed_entry_ids: set = set()
+        if not chunk_set:
+            return phase_results, phase_errors, completed_entry_ids
 
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = {
-            pool.submit(
-                call_gemini_chunk,
-                healthy_keys,
-                i % len(healthy_keys),
-                exam_context,
-                chunk,
-                model_order,
-                bad_keys,
-                bad_keys_lock,
-                exhausted,
-                exhausted_lock,
-            ): i
-            for i, chunk in enumerate(chunks)
-        }
-
-        done = 0
-        for fut in as_completed(futures):
-            chunk_idx = futures[fut]
-            done += 1
-            if progress_cb:
-                progress_cb(done, len(chunks))
-
-            try:
-                chunk_result, used_model = fut.result()
-                if isinstance(chunk_result, dict):
-                    results.update(chunk_result)
-                    tag = f" (โมเดล: {used_model})" if used_model != model_name else ""
-                    debug_logs.append(f"✅ Chunk {chunk_idx+1}/{len(chunks)}: ได้ {len(chunk_result)} ข้อ{tag}")
-                else:
-                    errors.append("ผลลัพธ์จาก AI ไม่ถูกต้อง")
-                    debug_logs.append(f"❌ Chunk {chunk_idx+1}/{len(chunks)}: ผลลัพธ์ไม่ใช่ dict")
-            except Exception as e:
-                err_msg = f"Chunk {chunk_idx+1}/{len(chunks)} error: {str(e)}"
-                first_pass_errors.append(str(e))
-                debug_logs.append(f"❌ {err_msg}")
-
-    # โมเดลอาจส่ง JSON ที่ถูกต้องแต่ตอบมาไม่ครบ หรือให้คำตอบที่ไม่ตรงกับ
-    # ตัวเลือกจนถูก validation ตัดทิ้ง ลองซ่อมเฉพาะข้อเหล่านั้นทีละข้อเพื่อไม่
-    # ต้องวิเคราะห์ทั้งฟอร์มใหม่และไม่ทำให้คำตอบข้อที่ดีอยู่แล้วเปลี่ยนตามไปด้วย
-    for repair_attempt in range(MAX_REPAIR_ATTEMPTS):
-        missing = [
-            (idx, q)
-            for idx, q in indexed
-            if q.entry_id not in results or not results[q.entry_id].get("answer")
-        ]
-        if not missing:
-            break
-
-        debug_logs.append(
-            f"🔧 ซ่อมคำตอบที่ตกหล่น/ไม่ตรงตัวเลือก {len(missing)} ข้อ "
-            f"(รอบ {repair_attempt + 1}/{MAX_REPAIR_ATTEMPTS})"
-        )
-        repair_workers = min(MAX_PARALLEL_WORKERS, len(healthy_keys), len(missing))
-        with ThreadPoolExecutor(max_workers=repair_workers) as repair_pool:
-            repair_futures = {
-                repair_pool.submit(
+        # API limits are project-based, not key-count-based. Two workers keep
+        # throughput useful without serialising users who configure one key.
+        workers = min(MAX_PARALLEL_WORKERS, len(chunk_set))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {
+                pool.submit(
                     call_gemini_chunk,
-                    healthy_keys,
-                    i % len(healthy_keys),
+                    keys,
+                    chunk_index % len(keys),
                     exam_context,
-                    [question_item],
-                    model_order,
+                    chunk,
+                    MODEL_CANDIDATES,
                     bad_keys,
                     bad_keys_lock,
                     exhausted,
                     exhausted_lock,
-                ): question_item
-                for i, question_item in enumerate(missing)
+                    route_limit,
+                ): chunk_index
+                for chunk_index, chunk in enumerate(chunk_set)
             }
 
-            for future in as_completed(repair_futures):
-                idx, question = repair_futures[future]
+            done = 0
+            for future in as_completed(futures):
+                chunk_index = futures[future]
+                done += 1
+                if report_progress and progress_cb:
+                    progress_cb(done, len(chunk_set))
                 try:
-                    repaired, used_model = future.result()
-                    if repaired.get(question.entry_id, {}).get("answer"):
-                        results[question.entry_id] = repaired[question.entry_id]
-                        debug_logs.append(
-                            f"✅ ซ่อมข้อ {idx} สำเร็จ (โมเดล: {used_model})"
-                        )
+                    chunk_result, used_model = future.result()
+                    phase_results.update(chunk_result)
+                    completed_entry_ids.update(
+                        question.entry_id
+                        for _, question in chunk_set[chunk_index]
+                    )
+                    fallback = " (fallback)" if used_model != MODEL_CANDIDATES[0] else ""
+                    debug_logs.append(
+                        f"✅ {phase} {chunk_index + 1}/{len(chunk_set)}: "
+                        f"ได้ {len(chunk_result)} ข้อ — {used_model}{fallback}"
+                    )
                 except Exception as e:
-                    debug_logs.append(f"❌ ซ่อมข้อ {idx} ไม่สำเร็จ: {str(e)}")
+                    phase_errors.append(str(e))
+                    debug_logs.append(
+                        f"❌ {phase} {chunk_index + 1}/{len(chunk_set)}: {str(e)}"
+                    )
+        return phase_results, phase_errors, completed_entry_ids
+
+    first_results, first_pass_errors, completed_entry_ids = run_chunks(
+        chunks,
+        phase="ชุดหลัก",
+        report_progress=True,
+    )
+    results.update(first_results)
+
+    # ซ่อมเป็นกลุ่มด้วยกติกา batching เดียวกัน ไม่เรียก API ทีละข้อ
+    for repair_attempt in range(MAX_REPAIR_ATTEMPTS):
+        missing = [
+            item
+            for item in indexed
+            if item[1].entry_id in completed_entry_ids
+            and (
+                item[1].entry_id not in results
+                or not results[item[1].entry_id].get("answer")
+            )
+        ]
+        if not missing:
+            break
+
+        repair_chunks = build_balanced_batches(missing, _ready_image_count)
+        debug_logs.append(
+            f"🔧 ซ่อม {len(missing)} ข้อเป็น {len(repair_chunks)} ชุด "
+            f"(รอบ {repair_attempt + 1}/{MAX_REPAIR_ATTEMPTS})"
+        )
+        repaired, repair_errors, _ = run_chunks(
+            repair_chunks,
+            phase="ชุดซ่อม",
+            route_limit=1,
+        )
+        for entry_id, answer in repaired.items():
+            if answer.get("answer"):
+                results[entry_id] = answer
+        first_pass_errors.extend(repair_errors)
 
     unresolved = [
         (idx, q)
@@ -1191,17 +1172,11 @@ def analyze_all(
         debug_logs.append("✅ ระบบซ่อมคำตอบที่ล้มเหลวในรอบแรกได้ครบแล้ว")
 
     if bad_keys:
-        debug_logs.append(f"⛔ พบคีย์ตายระหว่างทำงานเพิ่ม {len(bad_keys)} ตัว (ถูกตัดออกจากการใช้งานแล้ว)")
-
+        debug_logs.append(f"⛔ ตัด API Key ที่ใช้ไม่ได้ออก {len(bad_keys)} ตัว")
     if exhausted:
-        exhausted_models = sorted(set(m for _, m in exhausted))
-        debug_logs.append(f"🔁 โควตาต่อวันหมดสำหรับบางคู่ (คีย์,โมเดล) — สลับไปโมเดลอื่นแล้ว ({', '.join(exhausted_models)})")
-
-    all_combo_exhausted = len(exhausted) >= len(healthy_keys) * len(model_order)
-    if all_combo_exhausted and results == {}:
+        exhausted_models = sorted({model for _, model in exhausted})
         debug_logs.append(
-            "🛑 โควตาฟรีต่อวันหมดสำหรับ 'ทุกคีย์ x ทุกโมเดล' แล้ว "
-            "ต้องรอถึงเที่ยงคืนตามเวลา Pacific Time หรือเพิ่ม API Key ที่ใช้งานได้ หรือเปิด Billing"
+            f"⚠️ โควตาบางโมเดลไม่พร้อม: {', '.join(exhausted_models)}"
         )
 
     return results, errors, debug_logs
@@ -1608,33 +1583,28 @@ if "questions" in st.session_state:
                 if any(img.is_ready() for img in q.images):
                     if st.button(f"🔄 วิเคราะห์ข้อ {idx} นี้ใหม่ (ใช้รูปล่าสุด)", key=f"reanalyze_{entry_id}"):
                         with st.spinner("AI กำลังวิเคราะห์ข้อนี้..."):
-                            model_name, healthy_keys, _logs = pick_model_and_healthy_keys(tuple(api_keys))
-                            if not model_name or not healthy_keys:
-                                st.error("ไม่มีโมเดล/คีย์ที่ใช้งานได้ในขณะนี้")
-                            else:
-                                model_order = [model_name] + [m for m in MODEL_CANDIDATES if m != model_name]
-                                bad_keys_local: set = set()
-                                exhausted_local: set = set()
-                                lock_local = threading.Lock()
-                                try:
-                                    result, used_model = call_gemini_chunk(
-                                        healthy_keys, 0,
-                                        st.session_state.get("exam_context", exam_context),
-                                        [(idx, q)], model_order,
-                                        bad_keys_local, lock_local,
-                                        exhausted_local, lock_local,
-                                    )
-                                    if entry_id in result:
-                                        ai_answers[entry_id] = result[entry_id]
-                                        st.session_state["ai_answers"] = ai_answers
-                                        # สำคัญ: ต้องเซ็ต widget state ตรงๆ ไม่งั้นหน้าจอจะไม่อัปเดต
-                                        # (ดูคำอธิบายเต็มในฟังก์ชัน apply_ai_answer_to_state)
-                                        apply_ai_answer_to_state(q, result[entry_id])
-                                        st.success(f"✅ วิเคราะห์สำเร็จ (โมเดล: {used_model}) — คำตอบอัปเดตแล้ว")
-                                    else:
-                                        st.warning("AI ไม่ได้ตอบข้อนี้ ลองใหม่อีกครั้ง")
-                                except Exception as e:
-                                    st.error(f"เกิดข้อผิดพลาด: {e}")
+                            bad_keys_local: set = set()
+                            exhausted_local: set = set()
+                            lock_local = threading.Lock()
+                            try:
+                                result, used_model = call_gemini_chunk(
+                                    api_keys, 0,
+                                    st.session_state.get("exam_context", exam_context),
+                                    [(idx, q)], MODEL_CANDIDATES,
+                                    bad_keys_local, lock_local,
+                                    exhausted_local, lock_local,
+                                )
+                                if entry_id in result:
+                                    ai_answers[entry_id] = result[entry_id]
+                                    st.session_state["ai_answers"] = ai_answers
+                                    # สำคัญ: ต้องเซ็ต widget state ตรงๆ ไม่งั้นหน้าจอจะไม่อัปเดต
+                                    # (ดูคำอธิบายเต็มในฟังก์ชัน apply_ai_answer_to_state)
+                                    apply_ai_answer_to_state(q, result[entry_id])
+                                    st.success(f"✅ วิเคราะห์สำเร็จ (โมเดล: {used_model}) — คำตอบอัปเดตแล้ว")
+                                else:
+                                    st.warning("AI ไม่ได้ตอบข้อนี้ ลองใหม่อีกครั้ง")
+                            except Exception as e:
+                                st.error(f"เกิดข้อผิดพลาด: {e}")
                         st.rerun()
 
             has_ready_image = any(img.is_ready() for img in q.images)
