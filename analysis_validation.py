@@ -193,6 +193,82 @@ def build_balanced_batches(
     return batches
 
 
+def answers_equivalent(left: Any, right: Any) -> bool:
+    """Compare normalized single/multi answers without depending on order."""
+    left_values = left if isinstance(left, list) else ([left] if left else [])
+    right_values = right if isinstance(right, list) else ([right] if right else [])
+    left_normalized = sorted({_canonical_text(value) for value in left_values if str(value).strip()})
+    right_normalized = sorted({_canonical_text(value) for value in right_values if str(value).strip()})
+    return left_normalized == right_normalized
+
+
+def should_verify_answer(
+    title: str,
+    answer: Any,
+    confidence: int,
+    *,
+    has_images: bool = False,
+    is_multi: bool = False,
+) -> bool:
+    """Select only answers whose expected accuracy benefits from a second pass."""
+    if not answer:
+        return False
+    if has_images or is_multi or int(confidence or 0) < 80:
+        return True
+    risky_markers = (
+        "ไม่ถูก", "ไม่ใช่", "ยกเว้น", "ผิด", "ถูกทุกข้อ", "ถูกกี่ข้อ",
+        "เลือกได้หลาย", "จากภาพ", "จากรูป", "แผนภาพ", "กราฟ", "ตาราง",
+        "คำนวณ", "จงหา", "สมการ", "ข้อใดกล่าว",
+        "except", "incorrect", "not true", "diagram", "graph", "calculate",
+    )
+    folded = _canonical_text(title)
+    return any(marker in folded for marker in risky_markers)
+
+
+def merge_verification_result(
+    original: Mapping[str, Any],
+    candidate: Mapping[str, Any] | None,
+    *,
+    revision_threshold: int = 85,
+) -> Dict[str, Any]:
+    """Merge a verifier result without ever losing a usable first answer.
+
+    An agreement increases confidence, a high-confidence disagreement replaces
+    the answer while retaining the original, and every uncertain/failing path
+    keeps the first-pass answer intact.
+    """
+    merged = dict(original)
+    candidate = candidate if isinstance(candidate, Mapping) else {}
+    candidate_answer = candidate.get("answer")
+
+    if not candidate_answer:
+        merged["verification"] = "failed"
+        return merged
+
+    merged["verification_reasoning"] = candidate.get("reasoning", "")
+    if answers_equivalent(merged.get("answer"), candidate_answer):
+        merged["verification"] = "verified"
+        merged["confidence"] = max(
+            int(merged.get("confidence", 0) or 0),
+            int(candidate.get("confidence", 0) or 0),
+        )
+        return merged
+
+    candidate_confidence = int(candidate.get("confidence", 0) or 0)
+    if candidate_confidence >= revision_threshold:
+        initial_answer = merged.get("answer")
+        merged["answer"] = candidate_answer
+        merged["confidence"] = candidate_confidence
+        merged["reasoning"] = candidate.get("reasoning", merged.get("reasoning", ""))
+        merged["verification"] = "revised"
+        merged["initial_answer"] = initial_answer
+        return merged
+
+    merged["verification"] = "conflict"
+    merged["verification_candidate"] = candidate_answer
+    return merged
+
+
 def normalize_model_answers(
     data: Mapping[str, Any],
     expected: Mapping[str, Mapping[str, Any]],

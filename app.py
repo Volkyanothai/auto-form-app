@@ -21,7 +21,7 @@ import threading
 import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, TypeVar, Union
 
 import requests
@@ -31,7 +31,19 @@ from urllib.parse import urlsplit
 from google import genai
 from google.genai import types
 
-from analysis_validation import AI_RESPONSE_SCHEMA, normalize_model_answers
+from analysis_validation import (
+    AI_RESPONSE_SCHEMA,
+    merge_verification_result,
+    normalize_model_answers,
+    should_verify_answer,
+)
+from form_media import (
+    RenderedImageRef,
+    extract_rendered_image_refs,
+    is_trusted_google_form_image_url,
+    split_item_image_refs,
+    upgrade_google_form_image_url,
+)
 
 try:
     from analysis_validation import build_balanced_batches
@@ -91,6 +103,7 @@ TYPE_MULTIPLE_CHOICE = 2
 TYPE_DROPDOWN = 3
 TYPE_TEXT = 0
 TYPE_PARAGRAPH = 1
+TYPE_IMAGE = 11
 
 MAX_PARALLEL_WORKERS = 2
 MAX_REPAIR_ATTEMPTS = 1
@@ -123,7 +136,8 @@ DEAD_KEY_SIGNALS = [
 BASE64_IMG_RE = re.compile(r'data:image/(?P<mime>[\w+]+);base64,(?P<data>[A-Za-z0-9+/=]+)')
 
 GOOGLE_IMG_URL_RE = re.compile(
-    r'https?://[a-zA-Z0-9.-]*(?:googleusercontent|ggpht)\.com/[^\s"\'\\<>]+'
+    r'https://(?:[a-zA-Z0-9.-]*(?:googleusercontent|ggpht)\.com/'
+    r'|docs\.google\.com/forms-images-rt/)[^\s"\'\\<>]+'
 )
 
 try:
@@ -179,6 +193,11 @@ class Question:
     branch_map: Dict[str, int] = field(default_factory=dict)
     choice_images: Dict[int, List[QuestionImage]] = field(default_factory=dict)
     q_type: int = TYPE_TEXT
+    form_title: str = ""
+    form_description: str = ""
+    section_title: str = ""
+    section_description: str = ""
+    context_notes: List[str] = field(default_factory=list)
 
 
 def safe_get(obj: Any, path: List[Union[int, str]], default: Any = None) -> Any:
@@ -215,9 +234,7 @@ def extract_base64_images(text: str) -> List[Tuple[str, bytes]]:
 
 
 def normalize_google_image_url(url: str) -> str:
-    url = url.rstrip('\\').rstrip('/')
-    base = re.sub(r'=(?:w\d+(?:-h\d+)?|h\d+|s\d+)(?:-[a-zA-Z]\w*)*$', '', url)
-    return base + '=s1024'
+    return upgrade_google_form_image_url(url, size=1600)
 
 
 def validate_image(raw_bytes: bytes) -> Tuple[bool, Optional[str], Optional[Tuple[int, int]]]:
@@ -308,25 +325,38 @@ def compress_image(
     return best_data, best_mime, status
 
 
-def process_image_from_url(url: Optional[str], raw_bytes: Optional[bytes] = None) -> QuestionImage:
+def process_image_from_url(
+    url: Optional[str],
+    raw_bytes: Optional[bytes] = None,
+    source: str = "question",
+) -> QuestionImage:
     if raw_bytes is None and url:
+        if not is_trusted_google_form_image_url(url):
+            return QuestionImage(
+                source=source, url=url, data=None, mime_type="image/jpeg",
+                status="failed", error="โดเมนรูปภาพไม่ได้รับอนุญาต",
+            )
         try:
-            r = requests.get(url, headers=UA, timeout=IMAGE_TIMEOUT)
-            if r.status_code == 200 and len(r.content) > 100:
+            headers = {**UA, "Referer": "https://docs.google.com/forms/"}
+            r = requests.get(url, headers=headers, timeout=IMAGE_TIMEOUT)
+            content_type = r.headers.get("content-type", "").lower()
+            if r.status_code == 200 and len(r.content) > 100 and (
+                content_type.startswith("image/") or not content_type
+            ):
                 raw_bytes = r.content
         except Exception:
             pass
 
     if raw_bytes is None:
         return QuestionImage(
-            source="question", url=url, data=None, mime_type="image/jpeg",
+            source=source, url=url, data=None, mime_type="image/jpeg",
             status="failed", error="ดาวน์โหลดรูปไม่ได้",
         )
 
     valid, fmt, size = validate_image(raw_bytes)
     if not valid:
         return QuestionImage(
-            source="question", url=url, data=None, mime_type="image/jpeg",
+            source=source, url=url, data=None, mime_type="image/jpeg",
             status="failed", error="ไฟล์ไม่ใช่รูปภาพ",
         )
 
@@ -335,24 +365,24 @@ def process_image_from_url(url: Optional[str], raw_bytes: Optional[bytes] = None
 
     if data is None:
         return QuestionImage(
-            source="question", url=url, data=None, mime_type="image/jpeg",
+            source=source, url=url, data=None, mime_type="image/jpeg",
             status="failed", error="บีบอัดรูปไม่ได้",
         )
 
     return QuestionImage(
-        source="question", url=url, data=data, mime_type=mime,
+        source=source, url=url, data=data, mime_type=mime,
         width=size[0] if size else None, height=size[1] if size else None,
         status=status,
     )
 
 
-def _download_google_image_url(raw_url: str) -> QuestionImage:
+def _download_google_image_url(raw_url: str, source: str = "question") -> QuestionImage:
     normalized = normalize_google_image_url(raw_url)
     for candidate in dict.fromkeys([normalized, raw_url]):
-        img = process_image_from_url(candidate)
+        img = process_image_from_url(candidate, source=source)
         if img.is_ready():
             return img
-    return process_image_from_url(raw_url)
+    return process_image_from_url(raw_url, source=source)
 
 
 def extract_images_from_entry(
@@ -422,11 +452,55 @@ def extract_images_from_entry(
     return question_images, choice_images
 
 
+def extract_images_for_question(
+    entry: Any,
+    choice_index_map: Dict[int, int],
+    rendered_question_refs: Sequence[RenderedImageRef],
+    rendered_choice_refs: Dict[int, List[RenderedImageRef]],
+    context_refs: Sequence[RenderedImageRef],
+) -> Tuple[List[QuestionImage], Dict[int, List[QuestionImage]]]:
+    """Combine legacy embedded images with URLs rendered in the responder DOM."""
+    question_images, raw_choice_images = extract_images_from_entry(entry)
+    choice_images: Dict[int, List[QuestionImage]] = {
+        choice_index_map[raw_index]: images
+        for raw_index, images in raw_choice_images.items()
+        if raw_index in choice_index_map
+    }
+
+    seen_question_urls = {image.url for image in question_images if image.url}
+    for ref in list(rendered_question_refs) + list(context_refs):
+        if ref.url in seen_question_urls:
+            continue
+        seen_question_urls.add(ref.url)
+        source = "context" if ref in context_refs else "question"
+        question_images.append(_download_google_image_url(ref.url, source=source))
+
+    for choice_index, refs in rendered_choice_refs.items():
+        seen_choice_urls = {
+            image.url for image in choice_images.get(choice_index, []) if image.url
+        }
+        for ref in refs:
+            if ref.url in seen_choice_urls:
+                continue
+            seen_choice_urls.add(ref.url)
+            choice_images.setdefault(choice_index, []).append(
+                _download_google_image_url(ref.url, source="choice")
+            )
+    return question_images, choice_images
+
+
 def compute_image_stats(questions: List["Question"]) -> Tuple[int, int, int, int]:
-    q_with_images = sum(1 for q in questions if q.images)
-    q_with_ready = sum(1 for q in questions if any(img.is_ready() for img in q.images))
-    total_found = sum(len(q.images) for q in questions)
-    total_ready = sum(sum(1 for img in q.images if img.is_ready()) for q in questions)
+    def all_images(question: "Question") -> List[QuestionImage]:
+        return question.images + [
+            image
+            for images in question.choice_images.values()
+            for image in images
+        ]
+
+    q_with_images = sum(1 for q in questions if all_images(q))
+    q_with_ready = sum(1 for q in questions if any(img.is_ready() for img in all_images(q)))
+    total_found = sum(len(all_images(q)) for q in questions)
+    total_ready = sum(sum(1 for img in all_images(q) if img.is_ready()) for q in questions)
     return q_with_images, q_with_ready, total_found, total_ready
 
 
@@ -646,13 +720,28 @@ def parse_form(
     if not isinstance(entries, list):
         raise RuntimeError("ไม่พบรายการคำถามในฟอร์ม")
 
+    form_title = clean_text(safe_get(form_data, [1, 8], ""))
+    form_description = clean_text(safe_get(form_data, [1, 0], ""))
+    rendered_images = extract_rendered_image_refs(raw_html)
+
     questions: List[Question] = []
     personal_data_map: Dict[str, Tuple[str, str, str, bool]] = {}
-    image_jobs: List[Tuple[int, Any, Dict[int, int]]] = []
+    image_jobs: List[Tuple[
+        int,
+        Any,
+        Dict[int, int],
+        List[RenderedImageRef],
+        Dict[int, List[RenderedImageRef]],
+        List[RenderedImageRef],
+    ]] = []
 
     pages_meta = [{"own_id": None, "next_raw": None}]
     page_id_to_index: Dict[Any, int] = {}
     current_page = 0
+    current_section_title = ""
+    current_section_description = ""
+    pending_context_refs: List[RenderedImageRef] = []
+    pending_context_notes: List[str] = []
 
     for item in entries:
         if not item or len(item) < 4:
@@ -665,11 +754,34 @@ def parse_form(
             next_raw = safe_get(item, [5])
             pages_meta.append({"own_id": own_id, "next_raw": next_raw})
             page_id_to_index[own_id] = current_page
+            current_section_title = clean_text(safe_get(item, [1], ""))
+            current_section_description = clean_text(safe_get(item, [2], ""))
+            pending_context_refs = []
+            pending_context_notes = []
             continue
 
-        if q_type in (9, 10, 11):
+        if q_type == TYPE_IMAGE:
+            item_id = str(safe_get(item, [0], ""))
+            pending_context_refs = list(rendered_images.get(item_id, []))
+            image_title = clean_text(safe_get(item, [1], ""))
+            image_description = clean_text(safe_get(item, [2], ""))
+            pending_context_notes = [
+                value for value in [image_title, image_description] if value
+            ]
+            continue
+
+        if q_type in (9, 10):
+            pending_context_refs = []
+            pending_context_notes = []
             continue
         if len(item) < 5 or not item[4]:
+            # A non-question text block is useful section context, but a
+            # standalone image should only attach to the immediately following
+            # real question. Any other item breaks that association.
+            current_section_title = clean_text(safe_get(item, [1], "")) or current_section_title
+            current_section_description = clean_text(safe_get(item, [2], "")) or current_section_description
+            pending_context_refs = []
+            pending_context_notes = []
             continue
 
         entry_id = safe_get(item, [4, 0, 0])
@@ -700,7 +812,15 @@ def parse_form(
         p_info = check_personal_info(q_title, choices, my_name, my_student_id, my_no, my_class)
         if p_info:
             personal_data_map[entry_id] = (*p_info, is_required)
+            pending_context_refs = []
+            pending_context_notes = []
             continue
+
+        item_id = str(safe_get(item, [0], ""))
+        direct_question_refs, direct_choice_refs = split_item_image_refs(
+            rendered_images.get(item_id, []),
+            choices,
+        )
 
         branch_map: Dict[str, int] = {}
         if choices_raw and isinstance(choices_raw, list):
@@ -724,8 +844,22 @@ def parse_form(
             branch_map=branch_map,
             choice_images={},
             q_type=q_type,
+            form_title=form_title,
+            form_description=form_description,
+            section_title=current_section_title,
+            section_description=current_section_description,
+            context_notes=list(pending_context_notes),
         ))
-        image_jobs.append((question_index, item, choice_index_map))
+        image_jobs.append((
+            question_index,
+            item,
+            choice_index_map,
+            direct_question_refs,
+            direct_choice_refs,
+            list(pending_context_refs),
+        ))
+        pending_context_refs = []
+        pending_context_notes = []
 
     # การดาวน์โหลดรูปเป็นงาน I/O จึงทำพร้อมกันได้อย่างปลอดภัย การทำทีละข้อ
     # ทำให้ฟอร์มที่มีรูปเสียเวลา timeout สะสมทีละ 10 วินาที
@@ -733,22 +867,31 @@ def parse_form(
         image_workers = min(MAX_IMAGE_WORKERS, len(image_jobs))
         with ThreadPoolExecutor(max_workers=image_workers) as image_pool:
             futures = {
-                image_pool.submit(extract_images_from_entry, item): (
-                    question_index,
+                image_pool.submit(
+                    extract_images_for_question,
+                    item,
                     choice_index_map,
+                    direct_question_refs,
+                    direct_choice_refs,
+                    context_refs,
+                ): (
+                    question_index,
                 )
-                for question_index, item, choice_index_map in image_jobs
+                for (
+                    question_index,
+                    item,
+                    choice_index_map,
+                    direct_question_refs,
+                    direct_choice_refs,
+                    context_refs,
+                ) in image_jobs
             }
             for future in as_completed(futures):
-                question_index, choice_index_map = futures[future]
+                (question_index,) = futures[future]
                 try:
-                    q_images, raw_choice_images = future.result()
+                    q_images, choice_images = future.result()
                     questions[question_index].images = q_images
-                    questions[question_index].choice_images = {
-                        choice_index_map[raw_index]: images
-                        for raw_index, images in raw_choice_images.items()
-                        if raw_index in choice_index_map
-                    }
+                    questions[question_index].choice_images = choice_images
                 except Exception as e:
                     logger.warning(
                         "โหลดรูปของคำถาม %s ไม่สำเร็จ: %s",
@@ -842,7 +985,7 @@ def build_system_instruction(exam_context: str) -> str:
 บริบทข้อสอบ: {ctx}
 
 กฎที่ต้องปฏิบัติ:
-1. อ่านคำถามและรูปประกอบให้ละเอียด
+1. อ่านคำถาม รูปประกอบ บริบทของฟอร์ม และบริบทของส่วนให้ละเอียด
 2. ถ้าคำถามมีตัวเลือก ให้ตอบเป็นข้อความของตัวเลือกนั้นเป๊ะๆ (เช่น "ก. แมว" ไม่ใช่แค่ "ก")
 3. ทุกคำตอบต้องอยู่ใน array เสมอ แม้มีคำตอบเดียว เช่น ["ก. แมว"] หรือ ["กรุงเทพมหานคร"]
 4. ถ้าเป็นคำถามหลายคำตอบ (checkbox) ให้ใส่ทุกคำตอบใน array เดียวกัน
@@ -869,6 +1012,16 @@ def build_question_parts(idx: int, q: Question) -> List[types.Part]:
     parts: List[types.Part] = []
 
     text = f"\n--- ข้อ {idx} (ID: {q.entry_id}) ---\n"
+    if q.form_title:
+        text += f"ชื่อแบบทดสอบ: {q.form_title}\n"
+    if q.form_description:
+        text += f"คำชี้แจงรวม: {q.form_description}\n"
+    if q.section_title:
+        text += f"หัวข้อส่วน: {q.section_title}\n"
+    if q.section_description:
+        text += f"คำชี้แจงของส่วน: {q.section_description}\n"
+    if q.context_notes:
+        text += "บริบทก่อนคำถาม: " + " | ".join(q.context_notes) + "\n"
     text += f"คำถาม: {q.title}\n"
     if q.is_multi:
         text += "ประเภท: เลือกได้หลายคำตอบ (ตอบเป็น array)\n"
@@ -887,8 +1040,16 @@ def build_question_parts(idx: int, q: Question) -> List[types.Part]:
 
     parts.append(types.Part.from_text(text=text))
 
-    for img in q.images:
+    for image_index, img in enumerate(q.images, 1):
         if img.is_ready():
+            image_label = (
+                "รูปบริบทที่อยู่ก่อนคำถาม"
+                if img.source == "context"
+                else "รูปประกอบของโจทย์"
+            )
+            parts.append(types.Part.from_text(
+                text=f"{image_label} (รูป {image_index})"
+            ))
             parts.append(types.Part.from_bytes(data=img.data, mime_type=img.mime_type))
 
     # รูปที่อยู่ในตัวเลือกต้องถูกส่งพร้อมป้ายกำกับ มิฉะนั้น AI จะเห็นเพียง
@@ -1098,6 +1259,7 @@ def analyze_all(
     keys: List[str],
     exam_context: str,
     progress_cb=None,
+    verify_risky: bool = True,
 ) -> Tuple[Dict[str, Any], List[str], List[str]]:
     indexed = list(enumerate(questions, 1))
     chunks = build_balanced_batches(indexed, _ready_image_count)
@@ -1229,6 +1391,75 @@ def analyze_all(
             if answer.get("answer"):
                 results[entry_id] = answer
         first_pass_errors.extend(repair_errors)
+
+    # Accuracy mode: re-check only answers that actually benefit from another
+    # pass. A failed verifier never erases a usable first-pass answer.
+    for answer_data in results.values():
+        answer_data.setdefault("verification", "not_needed")
+
+    if verify_risky:
+        verification_items: List[Tuple[int, Question]] = []
+        for idx, question in indexed:
+            original = results.get(question.entry_id, {})
+            answer = original.get("answer")
+            has_images = _ready_image_count((idx, question)) > 0
+            if not should_verify_answer(
+                question.title,
+                answer,
+                original.get("confidence", 0),
+                has_images=has_images,
+                is_multi=question.is_multi,
+            ):
+                continue
+
+            original_text = json.dumps(answer, ensure_ascii=False)
+            review_instruction = (
+                "\n[รอบตรวจทานความถูกต้อง]\n"
+                f"คำตอบรอบแรก: {original_text}\n"
+                f"เหตุผลรอบแรก: {original.get('reasoning', '')}\n"
+                "ตรวจโจทย์ ตัวเลือก บริบท และรูปทั้งหมดใหม่อย่างละเอียด "
+                "หากคำตอบเดิมถูกให้ตอบเหมือนเดิม หากผิดให้คืนคำตอบที่แก้แล้ว "
+                "ห้ามเปลี่ยนเพียงเพราะใช้ถ้อยคำต่างกัน"
+            )
+            verification_items.append((
+                idx,
+                replace(question, title=question.title + review_instruction),
+            ))
+            original["verification"] = "pending"
+
+        if verification_items:
+            verification_chunks = build_balanced_batches(
+                verification_items,
+                _ready_image_count,
+                max_text_items=3,
+                max_image_items=1,
+                max_images=4,
+            )
+            debug_logs.append(
+                f"🛡️ ตรวจซ้ำเฉพาะข้อเสี่ยง {len(verification_items)} ข้อ "
+                f"เป็น {len(verification_chunks)} ชุด"
+            )
+            checked, verification_errors, _ = run_chunks(
+                verification_chunks,
+                phase="ตรวจซ้ำ",
+                route_limit=MAX_ROUTE_ATTEMPTS,
+            )
+
+            for _, verification_question in verification_items:
+                entry_id = verification_question.entry_id
+                original = results.get(entry_id)
+                if not original:
+                    continue
+                results[entry_id] = merge_verification_result(
+                    original,
+                    checked.get(entry_id),
+                )
+
+            if verification_errors:
+                debug_logs.append(
+                    f"⚠️ รอบตรวจซ้ำล้มเหลวบางชุด {len(verification_errors)} ชุด "
+                    "— คงคำตอบรอบแรกไว้"
+                )
 
     unresolved = [
         (idx, q)
@@ -1474,6 +1705,11 @@ with st.container(border=True):
 with st.container(border=True):
     st.markdown('<div class="glass-header">PERSONAL DATA & CONTEXT</div>', unsafe_allow_html=True)
     exam_context = st.text_area("EXAM CONTEXT", placeholder="เช่น ฟิสิกส์ ม.6 บทคลื่น...", height=68)
+    accuracy_mode = st.checkbox(
+        "ตรวจซ้ำข้อเสี่ยงเพื่อเพิ่มความแม่นยำ",
+        value=True,
+        help="ตรวจเพิ่มเฉพาะข้อจากรูป ข้อหลายคำตอบ ข้อกำกวม และข้อที่ AI มั่นใจต่ำ",
+    )
     debug_mode = st.checkbox("โหมด debug", value=False)
 
     col1, col2 = st.columns(2)
@@ -1531,7 +1767,11 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                     bar.progress(done / total, text=f"วิเคราะห์ {done}/{total}")
 
                 ai_answers, ai_errors, debug_logs = analyze_all(
-                    questions, api_keys, exam_context, ai_cb
+                    questions,
+                    api_keys,
+                    exam_context,
+                    ai_cb,
+                    verify_risky=accuracy_mode,
                 )
                 debug_logs = parse_logs + debug_logs
                 bar.empty()
@@ -1562,6 +1802,7 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
                     "default_next": default_next,
                     "page_count": page_count,
                     "exam_context": exam_context,
+                    "accuracy_mode": accuracy_mode,
                     "submit_url": submit_url,
                     "debug_logs": debug_logs,
                 })
@@ -1595,6 +1836,11 @@ if "questions" in st.session_state:
     total_q = len(questions)
     answered = sum(1 for q in questions if get_ai_answer(ai_answers, q.entry_id).get("answer"))
     not_answered = total_q - answered
+    verified_count = sum(
+        1
+        for q in questions
+        if get_ai_answer(ai_answers, q.entry_id).get("verification") in {"verified", "revised"}
+    )
     avg_conf = 0
     if total_q > 0:
         avg_conf = sum(get_ai_answer(ai_answers, q.entry_id).get("confidence", 0) for q in questions) / total_q
@@ -1606,6 +1852,8 @@ if "questions" in st.session_state:
         c2.metric("AI ตอบแล้ว", answered)
         c3.metric("AI ไม่ตอบ ⚠️", not_answered)
         c4.metric("ความมั่นใจเฉลี่ย", f"{avg_conf:.0f}%")
+        if verified_count:
+            st.caption(f"🛡️ ผ่านการตรวจทานเพิ่มแล้ว {verified_count} ข้อ")
         if not_answered > 0:
             st.warning(f"⚠️ มี {not_answered} ข้อที่ AI ไม่ได้ตอบ กรุณาตอบเองในข้อที่มีเครื่องหมายเตือนสีแดง")
 
@@ -1659,35 +1907,51 @@ if "questions" in st.session_state:
                             st.markdown(f'<div class="image-fallback">❌ โหลดรูปที่ {i+1} ไม่ได้ ({img.error or "ไม่ทราบสาเหตุ"})</div>', unsafe_allow_html=True)
                 st.markdown('</div>', unsafe_allow_html=True)
 
-                if any(img.is_ready() for img in q.images):
-                    if st.button(f"🔄 วิเคราะห์ข้อ {idx} นี้ใหม่ (ใช้รูปล่าสุด)", key=f"reanalyze_{entry_id}"):
-                        with st.spinner("AI กำลังวิเคราะห์ข้อนี้..."):
-                            bad_keys_local: set = set()
-                            exhausted_local: set = set()
-                            lock_local = threading.Lock()
-                            try:
-                                result, used_model = call_gemini_chunk(
-                                    api_keys, 0,
-                                    st.session_state.get("exam_context", exam_context),
-                                    [(idx, q)], MODEL_CANDIDATES,
-                                    bad_keys_local, lock_local,
-                                    exhausted_local, lock_local,
-                                )
-                                if entry_id in result:
-                                    ai_answers[entry_id] = result[entry_id]
-                                    st.session_state["ai_answers"] = ai_answers
-                                    # สำคัญ: ต้องเซ็ต widget state ตรงๆ ไม่งั้นหน้าจอจะไม่อัปเดต
-                                    # (ดูคำอธิบายเต็มในฟังก์ชัน apply_ai_answer_to_state)
-                                    apply_ai_answer_to_state(q, result[entry_id])
-                                    st.success(f"✅ วิเคราะห์สำเร็จ (โมเดล: {used_model}) — คำตอบอัปเดตแล้ว")
-                                else:
-                                    st.warning("AI ไม่ได้ตอบข้อนี้ ลองใหม่อีกครั้ง")
-                            except Exception as e:
-                                st.error(f"เกิดข้อผิดพลาด: {e}")
-                        st.rerun()
+            choice_image_pairs = [
+                (choice_index, image)
+                for choice_index, images in q.choice_images.items()
+                for image in images
+            ]
+            if choice_image_pairs:
+                st.caption("รูปประกอบตัวเลือก")
+                choice_cols = st.columns(min(len(choice_image_pairs), 3))
+                for image_index, (choice_index, image) in enumerate(choice_image_pairs):
+                    with choice_cols[image_index % 3]:
+                        caption = f"ตัวเลือก {choice_index + 1}: {q.choices[choice_index]}"
+                        if image.is_ready():
+                            st.image(image.data, use_container_width=True, caption=caption)
+                        else:
+                            st.warning(f"{caption} — โหลดรูปไม่ได้")
 
-            has_ready_image = any(img.is_ready() for img in q.images)
-            looks_like_image_q = bool(q.images) or ("รูป" in q.title or "ภาพ" in q.title)
+            all_question_images = q.images + [image for _, image in choice_image_pairs]
+            has_ready_image = any(img.is_ready() for img in all_question_images)
+            if has_ready_image:
+                if st.button(f"🔄 วิเคราะห์ข้อ {idx} นี้ใหม่ (ใช้รูปล่าสุด)", key=f"reanalyze_{entry_id}"):
+                    with st.spinner("AI กำลังวิเคราะห์ข้อนี้..."):
+                        bad_keys_local: set = set()
+                        exhausted_local: set = set()
+                        lock_local = threading.Lock()
+                        try:
+                            result, used_model = call_gemini_chunk(
+                                api_keys, 0,
+                                st.session_state.get("exam_context", exam_context),
+                                [(idx, q)], MODEL_CANDIDATES,
+                                bad_keys_local, lock_local,
+                                exhausted_local, lock_local,
+                            )
+                            if entry_id in result:
+                                result[entry_id]["verification"] = "not_checked"
+                                ai_answers[entry_id] = result[entry_id]
+                                st.session_state["ai_answers"] = ai_answers
+                                apply_ai_answer_to_state(q, result[entry_id])
+                                st.success(f"✅ วิเคราะห์สำเร็จ (โมเดล: {used_model}) — คำตอบอัปเดตแล้ว")
+                            else:
+                                st.warning("AI ไม่ได้ตอบข้อนี้ ลองใหม่อีกครั้ง")
+                        except Exception as e:
+                            st.error(f"เกิดข้อผิดพลาด: {e}")
+                    st.rerun()
+
+            looks_like_image_q = bool(all_question_images) or ("รูป" in q.title or "ภาพ" in q.title)
             if looks_like_image_q:
                 with st.expander(
                     ("📎 เพิ่มรูปเอง" if not has_ready_image else "📎 เปลี่ยน/เพิ่มรูปเอง")
@@ -1749,6 +2013,16 @@ if "questions" in st.session_state:
                 st.markdown(f'<div class="confidence-label">ความมั่นใจ: {confidence}%</div>', unsafe_allow_html=True)
             if reasoning and ai_has_answer:
                 st.markdown(f'<div class="reasoning-text">💡 {html_lib.escape(reasoning)}</div>', unsafe_allow_html=True)
+
+            verification = ans_data.get("verification")
+            if verification == "verified":
+                st.success("🛡️ ตรวจคำตอบซ้ำแล้ว — ผลตรงกัน")
+            elif verification == "revised":
+                st.info("🛡️ ระบบตรวจซ้ำและแก้คำตอบจากรอบแรกแล้ว")
+            elif verification == "conflict":
+                st.warning("⚠️ ผลตรวจซ้ำไม่ตรงกันและยังไม่มั่นใจ — คงคำตอบรอบแรกไว้ กรุณาตรวจเอง")
+            elif verification == "failed":
+                st.caption("รอบตรวจซ้ำไม่สำเร็จ แต่ระบบยังคงคำตอบรอบแรกไว้")
 
             ans_key = f"ans_{entry_id}"
 
