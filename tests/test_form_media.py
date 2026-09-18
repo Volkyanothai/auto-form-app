@@ -1,7 +1,10 @@
 import unittest
 
 from form_media import (
+    build_preview_page_payloads,
+    extract_form_page_state,
     extract_rendered_image_refs,
+    find_blob_image_page_indexes,
     is_trusted_google_form_image_url,
     split_item_image_refs,
     upgrade_google_form_image_url,
@@ -70,6 +73,17 @@ class RenderedImageDiscoveryTests(unittest.TestCase):
             "https://docs.google.com/forms-images-rt/bg=w900",
         )
 
+    def test_maps_rendered_image_from_data_params_item_id(self):
+        html = """
+        <div data-params='%.@.[192651193,"question",null]'>
+          <img src="https://docs.google.com/forms-images-rt/rendered=w740">
+        </div>
+        """
+
+        grouped = extract_rendered_image_refs(html)
+
+        self.assertEqual(grouped["192651193"][0].alt_text, "")
+
     def test_trusts_only_known_google_form_image_hosts(self):
         self.assertTrue(is_trusted_google_form_image_url(
             "https://docs.google.com/forms-images-rt/token=w320"
@@ -87,6 +101,48 @@ class RenderedImageDiscoveryTests(unittest.TestCase):
             upgrade_google_form_image_url(url),
             "https://docs.google.com/forms-images-rt/token=s1600",
         )
+
+
+class MultiPageRenderTests(unittest.TestCase):
+    def test_extracts_hidden_navigation_state(self):
+        html = """
+        <input type="hidden" name="fvv" value="1">
+        <input type="hidden" name="partialResponse" value='[[1],null,"abc"]'>
+        <input type="hidden" name="pageHistory" value="0,1">
+        <input type="hidden" name="fbzx" value="abc">
+        """
+
+        state = extract_form_page_state(html)
+
+        self.assertEqual(state["pageHistory"], "0,1")
+        self.assertEqual(state["fbzx"], "abc")
+        self.assertIn("abc", state["partialResponse"])
+
+    def test_builds_dummy_payloads_for_each_non_image_question(self):
+        form_data = [None, [None, [
+            [1, "Name", None, 0, [[101, None, 1]]],
+            [2, "Class", None, 2, [[102, [["6/1"], ["6/2"]], 1]]],
+            [3, "Section", None, 8, None],
+            [4, "Image question", None, 0, [[103, None, 1]], None, None, None, None,
+             [["s-blob-v1-IMAGE-token", None, [740, 555, 0]]]],
+        ]]]
+
+        pages = build_preview_page_payloads(form_data)
+
+        self.assertEqual(pages[0], {"entry.101": "preview", "entry.102": "6/1"})
+        self.assertEqual(pages[1], {"entry.103": "preview"})
+
+    def test_finds_only_pages_that_contain_opaque_images(self):
+        form_data = [None, [None, [
+            [1, "First", None, 0, [[101, None, 1]]],
+            [2, "Section", None, 8, None],
+            [3, "Image", None, 0, [[102, None, 1]], None, None, None, None,
+             [["s-blob-v1-IMAGE-one", None, [740, 555, 0]]]],
+            [4, "Section", None, 8, None],
+            [5, "Plain", None, 0, [[103, None, 1]]],
+        ]]]
+
+        self.assertEqual(find_blob_image_page_indexes(form_data), [1])
 
 
 if __name__ == "__main__":
