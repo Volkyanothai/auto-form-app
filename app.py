@@ -440,6 +440,7 @@ def check_personal_info(
 ) -> Optional[Tuple[str, str, str]]:
     clean_title = re.sub(r'^\*?\*?(?:ข้อ\s*\d+[\s.:-]*)?', '', q_title.strip()).strip().rstrip('*').strip()
     title_lower = clean_title.lower()
+    field_title = re.sub(r'\s*[\(\[].*[\)\]]\s*$', '', title_lower).strip()
     if len(clean_title) > 35:
         return None
 
@@ -452,18 +453,39 @@ def check_personal_info(
     if any(sw in title_lower for sw in exam_stopwords):
         return None
 
-    if my_name and any(k in title_lower for k in ["ชื่อ", "นามสกุล", "สกุล", "name", "fullname"]):
+    # Detect identity fields from the form itself, even when the user left the
+    # value blank above. Otherwise these fields leak into the exam question
+    # list and are sent to Gemini. Keep the patterns narrow to avoid treating
+    # questions such as "ชื่อเมืองหลวง..." as personal data.
+    name_field = bool(re.fullmatch(
+        r"(?:กรอก\s*)?(?:ชื่อ|ชื่อ\s*[-–/]?\s*นามสกุล|ชื่อผู้ตอบ|ชื่อผู้ทำแบบทดสอบ|ชื่อนักเรียน|name|full\s*name)\s*",
+        field_title,
+    ))
+    student_id_field = bool(re.fullmatch(
+        r"(?:กรอก\s*)?(?:เลขประจำตัว(?:นักเรียน)?|รหัสนักเรียน|student\s*id|id\s*number)\s*",
+        field_title,
+    ))
+    number_field = bool(re.fullmatch(
+        r"(?:กรอก\s*)?(?:เลขที่|ลำดับที่|class\s*number|no\.?)\s*",
+        field_title,
+    ))
+    class_field = bool(re.fullmatch(
+        r"(?:กรอก\s*)?(?:ชั้น|ชั้นเรียน|ห้อง|ชั้น\s*[/\-]?\s*ห้อง|classroom|class|room)\s*",
+        field_title,
+    ))
+
+    if name_field:
         return (q_title, my_name, "ชื่อ-นามสกุล")
 
-    if my_student_id and any(k in title_lower for k in ["เลขประจำตัว", "รหัสนักเรียน", "student id", "student_id", "id number"]):
+    if student_id_field:
         return (q_title, my_student_id, "เลขประจำตัว")
 
-    if my_no and (any(k in title_lower for k in ["เลขที่", "ลำดับที่"]) or re.search(r'\bno\.?\s*\d*\b', title_lower)):
+    if number_field:
         return (q_title, my_no, "เลขที่")
 
-    if my_class and any(k in title_lower for k in ["ชั้น", "ห้อง", "มัธยม", "classroom", "room"]):
+    if class_field:
         best_val = my_class
-        if choices:
+        if my_class and choices:
             for c in choices:
                 c_str = str(c).strip()
                 if c_str == my_class.strip() or c_str in my_class or my_class.endswith(c_str):
@@ -613,7 +635,7 @@ def parse_form(
     my_student_id: str,
     my_no: str,
     my_class: str,
-) -> Tuple[List[Question], Dict[str, Tuple[str, str, str]], List[int], int]:
+) -> Tuple[List[Question], Dict[str, Tuple[str, str, str, bool]], List[int], int]:
     entries = safe_get(form_data, [1, 1], [])
     if not entries:
         if isinstance(form_data, list) and len(form_data) > 1 and isinstance(form_data[1], list) and len(form_data[1]) > 1:
@@ -625,7 +647,7 @@ def parse_form(
         raise RuntimeError("ไม่พบรายการคำถามในฟอร์ม")
 
     questions: List[Question] = []
-    personal_data_map: Dict[str, Tuple[str, str, str]] = {}
+    personal_data_map: Dict[str, Tuple[str, str, str, bool]] = {}
     image_jobs: List[Tuple[int, Any, Dict[int, int]]] = []
 
     pages_meta = [{"own_id": None, "next_raw": None}]
@@ -675,9 +697,9 @@ def parse_form(
         is_multi = q_type == TYPE_CHECKBOX
         is_required = bool(safe_get(item, [4, 0, 2], False)) or bool(safe_get(item, [5], False))
 
-        p_info = check_personal_info(full_title, choices, my_name, my_student_id, my_no, my_class)
+        p_info = check_personal_info(q_title, choices, my_name, my_student_id, my_no, my_class)
         if p_info:
-            personal_data_map[entry_id] = p_info
+            personal_data_map[entry_id] = (*p_info, is_required)
             continue
 
         branch_map: Dict[str, int] = {}
@@ -1148,9 +1170,13 @@ def analyze_all(
                         for _, question in chunk_set[chunk_index]
                     )
                     fallback = " (fallback)" if used_model != MODEL_CANDIDATES[0] else ""
+                    valid_count = sum(
+                        1 for answer in chunk_result.values() if answer.get("answer")
+                    )
                     debug_logs.append(
                         f"✅ {phase} {chunk_index + 1}/{len(chunk_set)}: "
-                        f"ได้ {len(chunk_result)} ข้อ — {used_model}{fallback}"
+                        f"รับผล {len(chunk_result)} รายการ ใช้ได้ {valid_count} คำตอบ "
+                        f"— {used_model}{fallback}"
                     )
                 except Exception as e:
                     phase_errors.append(str(e))
@@ -1180,7 +1206,16 @@ def analyze_all(
         if not missing:
             break
 
-        repair_chunks = build_balanced_batches(missing, _ready_image_count)
+        # A repair request should be deliberately smaller than the first pass.
+        # If one large response is malformed, retrying the same large payload
+        # is both slow and more likely to hit Gemini's deadline again.
+        repair_chunks = build_balanced_batches(
+            missing,
+            _ready_image_count,
+            max_text_items=3,
+            max_image_items=2,
+            max_images=3,
+        )
         debug_logs.append(
             f"🔧 ซ่อม {len(missing)} ข้อเป็น {len(repair_chunks)} ชุด "
             f"(รอบ {repair_attempt + 1}/{MAX_REPAIR_ATTEMPTS})"
@@ -1188,7 +1223,7 @@ def analyze_all(
         repaired, repair_errors, _ = run_chunks(
             repair_chunks,
             phase="ชุดซ่อม",
-            route_limit=1,
+            route_limit=MAX_ROUTE_ATTEMPTS,
         )
         for entry_id, answer in repaired.items():
             if answer.get("answer"):
@@ -1222,7 +1257,7 @@ def analyze_all(
 
 
 def build_submit_payload(
-    personal_data_map: Dict[str, Tuple[str, str, str]],
+    personal_data_map: Dict[str, Tuple[str, str, str, bool]],
     questions: List[Question],
     final_answers: Dict[str, Any],
     fbzx: str,
@@ -1236,7 +1271,7 @@ def build_submit_payload(
     }
 
     for entry_id, info in personal_data_map.items():
-        payload[entry_id] = info[1]
+        payload[entry_id] = final_answers.get(entry_id, info[1])
 
     for q in questions:
         entry_id = q.entry_id
@@ -1459,7 +1494,7 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
         with st.status("SYSTEM PROCESSING...", expanded=True) as status:
             try:
                 for key in list(st.session_state.keys()):
-                    if key.startswith("ans_"):
+                    if key.startswith(("ans_", "input_")):
                         del st.session_state[key]
 
                 st.write("🔍 กำลังอ่านโครงสร้างฟอร์ม...")
@@ -1580,7 +1615,12 @@ if "questions" in st.session_state:
             items = list(personal_data_map.items())
             cols = st.columns(min(len(items), 2))
             for idx, (entry_id, info) in enumerate(items):
-                cols[idx % len(cols)].text_input(info[2], value=info[1], key="input_" + entry_id, disabled=True)
+                label = info[2] + (" *" if len(info) > 3 and info[3] else "")
+                cols[idx % len(cols)].text_input(
+                    label,
+                    value=info[1],
+                    key="input_" + entry_id,
+                )
 
     col_accept, col_reset = st.columns(2)
     with col_accept:
@@ -1729,8 +1769,16 @@ if "questions" in st.session_state:
 
     if st.button("TRANSMIT DATA", type="primary", use_container_width=True):
         with st.spinner("กำลังส่งข้อมูล..."):
-            final_answers = {eid: info[1] for eid, info in personal_data_map.items()}
+            final_answers = {
+                eid: st.session_state.get("input_" + eid, info[1])
+                for eid, info in personal_data_map.items()
+            }
             missing_required = []
+
+            for info_index, (entry_id, info) in enumerate(personal_data_map.items(), 1):
+                is_required = bool(info[3]) if len(info) > 3 else False
+                if is_required and not str(final_answers.get(entry_id, "")).strip():
+                    missing_required.append(info[2])
 
             for qidx, q in enumerate(questions, 1):
                 val = st.session_state.get(f"ans_{q.entry_id}", "")

@@ -92,6 +92,68 @@ class NormalizeModelAnswersTests(unittest.TestCase):
 
         self.assertEqual(result["entry.single"]["answer"], "ก. แมว")
 
+    def test_accepts_explicit_option_index(self):
+        data = {
+            "answers": [{
+                "entry_id": "entry.single",
+                "answer": ["ตัวเลือกที่ 2"],
+                "confidence": 80,
+                "reasoning": "เลือกตัวเลือกที่สอง",
+            }]
+        }
+
+        result = normalize_model_answers(data, self.expected)
+
+        self.assertEqual(result["entry.single"]["answer"], "ข. หมา")
+
+    def test_accepts_bare_option_number_after_exact_match_fails(self):
+        expected = {
+            "entry.capital": {
+                "choices": ["ลอนดอน", "ปารีส", "นิวยอร์ก", "กรุงเทพ"],
+                "is_multi": False,
+            }
+        }
+        data = {
+            "answers": [{
+                "entry_id": "entry.capital",
+                "answer": ["1"],
+                "confidence": 90,
+                "reasoning": "ตัวเลือกแรก",
+            }]
+        }
+
+        result = normalize_model_answers(data, expected)
+
+        self.assertEqual(result["entry.capital"]["answer"], "ลอนดอน")
+
+    def test_accepts_one_exact_choice_inside_a_sentence(self):
+        data = {
+            "answers": [{
+                "entry_id": "entry.single",
+                "answer": ["คำตอบคือ ก. แมว เพราะเป็นสัตว์ตามโจทย์"],
+                "confidence": 80,
+                "reasoning": "เลือกแมว",
+            }]
+        }
+
+        result = normalize_model_answers(data, self.expected)
+
+        self.assertEqual(result["entry.single"]["answer"], "ก. แมว")
+
+    def test_splits_checkbox_answers_returned_in_one_string(self):
+        data = {
+            "answers": [{
+                "entry_id": "entry.multi",
+                "answer": ["1 และ 3"],
+                "confidence": 90,
+                "reasoning": "มีสองคำตอบ",
+            }]
+        }
+
+        result = normalize_model_answers(data, self.expected)
+
+        self.assertEqual(result["entry.multi"]["answer"], ["1", "3"])
+
 
 class BalancedBatchTests(unittest.TestCase):
     def test_four_text_questions_use_one_batch(self):

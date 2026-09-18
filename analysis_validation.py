@@ -68,6 +68,53 @@ def _leading_label(text: str) -> str | None:
     return match.group(1).casefold() if match else None
 
 
+def _explicit_choice_index(text: str, choice_count: int) -> int | None:
+    """Return a zero-based option index only when the wording is explicit."""
+    match = re.match(
+        r"^(?:ตัวเลือก(?:ที่)?|ข้อ|คำตอบ(?:คือ)?\s*(?:ข้อ|ตัวเลือก)?|choice|option)\s*"
+        r"([0-9]+)\s*$",
+        _strip_answer_prefix(text),
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return None
+    index = int(match.group(1)) - 1
+    return index if 0 <= index < choice_count else None
+
+
+def _bare_choice_index(text: str, choice_count: int) -> int | None:
+    """Resolve a bare option label after exact choice matching has failed."""
+    token = _strip_answer_prefix(text).strip().casefold()
+    if re.fullmatch(r"[0-9]+", token):
+        index = int(token) - 1
+        return index if 0 <= index < choice_count else None
+
+    latin = "abcdefghijklmnopqrstuvwxyz"
+    thai = "กขคงจฉชซฌญฎฏฐฑฒณดตถทธนบปผฝพฟภมยรลวศษสหฬอฮ"
+    if len(token) == 1:
+        if token in latin:
+            index = latin.index(token)
+            return index if index < choice_count else None
+        if token in thai:
+            index = thai.index(token)
+            return index if index < choice_count else None
+    return None
+
+
+def _choice_mentioned_unambiguously(text: str, choices: list[str]) -> str | None:
+    """Accept a choice embedded in a sentence only when exactly one is present."""
+    candidate = _canonical_text(text)
+    matches: list[str] = []
+    for choice in choices:
+        choice_text = _canonical_text(choice)
+        if not choice_text:
+            continue
+        pattern = r"(?<!\w)" + re.escape(choice_text) + r"(?!\w)"
+        if re.search(pattern, candidate, flags=re.IGNORECASE):
+            matches.append(choice)
+    return matches[0] if len(matches) == 1 else None
+
+
 def _strict_choice_match(answer: Any, choices: list[str]) -> str | None:
     """Return the canonical choice without fuzzy guessing."""
     candidate = str(answer).strip()
@@ -80,6 +127,23 @@ def _strict_choice_match(answer: Any, choices: list[str]) -> str | None:
         if _canonical_text(choice) in canonical_candidates:
             return choice
 
+    explicit_index = _explicit_choice_index(candidate, len(choices))
+    if explicit_index is not None:
+        return choices[explicit_index]
+
+    bare_index = _bare_choice_index(candidate, len(choices))
+    if bare_index is not None:
+        return choices[bare_index]
+
+    # Gemini occasionally prefixes the exact option text with its list number,
+    # e.g. "2. London". Strip that prefix, but still require an exact choice.
+    numbered = re.match(r"^(?:ข้อ|ตัวเลือก|choice|option)?\s*\d+\s*[\).:：\-]\s*(.+)$", candidate, re.IGNORECASE)
+    if numbered:
+        remainder = _canonical_text(numbered.group(1))
+        exact = [choice for choice in choices if _canonical_text(choice) == remainder]
+        if len(exact) == 1:
+            return exact[0]
+
     # รับคำตอบแบบ "ก" หรือ "ข้อ ก" ได้เมื่อ label นั้นชี้ไปยังตัวเลือกเดียว
     # โดยไม่ใช้ fuzzy matching ที่เสี่ยงเลือกคำตอบผิด
     candidate_label = _leading_label(_strip_answer_prefix(candidate))
@@ -89,6 +153,10 @@ def _strict_choice_match(answer: Any, choices: list[str]) -> str | None:
         ]
         if len(labelled_matches) == 1:
             return labelled_matches[0]
+
+    mentioned = _choice_mentioned_unambiguously(candidate, choices)
+    if mentioned is not None:
+        return mentioned
     return None
 
 
@@ -153,9 +221,18 @@ def normalize_model_answers(
         if choices:
             matched: list[str] = []
             for value in values:
-                canonical = _strict_choice_match(value, choices)
-                if canonical is not None and canonical not in matched:
-                    matched.append(canonical)
+                # Some model versions return multiple checkbox choices in one
+                # string even though the schema requests an array. Split only
+                # on explicit separators, then validate each fragment.
+                fragments = re.split(
+                    r"\s*(?:,|;|\n|\||\s+และ\s+|\s+and\s+)\s*",
+                    value,
+                    flags=re.IGNORECASE,
+                )
+                for fragment in fragments:
+                    canonical = _strict_choice_match(fragment, choices)
+                    if canonical is not None and canonical not in matched:
+                        matched.append(canonical)
             answer: Any = matched if is_multi else (matched[0] if matched else "")
         else:
             # Free-text questions should contain one answer item. Joining extra
