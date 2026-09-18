@@ -1,6 +1,6 @@
 import unittest
 
-from analysis_validation import normalize_model_answers
+from analysis_validation import build_balanced_batches, normalize_model_answers
 
 
 class NormalizeModelAnswersTests(unittest.TestCase):
@@ -75,6 +75,39 @@ class NormalizeModelAnswersTests(unittest.TestCase):
 
         self.assertEqual(result["entry.text"]["answer"], "กรุงเทพมหานคร")
         self.assertEqual(result["entry.text"]["confidence"], 80)
+
+    def test_accepts_unique_choice_label_without_fuzzy_matching(self):
+        data = {
+            "answers": [
+                {
+                    "entry_id": "entry.single",
+                    "answer": ["คำตอบคือ ก"],
+                    "confidence": 75,
+                    "reasoning": "เลือกข้อ ก",
+                }
+            ]
+        }
+
+        result = normalize_model_answers(data, self.expected)
+
+        self.assertEqual(result["entry.single"]["answer"], "ก. แมว")
+
+
+class BalancedBatchTests(unittest.TestCase):
+    def test_four_text_questions_use_one_batch(self):
+        items = [{"images": 0} for _ in range(4)]
+        batches = build_balanced_batches(items, lambda item: item["images"])
+        self.assertEqual([len(batch) for batch in batches], [4])
+
+    def test_many_text_questions_are_batched_efficiently(self):
+        items = [{"images": 0} for _ in range(20)]
+        batches = build_balanced_batches(items, lambda item: item["images"])
+        self.assertEqual([len(batch) for batch in batches], [8, 8, 4])
+
+    def test_image_budget_splits_heavy_questions(self):
+        items = [{"images": 3} for _ in range(5)]
+        batches = build_balanced_batches(items, lambda item: item["images"])
+        self.assertEqual([len(batch) for batch in batches], [2, 2, 1])
 
 
 if __name__ == "__main__":

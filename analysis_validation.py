@@ -6,7 +6,8 @@ normalisation rules can be tested without starting the web application.
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, Mapping
+import unicodedata
+from typing import Any, Callable, Dict, List, Mapping, Sequence, TypeVar
 
 
 AI_RESPONSE_SCHEMA: Dict[str, Any] = {
@@ -39,12 +40,32 @@ AI_RESPONSE_SCHEMA: Dict[str, Any] = {
 }
 
 
-def _normalise_label(text: str) -> str:
+T = TypeVar("T")
+
+
+def _canonical_text(text: Any) -> str:
+    value = unicodedata.normalize("NFKC", str(text))
+    value = value.replace("\u200b", "")
+    value = re.sub(r"\s+", " ", value).strip().casefold()
+    return value
+
+
+def _strip_answer_prefix(text: str) -> str:
     return re.sub(
-        r"^(?:ข้อ\s*)?[\(\[]?([ก-ฮa-zA-Z0-9]+)[\)\].]?\s*",
-        r"\1 ",
-        str(text).strip(),
-    ).strip().casefold()
+        r"^(?:คำตอบ(?:คือ)?|ตอบ|answer(?:\s+is)?)\s*[:：\-]?\s*",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    ).strip()
+
+
+def _leading_label(text: str) -> str | None:
+    match = re.match(
+        r"^(?:ข้อ\s*)?[\(\[]?([ก-ฮa-zA-Z]|\d+)[\)\].:：\-]?(?:\s+|$)",
+        text.strip(),
+        flags=re.IGNORECASE,
+    )
+    return match.group(1).casefold() if match else None
 
 
 def _strict_choice_match(answer: Any, choices: list[str]) -> str | None:
@@ -53,20 +74,55 @@ def _strict_choice_match(answer: Any, choices: list[str]) -> str | None:
     if not candidate:
         return None
 
+    candidates = [candidate, _strip_answer_prefix(candidate)]
+    canonical_candidates = {_canonical_text(value) for value in candidates if value}
     for choice in choices:
-        if candidate == choice.strip():
+        if _canonical_text(choice) in canonical_candidates:
             return choice
 
-    folded = candidate.casefold()
-    for choice in choices:
-        if folded == choice.strip().casefold():
-            return choice
-
-    labelled = _normalise_label(candidate)
-    labelled_matches = [choice for choice in choices if _normalise_label(choice) == labelled]
-    if len(labelled_matches) == 1:
-        return labelled_matches[0]
+    # รับคำตอบแบบ "ก" หรือ "ข้อ ก" ได้เมื่อ label นั้นชี้ไปยังตัวเลือกเดียว
+    # โดยไม่ใช้ fuzzy matching ที่เสี่ยงเลือกคำตอบผิด
+    candidate_label = _leading_label(_strip_answer_prefix(candidate))
+    if candidate_label:
+        labelled_matches = [
+            choice for choice in choices if _leading_label(choice) == candidate_label
+        ]
+        if len(labelled_matches) == 1:
+            return labelled_matches[0]
     return None
+
+
+def build_balanced_batches(
+    items: Sequence[T],
+    image_count: Callable[[T], int],
+    max_text_items: int = 8,
+    max_image_items: int = 4,
+    max_images: int = 6,
+) -> List[List[T]]:
+    """Batch text questions densely while keeping image requests bounded."""
+    batches: List[List[T]] = []
+    current: List[T] = []
+    current_images = 0
+
+    for item in items:
+        item_images = max(0, int(image_count(item)))
+        next_has_images = current_images + item_images > 0
+        item_limit = max_image_items if next_has_images else max_text_items
+        would_overflow = bool(current) and (
+            len(current) >= item_limit
+            or current_images + item_images > max_images
+        )
+        if would_overflow:
+            batches.append(current)
+            current = []
+            current_images = 0
+
+        current.append(item)
+        current_images += item_images
+
+    if current:
+        batches.append(current)
+    return batches
 
 
 def normalize_model_answers(
