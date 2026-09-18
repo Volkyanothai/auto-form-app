@@ -133,6 +133,11 @@ class _FormsImageParser(HTMLParser):
                 choice_value = html.unescape(ancestor["data-value"]).strip() or None
             if not item_id and ancestor.get("data-item-id"):
                 item_id = ancestor["data-item-id"].strip()
+            if not item_id and ancestor.get("data-params"):
+                params = html.unescape(ancestor["data-params"])
+                match = re.search(r"\[\s*(\d+)\s*,", params)
+                if match:
+                    item_id = match.group(1)
             if item_id and choice_value is not None:
                 break
 
@@ -187,3 +192,97 @@ def split_item_image_refs(
         else:
             choice_refs.setdefault(choice_index, []).append(ref)
     return question_refs, choice_refs
+
+
+class _NamedInputParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.values: Dict[str, str] = {}
+
+    def handle_starttag(self, tag: str, attrs: List[Tuple[str, Optional[str]]]) -> None:
+        if tag.lower() != "input":
+            return
+        attr_map = {str(key).lower(): value or "" for key, value in attrs}
+        name = attr_map.get("name", "").strip()
+        if name:
+            self.values[name] = attr_map.get("value", "")
+
+
+def extract_form_page_state(raw_html: str) -> Dict[str, str]:
+    """Read the hidden state needed to request the next Google Forms page."""
+    parser = _NamedInputParser()
+    try:
+        parser.feed(raw_html or "")
+        parser.close()
+    except Exception:
+        pass
+    return {
+        key: parser.values.get(key, "")
+        for key in ("fvv", "partialResponse", "pageHistory", "fbzx")
+    }
+
+
+def build_preview_page_payloads(form_data: object) -> List[Dict[str, str]]:
+    """Create harmless placeholders for page navigation, never final submission."""
+    try:
+        entries = form_data[1][1]  # type: ignore[index]
+    except (IndexError, KeyError, TypeError):
+        return []
+    if not isinstance(entries, list):
+        return []
+
+    pages: List[Dict[str, str]] = [{}]
+    for item in entries:
+        if not isinstance(item, list) or len(item) < 4:
+            continue
+        question_type = item[3]
+        if question_type == 8:  # page break
+            pages.append({})
+            continue
+        if question_type == 11 or len(item) < 5 or not isinstance(item[4], list):
+            continue
+
+        for spec in item[4]:
+            if not isinstance(spec, list) or not spec:
+                continue
+            entry_id = spec[0]
+            if entry_id is None:
+                continue
+            field_name = f"entry.{entry_id}"
+            choices = spec[1] if len(spec) > 1 else None
+            placeholder = "preview"
+            if isinstance(choices, list):
+                first_choice = next(
+                    (
+                        str(choice[0])
+                        for choice in choices
+                        if isinstance(choice, list) and choice and choice[0] is not None
+                    ),
+                    None,
+                )
+                if first_choice:
+                    placeholder = first_choice
+            pages[-1].setdefault(field_name, placeholder)
+    return pages
+
+
+def find_blob_image_page_indexes(form_data: object) -> List[int]:
+    """Return zero-based pages containing Google's opaque image tokens."""
+    try:
+        entries = form_data[1][1]  # type: ignore[index]
+    except (IndexError, KeyError, TypeError):
+        return []
+    if not isinstance(entries, list):
+        return []
+
+    page_index = 0
+    pages: set[int] = set()
+    for item in entries:
+        if not isinstance(item, list) or len(item) < 4:
+            continue
+        if item[3] == 8:  # page break
+            page_index += 1
+            continue
+        if "s-blob-v1-IMAGE-" in repr(item):
+            pages.add(page_index)
+    return sorted(pages)

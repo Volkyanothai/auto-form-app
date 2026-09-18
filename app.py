@@ -35,7 +35,10 @@ from google.genai import types
 import analysis_validation as _analysis_validation
 from form_media import (
     RenderedImageRef,
+    build_preview_page_payloads,
+    extract_form_page_state,
     extract_rendered_image_refs,
+    find_blob_image_page_indexes,
     is_trusted_google_form_image_url,
     split_item_image_refs,
     upgrade_google_form_image_url,
@@ -738,7 +741,8 @@ def fetch_form(form_url: str) -> Tuple[dict, str, str, str, str]:
         form_url = "https://" + form_url
 
     try:
-        res = requests.get(
+        session = requests.Session()
+        res = session.get(
             form_url,
             allow_redirects=True,
             headers=UA,
@@ -788,6 +792,56 @@ def fetch_form(form_url: str) -> Tuple[dict, str, str, str, str]:
     submit_url = resolved_url.replace("viewform", "formResponse") if "viewform" in resolved_url else (
         resolved_url if "formResponse" in resolved_url else resolved_url.rstrip("/") + "/formResponse"
     )
+
+    # Newer Google Forms store some question images as opaque
+    # ``s-blob-v1-IMAGE-*`` tokens. Their signed forms-images-rt URL is emitted
+    # only after rendering the page that contains the question. Request only
+    # intermediate pages with harmless placeholders and ``continue=1``; never
+    # post the final page and never transmit the user's personal values here.
+    if "s-blob-v1-IMAGE-" in raw_html:
+        page_payloads = build_preview_page_payloads(form_data)
+        blob_pages = find_blob_image_page_indexes(form_data)
+        # Reaching page N requires continuing through pages 0..N-1. Stop at
+        # the final page that actually contains an unresolved image instead
+        # of walking through every remaining section of a long form.
+        pages_to_continue = min(
+            max(blob_pages, default=0),
+            max(len(page_payloads) - 1, 0),
+        )
+        rendered_pages = [raw_html]
+        current_html = raw_html
+        for page_index, preview_fields in enumerate(page_payloads[:pages_to_continue]):
+            state = extract_form_page_state(current_html)
+            if not state.get("fbzx"):
+                break
+            preview_payload: Dict[str, Any] = dict(preview_fields)
+            preview_payload.update({
+                "fvv": state.get("fvv") or fvv,
+                "pageHistory": state.get("pageHistory") or str(page_index),
+                "fbzx": state["fbzx"],
+                "continue": "1",
+            })
+            if page_index == 0:
+                preview_payload["draftResponse"] = "[]"
+            elif state.get("partialResponse"):
+                preview_payload["partialResponse"] = state["partialResponse"]
+            try:
+                page_response = session.post(
+                    submit_url,
+                    data=preview_payload,
+                    headers={**UA, "Referer": resolved_url},
+                    timeout=20,
+                )
+                page_response.raise_for_status()
+            except requests.exceptions.RequestException:
+                break
+            # A continue request must never reach the confirmation page. Stop
+            # defensively if Google changes this contract in the future.
+            if "freebirdformviewerviewresponseconfirmationmessage" in page_response.text.lower():
+                break
+            rendered_pages.append(page_response.text)
+            current_html = page_response.text
+        raw_html = "\n".join(rendered_pages)
 
     return form_data, fbzx, fvv, raw_html, submit_url
 
