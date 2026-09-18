@@ -105,8 +105,8 @@ MAX_IMAGE_FILE_SIZE = 4 * 1024 * 1024
 JPEG_QUALITY = 82
 
 MODEL_CANDIDATES: List[str] = [
-    "gemini-3.8-flash",
-    "gemini-2.5-flash",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash",
 ]
 
 DEAD_KEY_SIGNALS = [
@@ -1007,6 +1007,7 @@ def call_gemini_chunk(
     n = len(keys)
     last_err: Optional[Exception] = None
     routes_tried = 0
+    route_errors: List[str] = []
 
     for offset in range(n):
         key_idx = (start_key_idx + offset) % n
@@ -1028,6 +1029,8 @@ def call_gemini_chunk(
 
             if status == "ok":
                 return result, model_name
+
+            route_errors.append(f"{model_name}: {str(result)[:350]}")
 
             if status == "key_dead":
                 with bad_keys_lock:
@@ -1051,7 +1054,9 @@ def call_gemini_chunk(
         if routes_tried >= max_route_attempts:
             break
 
-    raise last_err or RuntimeError("ไม่มีคีย์/โมเดลใดใช้งานได้เลย (โควตาอาจหมดหมดทุกทางแล้ว)")
+    if route_errors:
+        raise RuntimeError(" | ".join(route_errors))
+    raise last_err or RuntimeError("ไม่มีคีย์/โมเดลใดใช้งานได้เลย")
 
 
 def _ready_image_count(item: Tuple[int, Question]) -> int:
