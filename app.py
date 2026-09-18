@@ -22,7 +22,7 @@ import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, TypeVar, Union
 
 import requests
 import streamlit as st
@@ -31,11 +31,45 @@ from urllib.parse import urlsplit
 from google import genai
 from google.genai import types
 
-from analysis_validation import (
-    AI_RESPONSE_SCHEMA,
-    build_balanced_batches,
-    normalize_model_answers,
-)
+from analysis_validation import AI_RESPONSE_SCHEMA, normalize_model_answers
+
+try:
+    from analysis_validation import build_balanced_batches
+except ImportError:
+    # Streamlit Cloud อาจ hot-reload app.py แต่ยังถือ module เวอร์ชันเก่าไว้ใน
+    # sys.modules ชั่วคราว ทำให้ import ฟังก์ชันที่เพิ่งเพิ่มไม่สำเร็จ ใช้ fallback
+    # เดียวกันในไฟล์หลักเพื่อให้แอปเปิดได้ทันทีโดยไม่ต้องรอ cold restart
+    BatchItem = TypeVar("BatchItem")
+
+    def build_balanced_batches(
+        items: Sequence[BatchItem],
+        image_count: Callable[[BatchItem], int],
+        max_text_items: int = 8,
+        max_image_items: int = 4,
+        max_images: int = 6,
+    ) -> List[List[BatchItem]]:
+        batches: List[List[BatchItem]] = []
+        current: List[BatchItem] = []
+        current_images = 0
+        for item in items:
+            item_images = max(0, int(image_count(item)))
+            item_limit = (
+                max_image_items
+                if current_images + item_images > 0
+                else max_text_items
+            )
+            if current and (
+                len(current) >= item_limit
+                or current_images + item_images > max_images
+            ):
+                batches.append(current)
+                current = []
+                current_images = 0
+            current.append(item)
+            current_images += item_images
+        if current:
+            batches.append(current)
+        return batches
 from style import inject_css, render_header
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
