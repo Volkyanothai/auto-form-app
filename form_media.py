@@ -70,14 +70,19 @@ class _FormsImageParser(HTMLParser):
     def handle_starttag(self, tag: str, attrs: List[Tuple[str, Optional[str]]]) -> None:
         tag = tag.lower()
         attr_map = self._attrs(attrs)
-        if tag == "img":
+        if tag == "img" or any(
+            key in attr_map for key in ("data-src", "srcset", "data-background-image")
+        ) or "url(" in attr_map.get("style", "").lower():
             self._capture_image(attr_map)
         if tag not in _VOID_TAGS:
             self.stack.append((tag, attr_map))
 
     def handle_startendtag(self, tag: str, attrs: List[Tuple[str, Optional[str]]]) -> None:
-        if tag.lower() == "img":
-            self._capture_image(self._attrs(attrs))
+        attr_map = self._attrs(attrs)
+        if tag.lower() == "img" or any(
+            key in attr_map for key in ("data-src", "srcset", "data-background-image")
+        ) or "url(" in attr_map.get("style", "").lower():
+            self._capture_image(attr_map)
 
     def handle_endtag(self, tag: str) -> None:
         tag = tag.lower()
@@ -87,20 +92,48 @@ class _FormsImageParser(HTMLParser):
                 return
 
     def _capture_image(self, attrs: Mapping[str, str]) -> None:
-        url = html.unescape(attrs.get("src", "")).strip()
-        if not is_trusted_google_form_image_url(url):
+        candidates: List[str] = [attrs.get("data-src", "")]
+        srcset = attrs.get("srcset", "")
+        if srcset:
+            candidates.extend(
+                part.strip().split()[0]
+                for part in reversed(srcset.split(","))
+                if part.strip()
+            )
+        candidates.extend([
+            attrs.get("src", ""),
+            attrs.get("data-background-image", ""),
+        ])
+        candidates.extend(re.findall(
+            r"url\(\s*['\"]?([^'\")]+)",
+            attrs.get("style", ""),
+            flags=re.IGNORECASE,
+        ))
+
+        url = ""
+        for candidate in candidates:
+            candidate = html.unescape(candidate or "").strip()
+            if candidate.startswith("//"):
+                candidate = "https:" + candidate
+            if is_trusted_google_form_image_url(candidate):
+                url = candidate
+                break
+        if not url:
             return
 
-        item_id = ""
-        choice_value: Optional[str] = None
-        role: Optional[str] = None
+        item_id = attrs.get("data-item-id", "").strip()
+        choice_value: Optional[str] = (
+            html.unescape(attrs.get("data-value", "")).strip() or None
+        )
+        role: Optional[str] = attrs.get("role", "").lower() or None
         for _, ancestor in reversed(self.stack):
             if role is None and ancestor.get("role"):
                 role = ancestor["role"].lower()
             if choice_value is None and ancestor.get("data-value"):
                 choice_value = html.unescape(ancestor["data-value"]).strip() or None
-            if ancestor.get("data-item-id"):
+            if not item_id and ancestor.get("data-item-id"):
                 item_id = ancestor["data-item-id"].strip()
+            if item_id and choice_value is not None:
                 break
 
         # Images outside an item are form theme/header assets, not question
