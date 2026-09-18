@@ -13,6 +13,7 @@ import base64
 import difflib
 import hashlib
 import html as html_lib
+import importlib
 import io
 import json
 import logging
@@ -31,12 +32,7 @@ from urllib.parse import urlsplit
 from google import genai
 from google.genai import types
 
-from analysis_validation import (
-    AI_RESPONSE_SCHEMA,
-    merge_verification_result,
-    normalize_model_answers,
-    should_verify_answer,
-)
+import analysis_validation as _analysis_validation
 from form_media import (
     RenderedImageRef,
     extract_rendered_image_refs,
@@ -45,43 +41,134 @@ from form_media import (
     upgrade_google_form_image_url,
 )
 
-try:
-    from analysis_validation import build_balanced_batches
-except ImportError:
-    # Streamlit Cloud อาจ hot-reload app.py แต่ยังถือ module เวอร์ชันเก่าไว้ใน
-    # sys.modules ชั่วคราว ทำให้ import ฟังก์ชันที่เพิ่งเพิ่มไม่สำเร็จ ใช้ fallback
-    # เดียวกันในไฟล์หลักเพื่อให้แอปเปิดได้ทันทีโดยไม่ต้องรอ cold restart
-    BatchItem = TypeVar("BatchItem")
+# Streamlit Cloud อาจ hot-reload app.py ขณะที่ process ยังเก็บ module รุ่นเก่า
+# อยู่ใน sys.modules การใช้ ``from module import new_name`` จะทำให้ทั้งเว็บล้ม
+# ตั้งแต่หน้าแรก จึง reload เมื่อเวอร์ชันไม่ตรง และยังมี fallback ในไฟล์หลักหาก
+# deployment กำลังสลับไฟล์อยู่พอดี
+_ANALYSIS_HELPERS = (
+    "build_balanced_batches",
+    "merge_verification_result",
+    "should_verify_answer",
+)
+if not all(hasattr(_analysis_validation, name) for name in _ANALYSIS_HELPERS):
+    try:
+        _analysis_validation = importlib.reload(_analysis_validation)
+    except Exception:
+        pass
 
-    def build_balanced_batches(
-        items: Sequence[BatchItem],
-        image_count: Callable[[BatchItem], int],
-        max_text_items: int = 8,
-        max_image_items: int = 4,
-        max_images: int = 6,
-    ) -> List[List[BatchItem]]:
-        batches: List[List[BatchItem]] = []
-        current: List[BatchItem] = []
-        current_images = 0
-        for item in items:
-            item_images = max(0, int(image_count(item)))
-            item_limit = (
-                max_image_items
-                if current_images + item_images > 0
-                else max_text_items
-            )
-            if current and (
-                len(current) >= item_limit
-                or current_images + item_images > max_images
-            ):
-                batches.append(current)
-                current = []
-                current_images = 0
-            current.append(item)
-            current_images += item_images
-        if current:
+AI_RESPONSE_SCHEMA = _analysis_validation.AI_RESPONSE_SCHEMA
+normalize_model_answers = _analysis_validation.normalize_model_answers
+
+BatchItem = TypeVar("BatchItem")
+
+
+def _fallback_build_balanced_batches(
+    items: Sequence[BatchItem],
+    image_count: Callable[[BatchItem], int],
+    max_text_items: int = 8,
+    max_image_items: int = 4,
+    max_images: int = 6,
+) -> List[List[BatchItem]]:
+    batches: List[List[BatchItem]] = []
+    current: List[BatchItem] = []
+    current_images = 0
+    for item in items:
+        item_images = max(0, int(image_count(item)))
+        item_limit = max_image_items if current_images + item_images > 0 else max_text_items
+        if current and (
+            len(current) >= item_limit
+            or current_images + item_images > max_images
+        ):
             batches.append(current)
-        return batches
+            current = []
+            current_images = 0
+        current.append(item)
+        current_images += item_images
+    if current:
+        batches.append(current)
+    return batches
+
+
+def _fallback_should_verify_answer(
+    title: str,
+    answer: Any,
+    confidence: int,
+    *,
+    has_images: bool = False,
+    is_multi: bool = False,
+) -> bool:
+    if not answer:
+        return False
+    if has_images or is_multi or int(confidence or 0) < 80:
+        return True
+    folded = re.sub(r"\s+", " ", str(title)).strip().casefold()
+    markers = (
+        "ไม่ถูก", "ไม่ใช่", "ยกเว้น", "ผิด", "ถูกทุกข้อ", "ถูกกี่ข้อ",
+        "เลือกได้หลาย", "จากภาพ", "จากรูป", "แผนภาพ", "กราฟ", "ตาราง",
+        "คำนวณ", "จงหา", "สมการ", "ข้อใดกล่าว", "except", "incorrect",
+        "not true", "diagram", "graph", "calculate",
+    )
+    return any(marker in folded for marker in markers)
+
+
+def _fallback_merge_verification_result(
+    original: Dict[str, Any],
+    candidate: Optional[Dict[str, Any]],
+    *,
+    revision_threshold: int = 85,
+) -> Dict[str, Any]:
+    merged = dict(original)
+    candidate = candidate if isinstance(candidate, dict) else {}
+    candidate_answer = candidate.get("answer")
+    if not candidate_answer:
+        merged["verification"] = "failed"
+        return merged
+
+    def canonical_values(value: Any) -> List[str]:
+        values = value if isinstance(value, list) else ([value] if value else [])
+        return sorted({
+            re.sub(r"\s+", " ", str(item)).strip().casefold()
+            for item in values
+            if str(item).strip()
+        })
+
+    merged["verification_reasoning"] = candidate.get("reasoning", "")
+    if canonical_values(merged.get("answer")) == canonical_values(candidate_answer):
+        merged["verification"] = "verified"
+        merged["confidence"] = max(
+            int(merged.get("confidence", 0) or 0),
+            int(candidate.get("confidence", 0) or 0),
+        )
+        return merged
+
+    candidate_confidence = int(candidate.get("confidence", 0) or 0)
+    if candidate_confidence >= revision_threshold:
+        merged["initial_answer"] = merged.get("answer")
+        merged["answer"] = candidate_answer
+        merged["confidence"] = candidate_confidence
+        merged["reasoning"] = candidate.get("reasoning", merged.get("reasoning", ""))
+        merged["verification"] = "revised"
+    else:
+        merged["verification"] = "conflict"
+        merged["verification_candidate"] = candidate_answer
+    return merged
+
+
+build_balanced_batches = getattr(
+    _analysis_validation,
+    "build_balanced_batches",
+    _fallback_build_balanced_batches,
+)
+should_verify_answer = getattr(
+    _analysis_validation,
+    "should_verify_answer",
+    _fallback_should_verify_answer,
+)
+merge_verification_result = getattr(
+    _analysis_validation,
+    "merge_verification_result",
+    _fallback_merge_verification_result,
+)
 from style import inject_css, render_header
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
