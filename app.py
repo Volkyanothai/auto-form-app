@@ -33,16 +33,7 @@ from google import genai
 from google.genai import types
 
 import analysis_validation as _analysis_validation
-from form_media import (
-    RenderedImageRef,
-    build_preview_page_payloads,
-    extract_form_page_state,
-    extract_rendered_image_refs,
-    find_blob_image_page_indexes,
-    is_trusted_google_form_image_url,
-    split_item_image_refs,
-    upgrade_google_form_image_url,
-)
+import form_media as _form_media
 
 # Streamlit Cloud อาจ hot-reload app.py ขณะที่ process ยังเก็บ module รุ่นเก่า
 # อยู่ใน sys.modules การใช้ ``from module import new_name`` จะทำให้ทั้งเว็บล้ม
@@ -58,6 +49,31 @@ if not all(hasattr(_analysis_validation, name) for name in _ANALYSIS_HELPERS):
         _analysis_validation = importlib.reload(_analysis_validation)
     except Exception:
         pass
+
+_FORM_MEDIA_HELPERS = (
+    "RenderedImageRef",
+    "build_preview_page_payloads",
+    "extract_form_page_state",
+    "extract_rendered_image_refs",
+    "find_blob_image_page_indexes",
+    "is_trusted_google_form_image_url",
+    "split_item_image_refs",
+    "upgrade_google_form_image_url",
+)
+if not all(hasattr(_form_media, name) for name in _FORM_MEDIA_HELPERS):
+    try:
+        _form_media = importlib.reload(_form_media)
+    except Exception:
+        pass
+
+RenderedImageRef = _form_media.RenderedImageRef
+build_preview_page_payloads = _form_media.build_preview_page_payloads
+extract_form_page_state = _form_media.extract_form_page_state
+extract_rendered_image_refs = _form_media.extract_rendered_image_refs
+find_blob_image_page_indexes = _form_media.find_blob_image_page_indexes
+is_trusted_google_form_image_url = _form_media.is_trusted_google_form_image_url
+split_item_image_refs = _form_media.split_item_image_refs
+upgrade_google_form_image_url = _form_media.upgrade_google_form_image_url
 
 AI_RESPONSE_SCHEMA = _analysis_validation.AI_RESPONSE_SCHEMA
 normalize_model_answers = _analysis_validation.normalize_model_answers
