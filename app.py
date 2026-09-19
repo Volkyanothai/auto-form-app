@@ -44,6 +44,7 @@ _ANALYSIS_HELPERS = (
     "answers_equivalent",
     "build_balanced_batches",
     "calculate_answer_reliability",
+    "choose_autofill_value",
     "merge_adjudication_result",
     "merge_verification_result",
     "should_verify_answer",
@@ -240,6 +241,15 @@ submission_fingerprint = getattr(
     lambda payload: hashlib.sha256(
         json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
     ).hexdigest(),
+)
+choose_autofill_value = getattr(
+    _analysis_validation,
+    "choose_autofill_value",
+    lambda current, previous_auto, desired: (
+        str(desired)
+        if desired and (not current or str(current) == str(previous_auto or ""))
+        else str(current or "")
+    ),
 )
 from style import inject_css, render_header
 
@@ -2051,11 +2061,19 @@ with st.container(border=True):
 
     col1, col2 = st.columns(2)
     with col1:
-        my_name = st.text_input("FULL NAME", placeholder="ชื่อ-นามสกุล")
-        my_no = st.text_input("CLASS NUMBER", placeholder="เลขที่")
+        my_name = st.text_input(
+            "FULL NAME", placeholder="ชื่อ-นามสกุล", key="profile_name"
+        )
+        my_no = st.text_input(
+            "CLASS NUMBER", placeholder="เลขที่", key="profile_class_number"
+        )
     with col2:
-        my_student_id = st.text_input("STUDENT ID", placeholder="เลขประจำตัว")
-        my_class = st.text_input("CLASSROOM", placeholder="เช่น 6/3")
+        my_student_id = st.text_input(
+            "STUDENT ID", placeholder="เลขประจำตัว", key="profile_student_id"
+        )
+        my_class = st.text_input(
+            "CLASSROOM", placeholder="เช่น 6/3", key="profile_classroom"
+        )
 
 if "manual_images" not in st.session_state:
     st.session_state["manual_images"] = {}
@@ -2175,6 +2193,35 @@ if "questions" in st.session_state:
     debug_logs = st.session_state.get("debug_logs", [])
     manual_images = st.session_state["manual_images"]
 
+    # Keep the review fields linked to the persistent profile inputs. Streamlit
+    # otherwise prefers an old widget value over a newly supplied ``value=``.
+    # Only replace blank/previously-auto-filled values so manual review edits
+    # are never overwritten on a rerun or filter change.
+    profile_values = {
+        "ชื่อ-นามสกุล": my_name,
+        "เลขประจำตัว": my_student_id,
+        "เลขที่": my_no,
+        "ชั้น/ห้อง": my_class,
+    }
+    autofill_history = st.session_state.setdefault("_personal_autofill_history", {})
+    refreshed_personal_data: Dict[str, Tuple[str, str, str, bool]] = {}
+    for entry_id, info in personal_data_map.items():
+        label = info[2]
+        desired = profile_values.get(label) or info[1]
+        widget_key = "input_" + entry_id
+        chosen = choose_autofill_value(
+            st.session_state.get(widget_key),
+            autofill_history.get(entry_id),
+            desired,
+        )
+        st.session_state[widget_key] = chosen
+        autofill_history[entry_id] = desired
+        required = bool(info[3]) if len(info) > 3 else False
+        refreshed_personal_data[entry_id] = (info[0], chosen, label, required)
+    personal_data_map = refreshed_personal_data
+    st.session_state["personal_data_map"] = personal_data_map
+    st.session_state["_personal_autofill_history"] = autofill_history
+
     for q in questions:
         if q.entry_id in manual_images:
             q.images = [img for img in q.images if img.source != "manual_upload"]
@@ -2232,7 +2279,6 @@ if "questions" in st.session_state:
                 label = info[2] + (" *" if len(info) > 3 and info[3] else "")
                 cols[idx % len(cols)].text_input(
                     label,
-                    value=info[1],
                     key="input_" + entry_id,
                 )
 
