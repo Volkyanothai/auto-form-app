@@ -40,9 +40,15 @@ import form_media as _form_media
 # ตั้งแต่หน้าแรก จึง reload เมื่อเวอร์ชันไม่ตรง และยังมี fallback ในไฟล์หลักหาก
 # deployment กำลังสลับไฟล์อยู่พอดี
 _ANALYSIS_HELPERS = (
+    "answer_matches_review_filter",
+    "answers_equivalent",
     "build_balanced_batches",
+    "calculate_answer_reliability",
+    "merge_adjudication_result",
     "merge_verification_result",
     "should_verify_answer",
+    "submission_fingerprint",
+    "verification_priority",
 )
 if not all(hasattr(_analysis_validation, name) for name in _ANALYSIS_HELPERS):
     try:
@@ -188,6 +194,53 @@ merge_verification_result = getattr(
     "merge_verification_result",
     _fallback_merge_verification_result,
 )
+answers_equivalent = getattr(
+    _analysis_validation,
+    "answers_equivalent",
+    lambda left, right: str(left).strip().casefold() == str(right).strip().casefold(),
+)
+verification_priority = getattr(
+    _analysis_validation,
+    "verification_priority",
+    lambda title, answer, confidence, **kwargs: (
+        100 if kwargs.get("has_images") else 0
+    ) + (50 if kwargs.get("is_multi") else 0) + max(0, 70 - int(confidence or 0)),
+)
+merge_adjudication_result = getattr(
+    _analysis_validation,
+    "merge_adjudication_result",
+    lambda original, candidate, judge: {
+        **dict(original),
+        "verification": "conflict",
+        "verification_candidate": (candidate or {}).get("answer"),
+    },
+)
+calculate_answer_reliability = getattr(
+    _analysis_validation,
+    "calculate_answer_reliability",
+    lambda answer_data, **kwargs: {
+        "reliability_score": int(answer_data.get("confidence", 0) or 0),
+        "risk_level": "safe" if int(answer_data.get("confidence", 0) or 0) >= 80 else "review",
+        "risk_reasons": ["ประเมินจากความมั่นใจของโมเดล"],
+    },
+)
+answer_matches_review_filter = getattr(
+    _analysis_validation,
+    "answer_matches_review_filter",
+    lambda answer_data, filter_key, **kwargs: (
+        filter_key == "all"
+        or (filter_key == "needs_review" and answer_data.get("risk_level") != "safe")
+        or (filter_key == "unanswered" and not answer_data.get("answer"))
+        or (filter_key == "images" and kwargs.get("has_images", False))
+    ),
+)
+submission_fingerprint = getattr(
+    _analysis_validation,
+    "submission_fingerprint",
+    lambda payload: hashlib.sha256(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest(),
+)
 from style import inject_css, render_header
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -214,6 +267,8 @@ TYPE_IMAGE = 11
 MAX_PARALLEL_WORKERS = 2
 MAX_REPAIR_ATTEMPTS = 1
 MAX_ROUTE_ATTEMPTS = 2
+MAX_VERIFICATION_ITEMS = 8
+MAX_ADJUDICATION_ITEMS = 3
 MAX_IMAGE_WORKERS = 6
 ANALYSIS_TIMEOUT_MS = 30_000
 SUBMIT_TIMEOUT = 30
@@ -431,6 +486,19 @@ def compress_image(
     return best_data, best_mime, status
 
 
+@st.cache_data(ttl=1800, max_entries=256, show_spinner=False)
+def _download_image_bytes_cached(url: str) -> bytes:
+    """Cache only public Google image bytes; never cache form or personal state."""
+    headers = {**UA, "Referer": "https://docs.google.com/forms/"}
+    response = requests.get(url, headers=headers, timeout=IMAGE_TIMEOUT)
+    content_type = response.headers.get("content-type", "").lower()
+    if response.status_code != 200 or len(response.content) <= 100:
+        raise RuntimeError(f"ดาวน์โหลดรูปไม่สำเร็จ (HTTP {response.status_code})")
+    if content_type and not content_type.startswith("image/"):
+        raise RuntimeError("URL ไม่ได้ส่งข้อมูลรูปภาพกลับมา")
+    return response.content
+
+
 def process_image_from_url(
     url: Optional[str],
     raw_bytes: Optional[bytes] = None,
@@ -443,13 +511,7 @@ def process_image_from_url(
                 status="failed", error="โดเมนรูปภาพไม่ได้รับอนุญาต",
             )
         try:
-            headers = {**UA, "Referer": "https://docs.google.com/forms/"}
-            r = requests.get(url, headers=headers, timeout=IMAGE_TIMEOUT)
-            content_type = r.headers.get("content-type", "").lower()
-            if r.status_code == 200 and len(r.content) > 100 and (
-                content_type.startswith("image/") or not content_type
-            ):
-                raw_bytes = r.content
+            raw_bytes = _download_image_bytes_cached(url)
         except Exception:
             pass
 
@@ -1439,6 +1501,11 @@ def analyze_all(
         f"⚡ แบ่ง {len(indexed)} ข้อเป็น {len(chunks)} ชุด "
         f"(โมเดลหลัก: {MODEL_CANDIDATES[0]})"
     )
+    if verify_risky:
+        debug_logs.append(
+            f"🧮 งบความแม่น: ตรวจอิสระไม่เกิน {MAX_VERIFICATION_ITEMS} ข้อ "
+            f"และตัดสินข้อขัดแย้งไม่เกิน {MAX_ADJUDICATION_ITEMS} ข้อต่อการวิเคราะห์"
+        )
 
     bad_keys: set = set()
     bad_keys_lock = threading.Lock()
@@ -1507,20 +1574,22 @@ def analyze_all(
                     )
         return phase_results, phase_errors, completed_entry_ids
 
-    first_results, first_pass_errors, completed_entry_ids = run_chunks(
+    first_results, first_pass_errors, _ = run_chunks(
         chunks,
         phase="ชุดหลัก",
         report_progress=True,
     )
+    for answer_data in first_results.values():
+        answer_data["source_pass"] = "first"
     results.update(first_results)
 
-    # ซ่อมเป็นกลุ่มด้วยกติกา batching เดียวกัน ไม่เรียก API ทีละข้อ
+    # ซ่อมเฉพาะข้อที่ยังไม่มีคำตอบ ไม่ว่าชุดเดิมจะตอบไม่ครบหรือทั้งชุดล้ม
+    # เพื่อให้ timeout หนึ่งชุดไม่ทำให้ข้อเหล่านั้นถูกข้ามถาวร
     for repair_attempt in range(MAX_REPAIR_ATTEMPTS):
         missing = [
             item
             for item in indexed
-            if item[1].entry_id in completed_entry_ids
-            and (
+            if (
                 item[1].entry_id not in results
                 or not results[item[1].entry_id].get("answer")
             )
@@ -1549,16 +1618,18 @@ def analyze_all(
         )
         for entry_id, answer in repaired.items():
             if answer.get("answer"):
+                answer["source_pass"] = "repair"
                 results[entry_id] = answer
         first_pass_errors.extend(repair_errors)
 
-    # Accuracy mode: re-check only answers that actually benefit from another
-    # pass. A failed verifier never erases a usable first-pass answer.
+    # Accuracy mode: an independent pass never sees the first answer. Spend a
+    # fixed budget on the highest-risk items, then use a small third-pass budget
+    # only when the two independent answers disagree.
     for answer_data in results.values():
         answer_data.setdefault("verification", "not_needed")
 
     if verify_risky:
-        verification_items: List[Tuple[int, Question]] = []
+        ranked_verification_items: List[Tuple[int, int, Question]] = []
         for idx, question in indexed:
             original = results.get(question.entry_id, {})
             answer = original.get("answer")
@@ -1571,21 +1642,41 @@ def analyze_all(
                 is_multi=question.is_multi,
             ):
                 continue
-
-            original_text = json.dumps(answer, ensure_ascii=False)
-            review_instruction = (
-                "\n[รอบตรวจทานความถูกต้อง]\n"
-                f"คำตอบรอบแรก: {original_text}\n"
-                f"เหตุผลรอบแรก: {original.get('reasoning', '')}\n"
-                "ตรวจโจทย์ ตัวเลือก บริบท และรูปทั้งหมดใหม่อย่างละเอียด "
-                "หากคำตอบเดิมถูกให้ตอบเหมือนเดิม หากผิดให้คืนคำตอบที่แก้แล้ว "
-                "ห้ามเปลี่ยนเพียงเพราะใช้ถ้อยคำต่างกัน"
+            priority = verification_priority(
+                question.title,
+                answer,
+                original.get("confidence", 0),
+                has_images=has_images,
+                is_multi=question.is_multi,
             )
+            ranked_verification_items.append((priority, idx, question))
+
+        ranked_verification_items.sort(key=lambda item: (-item[0], item[1]))
+        selected = ranked_verification_items[:MAX_VERIFICATION_ITEMS]
+        skipped = ranked_verification_items[MAX_VERIFICATION_ITEMS:]
+        verification_items: List[Tuple[int, Question]] = []
+        original_questions: Dict[str, Question] = {}
+        for _, idx, question in selected:
+            review_instruction = (
+                "\n[รอบตรวจอิสระ]\n"
+                "แก้โจทย์นี้ใหม่ตั้งแต่ต้นจากคำถาม ตัวเลือก บริบท และรูปเท่านั้น "
+                "อย่าอนุมานว่ามีคำตอบจากรอบก่อน และตรวจเครื่องหมายปฏิเสธ/การคำนวณให้ละเอียด"
+            )
+            original_questions[question.entry_id] = question
             verification_items.append((
                 idx,
                 replace(question, title=question.title + review_instruction),
             ))
-            original["verification"] = "pending"
+            results[question.entry_id]["verification"] = "pending"
+
+        for _, _, question in skipped:
+            results[question.entry_id]["verification"] = "budget_skipped"
+
+        if skipped:
+            debug_logs.append(
+                f"🧮 คุมลิมิต: ตรวจซ้ำ {len(selected)}/{len(ranked_verification_items)} ข้อเสี่ยง "
+                f"และข้าม {len(skipped)} ข้อที่ลำดับความเสี่ยงต่ำกว่า"
+            )
 
         if verification_items:
             verification_chunks = build_balanced_batches(
@@ -1601,25 +1692,108 @@ def analyze_all(
             )
             checked, verification_errors, _ = run_chunks(
                 verification_chunks,
-                phase="ตรวจซ้ำ",
+                phase="ตรวจอิสระ",
                 route_limit=MAX_ROUTE_ATTEMPTS,
             )
 
-            for _, verification_question in verification_items:
+            conflicts: List[Tuple[int, Question, Dict[str, Any]]] = []
+            for idx, verification_question in verification_items:
                 entry_id = verification_question.entry_id
                 original = results.get(entry_id)
                 if not original:
                     continue
-                results[entry_id] = merge_verification_result(
-                    original,
-                    checked.get(entry_id),
+                candidate = checked.get(entry_id)
+                if not candidate:
+                    results[entry_id] = merge_verification_result(original, None)
+                elif answers_equivalent(original.get("answer"), candidate.get("answer")):
+                    results[entry_id] = merge_verification_result(original, candidate)
+                else:
+                    original["verification"] = "conflict"
+                    original["verification_candidate"] = candidate.get("answer")
+                    original["verification_reasoning"] = candidate.get("reasoning", "")
+                    conflicts.append((
+                        idx,
+                        original_questions[entry_id],
+                        candidate,
+                    ))
+
+            adjudication_source = conflicts[:MAX_ADJUDICATION_ITEMS]
+            if len(conflicts) > MAX_ADJUDICATION_ITEMS:
+                debug_logs.append(
+                    f"🧮 คุมลิมิต: ส่งรอบตัดสิน {MAX_ADJUDICATION_ITEMS}/{len(conflicts)} ข้อขัดแย้ง"
                 )
+
+            if adjudication_source:
+                adjudication_items: List[Tuple[int, Question]] = []
+                conflict_candidates: Dict[str, Dict[str, Any]] = {}
+                for idx, question, candidate in adjudication_source:
+                    original = results[question.entry_id]
+                    conflict_candidates[question.entry_id] = candidate
+                    decision_instruction = (
+                        "\n[รอบตัดสินคำตอบที่ขัดแย้ง]\n"
+                        f"คำตอบ A: {json.dumps(original.get('answer'), ensure_ascii=False)}\n"
+                        f"เหตุผล A: {original.get('reasoning', '')}\n"
+                        f"คำตอบ B: {json.dumps(candidate.get('answer'), ensure_ascii=False)}\n"
+                        f"เหตุผล B: {candidate.get('reasoning', '')}\n"
+                        "ตรวจโจทย์เองอีกครั้งแล้วคืนคำตอบสุดท้ายที่มีหลักฐานรองรับ ห้ามเลือกจากคะแนนความมั่นใจเดิมอย่างเดียว"
+                    )
+                    adjudication_items.append((
+                        idx,
+                        replace(question, title=question.title + decision_instruction),
+                    ))
+
+                adjudication_chunks = build_balanced_batches(
+                    adjudication_items,
+                    _ready_image_count,
+                    max_text_items=3,
+                    max_image_items=1,
+                    max_images=4,
+                )
+                debug_logs.append(
+                    f"⚖️ ตัดสินเฉพาะ {len(adjudication_items)} ข้อที่สองรอบตอบไม่ตรงกัน "
+                    f"เป็น {len(adjudication_chunks)} ชุด"
+                )
+                judged, adjudication_errors, _ = run_chunks(
+                    adjudication_chunks,
+                    phase="รอบตัดสิน",
+                    route_limit=MAX_ROUTE_ATTEMPTS,
+                )
+                for _, question in adjudication_items:
+                    entry_id = question.entry_id
+                    results[entry_id] = merge_adjudication_result(
+                        results[entry_id],
+                        conflict_candidates.get(entry_id),
+                        judged.get(entry_id),
+                    )
+                if adjudication_errors:
+                    debug_logs.append(
+                        f"⚠️ รอบตัดสินล้มเหลวบางชุด {len(adjudication_errors)} ชุด "
+                        "— ทำเครื่องหมายให้ผู้ใช้ตรวจเอง"
+                    )
 
             if verification_errors:
                 debug_logs.append(
                     f"⚠️ รอบตรวจซ้ำล้มเหลวบางชุด {len(verification_errors)} ชุด "
                     "— คงคำตอบรอบแรกไว้"
                 )
+
+    # Convert model confidence and verification evidence into a calibrated UI
+    # score. Missing expected images can never be hidden by high self-confidence.
+    for _, question in indexed:
+        answer_data = results.get(question.entry_id)
+        if not answer_data:
+            continue
+        has_images = _ready_image_count((0, question)) > 0
+        title_folded = question.title.casefold()
+        image_expected = bool(question.images or question.choice_images) or any(
+            marker in title_folded for marker in ("รูป", "ภาพ", "กราฟ", "แผนภาพ", "image", "diagram")
+        )
+        answer_data.update(calculate_answer_reliability(
+            answer_data,
+            has_images=has_images,
+            image_expected=image_expected,
+            has_choices=bool(question.choices),
+        ))
 
     unresolved = [
         (idx, q)
@@ -1868,7 +2042,10 @@ with st.container(border=True):
     accuracy_mode = st.checkbox(
         "ตรวจซ้ำข้อเสี่ยงเพื่อเพิ่มความแม่นยำ",
         value=True,
-        help="ตรวจเพิ่มเฉพาะข้อจากรูป ข้อหลายคำตอบ ข้อกำกวม และข้อที่ AI มั่นใจต่ำ",
+        help=(
+            "ตรวจอิสระเฉพาะข้อเสี่ยงสูงสุดไม่เกิน 8 ข้อ และใช้รอบตัดสินเฉพาะ "
+            "ข้อที่คำตอบขัดแย้งไม่เกิน 3 ข้อ เพื่อควบคุมลิมิต API"
+        ),
     )
     debug_mode = st.checkbox("โหมด debug", value=False)
 
@@ -1890,7 +2067,10 @@ if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
         with st.status("SYSTEM PROCESSING...", expanded=True) as status:
             try:
                 for key in list(st.session_state.keys()):
-                    if key.startswith(("ans_", "input_")):
+                    if key.startswith(("ans_", "input_")) or key in {
+                        "pending_submission", "submission_in_progress",
+                        "submitted", "confirmation_html", "confirmation_url",
+                    }:
                         del st.session_state[key]
 
                 st.write("🔍 กำลังอ่านโครงสร้างฟอร์ม...")
@@ -2011,11 +2191,24 @@ if "questions" in st.session_state:
     verified_count = sum(
         1
         for q in questions
-        if get_ai_answer(ai_answers, q.entry_id).get("verification") in {"verified", "revised"}
+        if get_ai_answer(ai_answers, q.entry_id).get("verification") in {
+            "verified", "revised", "adjudicated", "adjudicated_revised",
+        }
     )
     avg_conf = 0
     if total_q > 0:
-        avg_conf = sum(get_ai_answer(ai_answers, q.entry_id).get("confidence", 0) for q in questions) / total_q
+        avg_conf = sum(
+            get_ai_answer(ai_answers, q.entry_id).get(
+                "reliability_score",
+                get_ai_answer(ai_answers, q.entry_id).get("confidence", 0),
+            )
+            for q in questions
+        ) / total_q
+    safe_count = sum(
+        1 for q in questions
+        if get_ai_answer(ai_answers, q.entry_id).get("risk_level") == "safe"
+    )
+    review_count = total_q - safe_count
 
     with st.container(border=True):
         st.markdown('<div class="glass-header">ANALYSIS SUMMARY</div>', unsafe_allow_html=True)
@@ -2023,7 +2216,8 @@ if "questions" in st.session_state:
         c1.metric("คำถามทั้งหมด", total_q)
         c2.metric("AI ตอบแล้ว", answered)
         c3.metric("AI ไม่ตอบ ⚠️", not_answered)
-        c4.metric("ความมั่นใจเฉลี่ย", f"{avg_conf:.0f}%")
+        c4.metric("ความน่าเชื่อถือ", f"{avg_conf:.0f}%")
+        st.caption(f"✅ พร้อมใช้ {safe_count} ข้อ · ⚠️ ควรตรวจ {review_count} ข้อ")
         if verified_count:
             st.caption(f"🛡️ ผ่านการตรวจทานเพิ่มแล้ว {verified_count} ข้อ")
         if not_answered > 0:
@@ -2042,9 +2236,36 @@ if "questions" in st.session_state:
                     key="input_" + entry_id,
                 )
 
-    col_accept, col_reset = st.columns(2)
+    filter_labels = {
+        "ทั้งหมด": "all",
+        "ต้องตรวจ": "needs_review",
+        "ยังไม่ตอบ": "unanswered",
+        "มีรูป": "images",
+    }
+    selected_filter_label = st.radio(
+        "แสดงคำถาม",
+        list(filter_labels),
+        horizontal=True,
+        key="review_filter",
+    )
+    selected_filter = filter_labels[selected_filter_label]
+
+    col_safe, col_accept, col_reset = st.columns(3)
+    with col_safe:
+        if st.button("✅ ใช้เฉพาะคำตอบปลอดภัย", use_container_width=True):
+            for q in questions:
+                ans_data = get_ai_answer(ai_answers, q.entry_id)
+                if ans_data.get("risk_level") == "safe":
+                    apply_ai_answer_to_state(q, ans_data)
+                elif q.choices and q.is_multi:
+                    st.session_state[f"ans_{q.entry_id}"] = []
+                elif q.choices:
+                    st.session_state[f"ans_{q.entry_id}"] = None
+                else:
+                    st.session_state[f"ans_{q.entry_id}"] = ""
+            st.rerun()
     with col_accept:
-        if st.button("✅ ยอมรับคำตอบ AI ทั้งหมด", use_container_width=True):
+        if st.button("ยอมรับคำตอบทั้งหมด", use_container_width=True):
             for q in questions:
                 ans_data = get_ai_answer(ai_answers, q.entry_id)
                 apply_ai_answer_to_state(q, ans_data)
@@ -2056,11 +2277,26 @@ if "questions" in st.session_state:
                     del st.session_state[f"ans_{q.entry_id}"]
             st.rerun()
 
-    for idx, q in enumerate(questions, 1):
+    review_items = [
+        (idx, question)
+        for idx, question in enumerate(questions, 1)
+        if answer_matches_review_filter(
+            get_ai_answer(ai_answers, question.entry_id),
+            selected_filter,
+            has_images=_ready_image_count((idx, question)) > 0,
+        )
+    ]
+    if not review_items:
+        st.info("ไม่มีคำถามในตัวกรองนี้")
+
+    for idx, q in review_items:
         entry_id = q.entry_id
         ans_data = get_ai_answer(ai_answers, entry_id)
         default_val = ans_data.get("answer", "")
         confidence = ans_data.get("confidence", 0)
+        reliability = ans_data.get("reliability_score", confidence)
+        risk_level = ans_data.get("risk_level", "review")
+        risk_reasons = ans_data.get("risk_reasons", [])
         reasoning = ans_data.get("reasoning", "")
         ai_has_answer = bool(default_val) and (not isinstance(default_val, list) or len(default_val) > 0)
 
@@ -2113,6 +2349,13 @@ if "questions" in st.session_state:
                             )
                             if entry_id in result:
                                 result[entry_id]["verification"] = "not_checked"
+                                result[entry_id]["source_pass"] = "manual"
+                                result[entry_id].update(calculate_answer_reliability(
+                                    result[entry_id],
+                                    has_images=_ready_image_count((idx, q)) > 0,
+                                    image_expected=bool(q.images or q.choice_images),
+                                    has_choices=bool(q.choices),
+                                ))
                                 ai_answers[entry_id] = result[entry_id]
                                 st.session_state["ai_answers"] = ai_answers
                                 apply_ai_answer_to_state(q, result[entry_id])
@@ -2180,13 +2423,24 @@ if "questions" in st.session_state:
                     '</div>',
                     unsafe_allow_html=True,
                 )
-            elif confidence > 0:
-                color = confidence_color(confidence)
+            elif reliability > 0:
+                color = confidence_color(reliability)
                 st.markdown(
-                    f'<div class="confidence-track"><div class="confidence-fill" style="width:{confidence}%;background:{color};"></div></div>',
+                    f'<div class="confidence-track"><div class="confidence-fill" style="width:{reliability}%;background:{color};"></div></div>',
                     unsafe_allow_html=True
                 )
-                st.markdown(f'<div class="confidence-label">ความมั่นใจ: {confidence}%</div>', unsafe_allow_html=True)
+                risk_text = {
+                    "safe": "พร้อมใช้",
+                    "review": "ควรตรวจ",
+                    "risky": "เสี่ยง",
+                }.get(risk_level, "ควรตรวจ")
+                st.markdown(
+                    f'<div class="confidence-label">ความน่าเชื่อถือของระบบ: {reliability}% · {risk_text} '
+                    f'(AI ประเมินตัวเอง {confidence}%)</div>',
+                    unsafe_allow_html=True,
+                )
+                if risk_reasons:
+                    st.caption(" · ".join(str(reason) for reason in risk_reasons[:3]))
             if reasoning and ai_has_answer:
                 st.markdown(f'<div class="reasoning-text">💡 {html_lib.escape(reasoning)}</div>', unsafe_allow_html=True)
 
@@ -2195,10 +2449,16 @@ if "questions" in st.session_state:
                 st.success("🛡️ ตรวจคำตอบซ้ำแล้ว — ผลตรงกัน")
             elif verification == "revised":
                 st.info("🛡️ ระบบตรวจซ้ำและแก้คำตอบจากรอบแรกแล้ว")
+            elif verification == "adjudicated":
+                st.success("⚖️ สองรอบตอบต่างกัน และรอบตัดสินยืนยันคำตอบเดิม")
+            elif verification == "adjudicated_revised":
+                st.info("⚖️ สองรอบตอบต่างกัน และรอบตัดสินเลือกคำตอบที่แก้ใหม่")
             elif verification == "conflict":
                 st.warning("⚠️ ผลตรวจซ้ำไม่ตรงกันและยังไม่มั่นใจ — คงคำตอบรอบแรกไว้ กรุณาตรวจเอง")
             elif verification == "failed":
                 st.caption("รอบตรวจซ้ำไม่สำเร็จ แต่ระบบยังคงคำตอบรอบแรกไว้")
+            elif verification == "budget_skipped":
+                st.caption("ไม่ได้ตรวจซ้ำข้อนี้ เพื่อควบคุมลิมิต API")
 
             ans_key = f"ans_{entry_id}"
 
@@ -2217,53 +2477,120 @@ if "questions" in st.session_state:
             else:
                 st.text_input("คำตอบ", key=ans_key)
 
-    if st.button("TRANSMIT DATA", type="primary", use_container_width=True):
-        with st.spinner("กำลังส่งข้อมูล..."):
-            final_answers = {
-                eid: st.session_state.get("input_" + eid, info[1])
-                for eid, info in personal_data_map.items()
+    def current_submission_snapshot() -> Tuple[Dict[str, Any], List[str], Dict[str, Any], str]:
+        final_answers = {
+            eid: st.session_state.get("input_" + eid, info[1])
+            for eid, info in personal_data_map.items()
+        }
+        missing_required: List[str] = []
+        for entry_id, info in personal_data_map.items():
+            is_required = bool(info[3]) if len(info) > 3 else False
+            if is_required and not str(final_answers.get(entry_id, "")).strip():
+                missing_required.append(info[2])
+        for qidx, question in enumerate(questions, 1):
+            value = st.session_state.get(f"ans_{question.entry_id}", "")
+            final_answers[question.entry_id] = value
+            if question.is_required and (
+                not value or (isinstance(value, list) and not value)
+            ):
+                missing_required.append(f"ข้อ {qidx}")
+
+        page_history = simulate_page_history(
+            questions,
+            final_answers,
+            st.session_state["default_next"],
+            st.session_state["page_count"],
+        )
+        payload = build_submit_payload(
+            personal_data_map,
+            questions,
+            final_answers,
+            st.session_state["fbzx"],
+            st.session_state["fvv"],
+            page_history,
+        )
+        return final_answers, missing_required, payload, submission_fingerprint(payload)
+
+    if st.button(
+        "ตรวจสอบก่อนส่ง",
+        type="primary",
+        use_container_width=True,
+        disabled=bool(st.session_state.get("submission_in_progress")),
+    ):
+        _, missing_required, payload, fingerprint = current_submission_snapshot()
+        if missing_required:
+            st.error(
+                f"กรุณากรอกข้อบังคับให้ครบ: {', '.join(missing_required[:5])}"
+                f"{'...' if len(missing_required) > 5 else ''}"
+            )
+        else:
+            st.session_state["pending_submission"] = {
+                "payload": payload,
+                "fingerprint": fingerprint,
             }
-            missing_required = []
+            st.rerun()
 
-            for info_index, (entry_id, info) in enumerate(personal_data_map.items(), 1):
-                is_required = bool(info[3]) if len(info) > 3 else False
-                if is_required and not str(final_answers.get(entry_id, "")).strip():
-                    missing_required.append(info[2])
-
-            for qidx, q in enumerate(questions, 1):
-                val = st.session_state.get(f"ans_{q.entry_id}", "")
-                final_answers[q.entry_id] = val
-                if q.is_required and (not val or (isinstance(val, list) and not val)):
-                    missing_required.append(f"ข้อ {qidx}")
-
-            if missing_required:
-                st.error(f"กรุณากรอกข้อบังคับให้ครบ: {', '.join(missing_required[:5])}{'...' if len(missing_required) > 5 else ''}")
-            else:
-                page_history = simulate_page_history(
-                    questions, final_answers,
-                    st.session_state["default_next"],
-                    st.session_state["page_count"],
-                )
-                payload = build_submit_payload(
-                    personal_data_map, questions, final_answers,
-                    st.session_state["fbzx"],
-                    st.session_state["fvv"],
-                    page_history,
-                )
-
-                success, msg, confirmation_html, confirmation_url = submit_form(
-                    st.session_state["submit_url"], payload
-                )
-                if success:
-                    st.session_state["confirmation_html"] = confirmation_html
-                    st.session_state["confirmation_url"] = confirmation_url
-                    st.session_state["submitted"] = True
-                    st.success("🎉 " + msg)
-                    st.balloons()
+    pending_submission = st.session_state.get("pending_submission")
+    if pending_submission:
+        _, current_missing, current_payload, current_fingerprint = current_submission_snapshot()
+        if current_missing or current_fingerprint != pending_submission.get("fingerprint"):
+            st.warning("คำตอบถูกเปลี่ยนหลังเปิดหน้าตรวจสอบ กรุณากด ‘ตรวจสอบก่อนส่ง’ ใหม่")
+            st.session_state.pop("pending_submission", None)
+        else:
+            risky_before_submit = sum(
+                1 for question in questions
+                if get_ai_answer(ai_answers, question.entry_id).get("risk_level") != "safe"
+            )
+            with st.container(border=True):
+                st.markdown('<div class="glass-header">CONFIRM SUBMISSION</div>', unsafe_allow_html=True)
+                st.write(f"พร้อมส่งข้อมูลส่วนตัว {len(personal_data_map)} ช่อง และคำตอบ {len(questions)} ข้อ")
+                if risky_before_submit:
+                    st.warning(
+                        f"มี {risky_before_submit} ข้อที่ระบบจัดว่า ‘ควรตรวจ/เสี่ยง’ "
+                        "ตรวจคำตอบด้านบนให้เรียบร้อยก่อนยืนยัน"
+                    )
                 else:
-                    st.error("❌ " + msg)
-                    with st.expander("ดู payload ที่ส่ง"):
-                        st.json(payload)
+                    st.success("คำตอบ AI ทุกข้อผ่านเกณฑ์ความน่าเชื่อถือของระบบ")
+                st.caption("ระบบจะส่งไป Google Forms จริงเมื่อกดปุ่มยืนยันด้านล่างเท่านั้น")
+
+                confirm_col, cancel_col = st.columns(2)
+                with confirm_col:
+                    confirm_clicked = st.button(
+                        "🚀 ยืนยันส่งจริง",
+                        type="primary",
+                        use_container_width=True,
+                        disabled=bool(st.session_state.get("submission_in_progress")),
+                    )
+                with cancel_col:
+                    cancel_clicked = st.button("ยกเลิก", use_container_width=True)
+
+                if cancel_clicked:
+                    st.session_state.pop("pending_submission", None)
+                    st.rerun()
+
+                if confirm_clicked:
+                    if st.session_state.get("last_submitted_fingerprint") == current_fingerprint:
+                        st.warning("คำตอบชุดนี้ถูกส่งสำเร็จไปแล้ว ระบบจึงไม่ส่งซ้ำ")
+                    else:
+                        st.session_state["submission_in_progress"] = True
+                        with st.spinner("กำลังส่งข้อมูล..."):
+                            success, msg, confirmation_html, confirmation_url = submit_form(
+                                st.session_state["submit_url"], current_payload
+                            )
+                        st.session_state["submission_in_progress"] = False
+                        if success:
+                            st.session_state["last_submitted_fingerprint"] = current_fingerprint
+                            st.session_state["confirmation_html"] = confirmation_html
+                            st.session_state["confirmation_url"] = confirmation_url
+                            st.session_state["submitted"] = True
+                            st.session_state.pop("pending_submission", None)
+                            st.success("🎉 " + msg)
+                            st.balloons()
+                            st.rerun()
+                        else:
+                            st.error("❌ " + msg)
+                            with st.expander("ดู payload ที่ส่ง"):
+                                st.json(current_payload)
 
     if st.session_state.get("submitted") and st.session_state.get("confirmation_html"):
         st.divider()
