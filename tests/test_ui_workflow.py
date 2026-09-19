@@ -62,3 +62,49 @@ def test_submitted_state_has_a_dedicated_result_stage():
     assert not app.exception
     assert any("ส่งคำตอบเรียบร้อยแล้ว" in markdown.value for markdown in app.markdown)
     assert not app.text_input
+
+
+def test_result_button_uses_view_score_link_from_confirmation_html():
+    app = build_app()
+    app.session_state["workspace_started"] = True
+    app.session_state["questions"] = []
+    app.session_state["personal_data_map"] = {}
+    app.session_state["submitted"] = True
+    app.session_state["confirmation_url"] = (
+        "https://docs.google.com/forms/d/e/FORM_ID/formResponse"
+    )
+    app.session_state["confirmation_html"] = """
+        <html><body>
+          <a href="/forms/d/e/FORM_ID/viewscore?viewscore=AE0zAgD123">
+            <span>View score</span>
+          </a>
+          <a href="/forms/d/e/FORM_ID/viewform">Submit another response</a>
+        </body></html>
+    """
+    app.run()
+
+    assert not app.exception
+    link_buttons = app.get("link_button")
+    assert len(link_buttons) == 1
+    assert link_buttons[0].label == "เปิดหน้าคะแนนใน Google Forms ↗"
+    assert link_buttons[0].url == (
+        "https://docs.google.com/forms/d/e/FORM_ID/viewscore?viewscore=AE0zAgD123"
+    )
+
+
+def test_result_does_not_expose_non_google_score_link():
+    app = build_app()
+    app.session_state["workspace_started"] = True
+    app.session_state["questions"] = []
+    app.session_state["personal_data_map"] = {}
+    app.session_state["submitted"] = True
+    app.session_state["confirmation_url"] = (
+        "https://docs.google.com/forms/d/e/FORM_ID/formResponse"
+    )
+    app.session_state["confirmation_html"] = (
+        '<html><body><a href="https://example.com/viewscore">View score</a></body></html>'
+    )
+    app.run()
+
+    assert not app.exception
+    assert not app.get("link_button")

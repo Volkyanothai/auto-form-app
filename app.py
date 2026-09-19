@@ -23,12 +23,13 @@ import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field, replace
+from html.parser import HTMLParser
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, TypeVar, Union
 
 import requests
 import streamlit as st
 import streamlit.components.v1 as components
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 from google import genai
 from google.genai import types
 
@@ -1934,6 +1935,77 @@ def build_score_page_html(html: str, base_url: Optional[str] = None) -> str:
     return html
 
 
+class _ScoreLinkParser(HTMLParser):
+    """Collect anchors without depending on optional HTML parsing packages."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.links: List[Tuple[str, str]] = []
+        self._active_href: Optional[str] = None
+        self._active_text: List[str] = []
+
+    def handle_starttag(self, tag: str, attrs: List[Tuple[str, Optional[str]]]) -> None:
+        if tag.casefold() != "a" or self._active_href is not None:
+            return
+        attr_map = {name.casefold(): value for name, value in attrs}
+        href = attr_map.get("href")
+        if href:
+            self._active_href = href
+            self._active_text = []
+
+    def handle_data(self, data: str) -> None:
+        if self._active_href is not None:
+            self._active_text.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.casefold() == "a" and self._active_href is not None:
+            text = " ".join("".join(self._active_text).split())
+            self.links.append((self._active_href, text))
+            self._active_href = None
+            self._active_text = []
+
+
+def extract_score_url(confirmation_html: str, base_url: Optional[str] = None) -> Optional[str]:
+    """Return Google's real View score URL, not the form confirmation URL."""
+    if not confirmation_html:
+        return None
+
+    parser = _ScoreLinkParser()
+    try:
+        parser.feed(confirmation_html)
+    except Exception:
+        return None
+
+    candidates: List[Tuple[int, str]] = []
+    for raw_href, anchor_text in parser.links:
+        href = html_lib.unescape(raw_href.strip())
+        resolved = urljoin(base_url or "", href)
+        parts = urlsplit(resolved)
+        hostname = (parts.hostname or "").casefold()
+        if parts.scheme not in {"http", "https"}:
+            continue
+        if not (
+            hostname == "docs.google.com"
+            or hostname.endswith(".google.com")
+            or hostname == "forms.gle"
+        ):
+            continue
+
+        href_folded = resolved.casefold()
+        text_folded = " ".join(anchor_text.casefold().split())
+        score = 0
+        if "viewscore" in href_folded:
+            score += 100
+        if text_folded in {"view score", "ดูคะแนน", "ดูผลคะแนน", "ตรวจสอบคะแนน"}:
+            score += 80
+        elif "score" in text_folded or "คะแนน" in text_folded:
+            score += 40
+        if score:
+            candidates.append((score, resolved))
+
+    return max(candidates, default=(0, None), key=lambda item: item[0])[1]
+
+
 def submit_form(submit_url: str, payload: Dict[str, Any], max_retries: int = 2) -> Tuple[bool, str, Optional[str], Optional[str]]:
     """
     ส่งคำตอบไปยัง Google Form
@@ -2173,6 +2245,10 @@ if submitted_now:
     )
     confirmation_html = st.session_state.get("confirmation_html")
     if confirmation_html:
+        score_url = extract_score_url(
+            confirmation_html,
+            base_url=st.session_state.get("confirmation_url"),
+        )
         with st.container(border=True):
             st.markdown('<div class="glass-header">ผลลัพธ์จาก GOOGLE FORMS</div>', unsafe_allow_html=True)
             st.caption("หน้านี้มาจาก Google Forms หลังระบบบันทึกคำตอบสำเร็จ คุณเลือกเปิดดูรายละเอียดได้โดยไม่กระทบคำตอบที่ส่งแล้ว")
@@ -2183,12 +2259,14 @@ if submitted_now:
                     base_url=st.session_state.get("confirmation_url"),
                 )
                 components.html(page_html, height=500, scrolling=True)
-            if st.session_state.get("confirmation_url"):
+            if score_url:
                 st.link_button(
-                    "เปิดผลลัพธ์ใน Google Forms ↗",
-                    st.session_state["confirmation_url"],
+                    "เปิดหน้าคะแนนใน Google Forms ↗",
+                    score_url,
                     use_container_width=True,
                 )
+            else:
+                st.info("ฟอร์มนี้ไม่มีลิงก์ดูคะแนนทันทีจาก Google Forms")
     st.stop()
 
 # UI_SETUP_STAGE_START
@@ -2802,20 +2880,3 @@ if "questions" in st.session_state:
                             st.error("❌ " + msg)
                             with st.expander("ดู payload ที่ส่ง"):
                                 st.json(current_payload)
-
-    if st.session_state.get("submitted") and st.session_state.get("confirmation_html"):
-        st.divider()
-        st.markdown('<div class="glass-header">หน้ายืนยันการส่ง</div>', unsafe_allow_html=True)
-        st.caption(
-            "นี่คือหน้ายืนยันจริงที่ Google ส่งกลับมาหลังบันทึกคำตอบสำเร็จ — ถ้าอยากดูคะแนน "
-            "ให้กดปุ่ม '🔗 ดูคะแนน' ด้านล่างเอง (เปิดเป็นแท็บใหม่ ไม่กระทบหน้าแอปนี้)"
-        )
-        show_score = st.toggle("📄 แสดงหน้ายืนยัน", value=True, key="show_score_toggle")
-        if show_score:
-            page_html = build_score_page_html(
-                st.session_state["confirmation_html"],
-                base_url=st.session_state.get("confirmation_url"),
-            )
-            components.html(page_html, height=500, scrolling=True)
-        if st.session_state.get("confirmation_url"):
-            st.link_button("🔗 ดูคะแนน (เปิดแท็บใหม่)", st.session_state["confirmation_url"], use_container_width=True)
