@@ -509,9 +509,11 @@ div.stButton>button,div.stLinkButton>a{
   transition:transform .18s ease,box-shadow .22s ease,border-color .22s ease,filter .22s ease;
 }
 div.stButton>button::before,div.stLinkButton>a::before{
-  content:"";position:absolute;z-index:0;width:72%;height:280%;left:3%;top:-90%;border-radius:50%;
-  background:radial-gradient(ellipse,rgba(207,255,249,.58) 0%,rgba(82,226,224,.29) 34%,transparent 70%);
-  filter:blur(13px);mix-blend-mode:screen;pointer-events:none;
+  content:"";position:absolute;z-index:0;width:88%;height:300%;left:-2%;top:-100%;border-radius:50%;
+  background:
+    radial-gradient(ellipse at 34% 42%,rgba(225,255,252,.72) 0%,rgba(102,240,229,.34) 27%,transparent 59%),
+    radial-gradient(ellipse at 76% 66%,rgba(78,211,255,.44) 0%,transparent 54%);
+  filter:blur(10px);mix-blend-mode:screen;pointer-events:none;
   animation:buttonMistFloat 5.2s ease-in-out infinite;
 }
 div.stButton>button::after,div.stLinkButton>a::after{
@@ -544,23 +546,27 @@ div.stButton>button[kind="secondary"]:hover{
 div.stButton>button[kind="secondary"]::before{opacity:.34;}
 div.stLinkButton>a{
   border-color:rgba(111,234,213,.48)!important;
-  background:linear-gradient(110deg,#086f91 0%,#079eaa 30%,#25bea2 58%,#147fc2 100%)!important;
-  background-size:260% 100%!important;color:#f3fffd!important;
+  background-color:#087f9d!important;
+  background-image:linear-gradient(110deg,#086f91 0%,#079eaa 30%,#25bea2 58%,#147fc2 100%)!important;
+  background-repeat:no-repeat!important;background-size:260% 100%!important;color:#f3fffd!important;
   font-size:.82rem!important;font-weight:750!important;
   box-shadow:inset 0 1px 0 rgba(255,255,255,.25),0 10px 27px rgba(23,130,119,.27)!important;
   animation:buttonOceanDrift 6.4s ease-in-out infinite!important;
 }
 div.stLinkButton>a:hover{box-shadow:inset 0 1px 0 rgba(255,255,255,.3),0 14px 34px rgba(31,153,142,.34)!important;}
 .st-key-confirm_submit button{
-  background:linear-gradient(110deg,#087b91 0%,#10a99b 34%,#46c99e 62%,#1788c8 100%)!important;
-  background-size:260% 100%!important;border-color:rgba(111,234,213,.52)!important;
+  background-color:#0b8997!important;
+  background-image:linear-gradient(110deg,#087b91 0%,#10a99b 34%,#46c99e 62%,#1788c8 100%)!important;
+  background-repeat:no-repeat!important;background-size:260% 100%!important;border-color:rgba(111,234,213,.52)!important;
   box-shadow:inset 0 1px 0 rgba(255,255,255,.26),0 10px 28px rgba(22,135,119,.28)!important;
   animation:buttonOceanDrift 6.4s ease-in-out infinite!important;
 }
 .st-key-reset_answers button{
   border:1px solid transparent!important;color:#ffc7cb!important;
-  background:linear-gradient(145deg,rgba(50,22,34,.96),rgba(26,16,28,.98)) padding-box,
-             linear-gradient(110deg,rgba(244,114,124,.62),rgba(247,128,92,.46),rgba(249,181,106,.48),rgba(222,84,109,.48)) border-box!important;
+  background-color:rgba(40,18,29,.98)!important;
+  background-image:linear-gradient(145deg,rgba(50,22,34,.96),rgba(26,16,28,.98)),
+                   linear-gradient(110deg,rgba(244,114,124,.62),rgba(247,128,92,.46),rgba(249,181,106,.48),rgba(222,84,109,.48))!important;
+  background-clip:padding-box,border-box!important;background-origin:padding-box,border-box!important;
   background-size:100% 100%,260% 100%!important;box-shadow:inset 0 1px 0 rgba(255,255,255,.05),0 7px 19px rgba(53,15,27,.2)!important;
   animation:buttonOceanDrift 7.2s ease-in-out infinite!important;
 }
@@ -582,6 +588,21 @@ div.stLinkButton>a:hover{box-shadow:inset 0 1px 0 rgba(255,255,255,.3),0 14px 34
 .result-icon{display:grid;place-items:center;width:58px;height:58px;margin:0 auto 16px;border-radius:18px;background:rgba(73,214,188,.12);border:1px solid rgba(73,214,188,.22);font-size:1.5rem;}
 .result-hero h2{margin:0 0 8px;font-size:1.65rem;}
 .result-hero p{margin:0;color:var(--p-muted);font-size:.86rem;}
+
+/* Keep the requested ambient button motion visible even when a mobile browser
+   reports reduced motion. It runs more slowly in that mode to remain gentle. */
+@media (prefers-reduced-motion:reduce){
+  div.stButton>button,div.stLinkButton>a{
+    animation-duration:12s!important;animation-iteration-count:infinite!important;
+    transition-duration:.18s!important;
+  }
+  div.stButton>button::before,div.stLinkButton>a::before{
+    animation-duration:9s!important;animation-iteration-count:infinite!important;
+  }
+  div.stButton>button::after,div.stLinkButton>a::after{
+    animation-duration:8s!important;animation-iteration-count:infinite!important;
+  }
+}
 
 @media(max-width:760px){
   .block-container{padding:.65rem .72rem 4rem;}
