@@ -389,6 +389,18 @@ def submission_fingerprint(payload: Mapping[str, Any]) -> str:
     return hashlib.sha256(canonical).hexdigest()
 
 
+def choose_autofill_value(current: Any, previous_auto: Any, desired: Any) -> str:
+    """Refresh generated values while preserving a user's manual review edit."""
+    current_text = "" if current is None else str(current)
+    previous_text = "" if previous_auto is None else str(previous_auto)
+    desired_text = "" if desired is None else str(desired)
+    if not desired_text:
+        return current_text
+    if not current_text or current_text == previous_text:
+        return desired_text
+    return current_text
+
+
 def merge_verification_result(
     original: Mapping[str, Any],
     candidate: Mapping[str, Any] | None,

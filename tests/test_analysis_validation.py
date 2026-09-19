@@ -5,6 +5,7 @@ from analysis_validation import (
     answers_equivalent,
     build_balanced_batches,
     calculate_answer_reliability,
+    choose_autofill_value,
     merge_adjudication_result,
     merge_verification_result,
     normalize_model_answers,
@@ -308,6 +309,12 @@ class ReviewAndSubmissionSafetyTests(unittest.TestCase):
 
         self.assertEqual(submission_fingerprint(first), submission_fingerprint(reordered))
         self.assertNotEqual(submission_fingerprint(first), submission_fingerprint(changed))
+
+    def test_autofill_refreshes_blank_or_previous_value_but_keeps_manual_edit(self):
+        self.assertEqual(choose_autofill_value("", "", "สมชาย"), "สมชาย")
+        self.assertEqual(choose_autofill_value("สมชาย", "สมชาย", "สมหญิง"), "สมหญิง")
+        self.assertEqual(choose_autofill_value("ชื่อที่แก้เอง", "สมชาย", "สมหญิง"), "ชื่อที่แก้เอง")
+        self.assertEqual(choose_autofill_value("ชื่อเดิม", "ชื่อเดิม", ""), "ชื่อเดิม")
 
 
 if __name__ == "__main__":
