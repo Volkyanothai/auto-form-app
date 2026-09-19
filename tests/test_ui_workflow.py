@@ -16,7 +16,7 @@ def test_landing_opens_setup_stage():
     app = build_app().run()
 
     assert not app.exception
-    assert [button.label for button in app.button] == ["เริ่มต้นใช้งาน  →"]
+    assert [button.label for button in app.button] == ["เริ่มต้นใช้งาน"]
 
     app.button[0].click().run()
 
@@ -29,8 +29,8 @@ def test_landing_opens_setup_stage():
         "ชั้น/ห้อง",
     ]
     assert [button.label for button in app.button] == [
-        "← หน้าหลัก",
-        "เริ่มวิเคราะห์ด้วย AI  →",
+        "กลับหน้าหลัก",
+        "เริ่มวิเคราะห์",
     ]
 
 
@@ -86,7 +86,7 @@ def test_result_button_uses_view_score_link_from_confirmation_html():
     assert not app.exception
     link_buttons = app.get("link_button")
     assert len(link_buttons) == 1
-    assert link_buttons[0].label == "เปิดหน้าคะแนนใน Google Forms ↗"
+    assert link_buttons[0].label == "เปิดหน้าคะแนนใน Google Forms"
     assert link_buttons[0].url == (
         "https://docs.google.com/forms/d/e/FORM_ID/viewscore?viewscore=AE0zAgD123"
     )
