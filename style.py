@@ -481,16 +481,61 @@ div[data-testid="stVerticalBlockBorderWrapper"]:hover{border-color:var(--p-line-
 .stTextInput label p,.stSelectbox label p,.stTextArea label p{font-size:.72rem;color:#a7b3c6;text-transform:none;letter-spacing:0;}
 input[type="checkbox"],input[type="radio"]{accent-color:#7367f0!important;}
 [data-testid="stCheckbox"] input:checked+div,[data-testid="stToggle"] input:checked+div{background-color:#7367f0!important;border-color:#9b8cff!important;}
-div.stButton>button{min-height:44px;padding:.68rem 1rem;border:1px solid rgba(155,140,255,.3);border-radius:11px;background:linear-gradient(135deg,#8274f3 0%,#685be4 55%,#5549ce 100%);color:white;font-size:.82rem;font-weight:750;letter-spacing:0;box-shadow:0 10px 26px rgba(91,77,210,.24);transition:transform .15s ease,filter .15s ease,border-color .15s ease,box-shadow .15s ease;}
-div.stButton>button:hover{filter:brightness(1.08);border-color:#b7adff;box-shadow:0 12px 30px rgba(91,77,210,.32);}
-div.stButton>button:active{transform:translateY(1px) scale(.99);}
-div.stButton>button[kind="secondary"]{background:linear-gradient(180deg,rgba(30,39,58,.88),rgba(19,26,41,.9));border-color:rgba(148,163,184,.2);box-shadow:0 5px 14px rgba(0,0,0,.12);color:#dbe4f0;}
-div.stButton>button[kind="secondary"]:hover{background:linear-gradient(180deg,rgba(39,49,70,.94),rgba(25,33,50,.96));border-color:rgba(155,140,255,.38);}
-div.stLinkButton>a{min-height:46px;border:1px solid rgba(73,214,188,.34)!important;border-radius:11px!important;background:linear-gradient(135deg,#247f79 0%,#1f6b69 56%,#195657 100%)!important;color:#effffc!important;font-size:.82rem!important;font-weight:750!important;box-shadow:0 10px 25px rgba(22,101,96,.24)!important;}
-div.stLinkButton>a:hover{filter:brightness(1.1);border-color:rgba(112,231,210,.62)!important;}
-.st-key-confirm_submit button{background:linear-gradient(135deg,#2b9b88,#237c75 56%,#1c625f)!important;border-color:rgba(92,229,203,.4)!important;box-shadow:0 10px 26px rgba(24,125,112,.24)!important;}
-.st-key-reset_answers button{background:rgba(244,114,124,.07)!important;border-color:rgba(244,114,124,.24)!important;color:#f3a5ad!important;box-shadow:none!important;}
-.st-key-reset_answers button:hover{background:rgba(244,114,124,.12)!important;border-color:rgba(244,114,124,.4)!important;}
+div.stButton>button,div.stLinkButton>a{
+  position:relative;isolation:isolate;overflow:hidden;min-height:46px;padding:.7rem 1.05rem;
+  border:1px solid rgba(187,181,255,.48);border-radius:12px;color:#fff;
+  background:linear-gradient(110deg,#6253e9 0%,#8b61ef 28%,#4f82ea 62%,#2db7aa 100%);
+  background-size:220% 100%;background-position:0 50%;
+  font-size:.82rem;font-weight:750;letter-spacing:.005em;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.28),inset 0 -1px 0 rgba(28,25,92,.22),0 10px 27px rgba(79,67,205,.28),0 0 0 1px rgba(104,91,230,.08);
+  transition:transform .18s ease,background-position .55s cubic-bezier(.2,.8,.2,1),box-shadow .22s ease,border-color .22s ease,filter .22s ease;
+}
+div.stButton>button::after,div.stLinkButton>a::after{
+  content:"";position:absolute;z-index:0;top:-150%;left:-34%;width:22%;height:400%;
+  transform:rotate(24deg);background:linear-gradient(90deg,transparent,rgba(255,255,255,.34),transparent);
+  transition:left .65s cubic-bezier(.2,.8,.2,1);pointer-events:none;
+}
+div.stButton>button>*,div.stLinkButton>a>*{position:relative;z-index:1;}
+div.stButton>button:hover,div.stLinkButton>a:hover{
+  background-position:100% 50%;border-color:rgba(214,210,255,.76);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.34),0 14px 34px rgba(73,94,211,.34),0 0 24px rgba(45,183,170,.11);
+  filter:saturate(1.08) brightness(1.04);transform:translateY(-1px);
+}
+div.stButton>button:hover::after,div.stLinkButton>a:hover::after{left:118%;}
+div.stButton>button:active,div.stLinkButton>a:active{transform:translateY(1px) scale(.992);filter:brightness(.98);}
+div.stButton>button:focus-visible,div.stLinkButton>a:focus-visible{outline:3px solid rgba(155,140,255,.3);outline-offset:3px;}
+div.stButton>button[kind="secondary"]{
+  border:1px solid transparent;color:#dfe6f3;
+  background:linear-gradient(145deg,rgba(24,32,49,.98),rgba(13,19,32,.98)) padding-box,
+             linear-gradient(115deg,rgba(155,140,255,.48),rgba(73,214,188,.22),rgba(148,163,184,.14)) border-box;
+  background-size:100% 100%,220% 100%;background-position:0 0,0 50%;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.055),0 7px 19px rgba(0,0,0,.18);
+}
+div.stButton>button[kind="secondary"]:hover{
+  border-color:transparent;background-position:0 0,100% 50%;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.08),0 11px 25px rgba(0,0,0,.24),0 0 20px rgba(115,103,240,.08);
+}
+div.stLinkButton>a{
+  border-color:rgba(111,234,213,.48)!important;
+  background:linear-gradient(110deg,#176f70 0%,#1a9a87 30%,#42bea7 58%,#397dd0 100%)!important;
+  background-size:220% 100%!important;background-position:0 50%!important;color:#f3fffd!important;
+  font-size:.82rem!important;font-weight:750!important;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.25),0 10px 27px rgba(23,130,119,.27)!important;
+}
+div.stLinkButton>a:hover{background-position:100% 50%!important;box-shadow:inset 0 1px 0 rgba(255,255,255,.3),0 14px 34px rgba(31,153,142,.34)!important;}
+.st-key-confirm_submit button{
+  background:linear-gradient(110deg,#14776e 0%,#20a58f 34%,#4ac1a2 62%,#4389cf 100%)!important;
+  background-size:220% 100%!important;border-color:rgba(111,234,213,.52)!important;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.26),0 10px 28px rgba(22,135,119,.28)!important;
+}
+.st-key-confirm_submit button:hover{background-position:100% 50%!important;}
+.st-key-reset_answers button{
+  border:1px solid transparent!important;color:#ffc7cb!important;
+  background:linear-gradient(145deg,rgba(50,22,34,.96),rgba(26,16,28,.98)) padding-box,
+             linear-gradient(110deg,rgba(244,114,124,.62),rgba(211,102,157,.42),rgba(249,149,106,.48)) border-box!important;
+  background-size:100% 100%,220% 100%!important;box-shadow:inset 0 1px 0 rgba(255,255,255,.05),0 7px 19px rgba(53,15,27,.2)!important;
+}
+.st-key-reset_answers button:hover{background-position:0 0,100% 50%!important;box-shadow:0 11px 27px rgba(96,30,49,.25)!important;}
 [data-testid="stAlert"]{border-radius:12px;border-width:1px;}
 .stProgress>div>div>div>div{height:7px;border-radius:999px;background:linear-gradient(90deg,#7367f0,#9b8cff 58%,var(--p-teal))!important;box-shadow:none;}
 .stProgress>div>div>div>div::after{display:none;}
