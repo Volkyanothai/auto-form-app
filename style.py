@@ -386,8 +386,8 @@ PRODUCT_CSS = """<style>
   --p-line-strong:rgba(148,163,184,.27);
   --p-text:#f4f7fb;
   --p-muted:#94a3b8;
-  --p-blue:#9b8cff;
-  --p-blue-strong:#7367f0;
+  --p-blue:#43c8e8;
+  --p-blue-strong:#168bd2;
   --p-teal:#49d6bc;
   --p-amber:#f5bf5b;
   --p-red:#fb7185;
@@ -401,7 +401,7 @@ html,body,p,h1,h2,h3,h4,h5,h6,label,input,textarea,button,span,div{
 .stApp{
   color:var(--p-text);
   background:
-    radial-gradient(900px 520px at 8% -10%,rgba(115,103,240,.16),transparent 64%),
+    radial-gradient(900px 520px at 8% -10%,rgba(22,139,210,.16),transparent 64%),
     radial-gradient(700px 480px at 100% 10%,rgba(73,214,188,.08),transparent 65%),
     var(--p-bg);
   background-attachment:fixed;
@@ -479,65 +479,95 @@ div[data-testid="stVerticalBlockBorderWrapper"]:hover{border-color:var(--p-line-
 }
 .stTextInput input:focus,.stTextArea textarea:focus{border-color:var(--p-blue)!important;box-shadow:0 0 0 3px rgba(116,167,255,.12)!important;}
 .stTextInput label p,.stSelectbox label p,.stTextArea label p{font-size:.72rem;color:#a7b3c6;text-transform:none;letter-spacing:0;}
-input[type="checkbox"],input[type="radio"]{accent-color:#7367f0!important;}
-[data-testid="stCheckbox"] input:checked+div,[data-testid="stToggle"] input:checked+div{background-color:#7367f0!important;border-color:#9b8cff!important;}
+input[type="checkbox"],input[type="radio"]{accent-color:#168bd2!important;}
+[data-testid="stCheckbox"] input:checked+div,[data-testid="stToggle"] input:checked+div{background-color:#168bd2!important;border-color:#43c8e8!important;}
+@keyframes buttonOceanDrift{
+  0%{background-position:0% 50%;}
+  50%{background-position:100% 50%;}
+  100%{background-position:0% 50%;}
+}
+@keyframes buttonMistFloat{
+  0%{transform:translate3d(-36%,-22%,0) rotate(0deg) scale(.88);opacity:.34;}
+  45%{transform:translate3d(24%,13%,0) rotate(145deg) scale(1.14);opacity:.58;}
+  72%{transform:translate3d(2%,-10%,0) rotate(250deg) scale(.98);opacity:.46;}
+  100%{transform:translate3d(-36%,-22%,0) rotate(360deg) scale(.88);opacity:.34;}
+}
+@keyframes buttonSoftSheen{
+  0%{transform:translateX(-190%) skewX(-18deg);opacity:0;}
+  16%{opacity:.42;}
+  42%{opacity:.18;}
+  58%,100%{transform:translateX(420%) skewX(-18deg);opacity:0;}
+}
 div.stButton>button,div.stLinkButton>a{
   position:relative;isolation:isolate;overflow:hidden;min-height:46px;padding:.7rem 1.05rem;
-  border:1px solid rgba(187,181,255,.48);border-radius:12px;color:#fff;
-  background:linear-gradient(110deg,#6253e9 0%,#8b61ef 28%,#4f82ea 62%,#2db7aa 100%);
-  background-size:220% 100%;background-position:0 50%;
+  border:1px solid rgba(117,225,235,.5);border-radius:12px;color:#fff;
+  background:linear-gradient(115deg,#0867bd 0%,#078fc4 26%,#08b6ba 53%,#20c79d 74%,#1785c8 100%);
+  background-size:260% 100%;background-position:0 50%;
   font-size:.82rem;font-weight:750;letter-spacing:.005em;
-  box-shadow:inset 0 1px 0 rgba(255,255,255,.28),inset 0 -1px 0 rgba(28,25,92,.22),0 10px 27px rgba(79,67,205,.28),0 0 0 1px rgba(104,91,230,.08);
-  transition:transform .18s ease,background-position .55s cubic-bezier(.2,.8,.2,1),box-shadow .22s ease,border-color .22s ease,filter .22s ease;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.3),inset 0 -1px 0 rgba(3,64,96,.24),0 11px 29px rgba(4,131,178,.27),0 0 24px rgba(25,199,168,.1);
+  animation:buttonOceanDrift 6.4s ease-in-out infinite;
+  transition:transform .18s ease,box-shadow .22s ease,border-color .22s ease,filter .22s ease;
+}
+div.stButton>button::before,div.stLinkButton>a::before{
+  content:"";position:absolute;z-index:0;width:72%;height:280%;left:3%;top:-90%;border-radius:50%;
+  background:radial-gradient(ellipse,rgba(207,255,249,.58) 0%,rgba(82,226,224,.29) 34%,transparent 70%);
+  filter:blur(13px);mix-blend-mode:screen;pointer-events:none;
+  animation:buttonMistFloat 5.2s ease-in-out infinite;
 }
 div.stButton>button::after,div.stLinkButton>a::after{
-  content:"";position:absolute;z-index:0;top:-150%;left:-34%;width:22%;height:400%;
-  transform:rotate(24deg);background:linear-gradient(90deg,transparent,rgba(255,255,255,.34),transparent);
-  transition:left .65s cubic-bezier(.2,.8,.2,1);pointer-events:none;
+  content:"";position:absolute;z-index:0;top:-35%;left:0;width:20%;height:170%;
+  background:linear-gradient(90deg,transparent,rgba(255,255,255,.38),transparent);
+  filter:blur(2px);pointer-events:none;
+  animation:buttonSoftSheen 4.8s linear infinite;
 }
-div.stButton>button>*,div.stLinkButton>a>*{position:relative;z-index:1;}
+div.stButton>button>*,div.stLinkButton>a>*{position:relative;z-index:2;}
 div.stButton>button:hover,div.stLinkButton>a:hover{
-  background-position:100% 50%;border-color:rgba(214,210,255,.76);
-  box-shadow:inset 0 1px 0 rgba(255,255,255,.34),0 14px 34px rgba(73,94,211,.34),0 0 24px rgba(45,183,170,.11);
-  filter:saturate(1.08) brightness(1.04);transform:translateY(-1px);
+  border-color:rgba(190,255,249,.78);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.36),0 15px 36px rgba(4,143,190,.34),0 0 30px rgba(32,199,157,.18);
+  filter:saturate(1.12) brightness(1.06);transform:translateY(-1px);
 }
-div.stButton>button:hover::after,div.stLinkButton>a:hover::after{left:118%;}
+div.stButton>button:hover::before,div.stLinkButton>a:hover::before{filter:blur(15px);}
 div.stButton>button:active,div.stLinkButton>a:active{transform:translateY(1px) scale(.992);filter:brightness(.98);}
-div.stButton>button:focus-visible,div.stLinkButton>a:focus-visible{outline:3px solid rgba(155,140,255,.3);outline-offset:3px;}
+div.stButton>button:focus-visible,div.stLinkButton>a:focus-visible{outline:3px solid rgba(67,200,232,.32);outline-offset:3px;}
 div.stButton>button[kind="secondary"]{
   border:1px solid transparent;color:#dfe6f3;
   background:linear-gradient(145deg,rgba(24,32,49,.98),rgba(13,19,32,.98)) padding-box,
-             linear-gradient(115deg,rgba(155,140,255,.48),rgba(73,214,188,.22),rgba(148,163,184,.14)) border-box;
-  background-size:100% 100%,220% 100%;background-position:0 0,0 50%;
+             linear-gradient(115deg,rgba(67,200,232,.58),rgba(73,214,188,.25),rgba(22,139,210,.42),rgba(148,163,184,.14)) border-box;
+  background-size:100% 100%,260% 100%;background-position:0 0,0 50%;
   box-shadow:inset 0 1px 0 rgba(255,255,255,.055),0 7px 19px rgba(0,0,0,.18);
+  animation:buttonOceanDrift 7.2s ease-in-out infinite;
 }
 div.stButton>button[kind="secondary"]:hover{
-  border-color:transparent;background-position:0 0,100% 50%;
-  box-shadow:inset 0 1px 0 rgba(255,255,255,.08),0 11px 25px rgba(0,0,0,.24),0 0 20px rgba(115,103,240,.08);
+  border-color:transparent;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.08),0 11px 25px rgba(0,0,0,.24),0 0 22px rgba(28,181,201,.12);
 }
+div.stButton>button[kind="secondary"]::before{opacity:.34;}
 div.stLinkButton>a{
   border-color:rgba(111,234,213,.48)!important;
-  background:linear-gradient(110deg,#176f70 0%,#1a9a87 30%,#42bea7 58%,#397dd0 100%)!important;
-  background-size:220% 100%!important;background-position:0 50%!important;color:#f3fffd!important;
+  background:linear-gradient(110deg,#086f91 0%,#079eaa 30%,#25bea2 58%,#147fc2 100%)!important;
+  background-size:260% 100%!important;color:#f3fffd!important;
   font-size:.82rem!important;font-weight:750!important;
   box-shadow:inset 0 1px 0 rgba(255,255,255,.25),0 10px 27px rgba(23,130,119,.27)!important;
+  animation:buttonOceanDrift 6.4s ease-in-out infinite!important;
 }
-div.stLinkButton>a:hover{background-position:100% 50%!important;box-shadow:inset 0 1px 0 rgba(255,255,255,.3),0 14px 34px rgba(31,153,142,.34)!important;}
+div.stLinkButton>a:hover{box-shadow:inset 0 1px 0 rgba(255,255,255,.3),0 14px 34px rgba(31,153,142,.34)!important;}
 .st-key-confirm_submit button{
-  background:linear-gradient(110deg,#14776e 0%,#20a58f 34%,#4ac1a2 62%,#4389cf 100%)!important;
-  background-size:220% 100%!important;border-color:rgba(111,234,213,.52)!important;
+  background:linear-gradient(110deg,#087b91 0%,#10a99b 34%,#46c99e 62%,#1788c8 100%)!important;
+  background-size:260% 100%!important;border-color:rgba(111,234,213,.52)!important;
   box-shadow:inset 0 1px 0 rgba(255,255,255,.26),0 10px 28px rgba(22,135,119,.28)!important;
+  animation:buttonOceanDrift 6.4s ease-in-out infinite!important;
 }
-.st-key-confirm_submit button:hover{background-position:100% 50%!important;}
 .st-key-reset_answers button{
   border:1px solid transparent!important;color:#ffc7cb!important;
   background:linear-gradient(145deg,rgba(50,22,34,.96),rgba(26,16,28,.98)) padding-box,
-             linear-gradient(110deg,rgba(244,114,124,.62),rgba(211,102,157,.42),rgba(249,149,106,.48)) border-box!important;
-  background-size:100% 100%,220% 100%!important;box-shadow:inset 0 1px 0 rgba(255,255,255,.05),0 7px 19px rgba(53,15,27,.2)!important;
+             linear-gradient(110deg,rgba(244,114,124,.62),rgba(247,128,92,.46),rgba(249,181,106,.48),rgba(222,84,109,.48)) border-box!important;
+  background-size:100% 100%,260% 100%!important;box-shadow:inset 0 1px 0 rgba(255,255,255,.05),0 7px 19px rgba(53,15,27,.2)!important;
+  animation:buttonOceanDrift 7.2s ease-in-out infinite!important;
 }
-.st-key-reset_answers button:hover{background-position:0 0,100% 50%!important;box-shadow:0 11px 27px rgba(96,30,49,.25)!important;}
+.st-key-reset_answers button::before{background:radial-gradient(ellipse,rgba(255,218,194,.5) 0%,rgba(249,149,106,.24) 36%,transparent 70%);}
+.st-key-reset_answers button:hover{box-shadow:0 11px 27px rgba(96,30,49,.25)!important;}
 [data-testid="stAlert"]{border-radius:12px;border-width:1px;}
-.stProgress>div>div>div>div{height:7px;border-radius:999px;background:linear-gradient(90deg,#7367f0,#9b8cff 58%,var(--p-teal))!important;box-shadow:none;}
+.stProgress>div>div>div>div{height:7px;border-radius:999px;background:linear-gradient(90deg,#168bd2,#43c8e8 58%,var(--p-teal))!important;box-shadow:none;}
 .stProgress>div>div>div>div::after{display:none;}
 .confidence-track{height:7px;background:rgba(148,163,184,.12);box-shadow:none;}
 .confidence-fill{box-shadow:none;}
