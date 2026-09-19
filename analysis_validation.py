@@ -311,7 +311,7 @@ def calculate_answer_reliability(
         return {
             "reliability_score": 0,
             "risk_level": "risky",
-            "risk_reasons": ["AI ยังไม่มีคำตอบ"],
+            "risk_reasons": ["ระบบยังไม่มีคำตอบ"],
         }
 
     try:
@@ -499,7 +499,7 @@ def normalize_model_answers(
 
         reasoning = str(item.get("reasoning", "")).strip()
         if not reasoning:
-            reasoning = "AI ไม่ได้ให้คำอธิบาย"
+            reasoning = "ไม่มีคำอธิบายประกอบ"
 
         result[entry_id] = {
             "answer": answer,

@@ -386,8 +386,8 @@ PRODUCT_CSS = """<style>
   --p-line-strong:rgba(148,163,184,.27);
   --p-text:#f4f7fb;
   --p-muted:#94a3b8;
-  --p-blue:#74a7ff;
-  --p-blue-strong:#4f8df7;
+  --p-blue:#9b8cff;
+  --p-blue-strong:#7367f0;
   --p-teal:#49d6bc;
   --p-amber:#f5bf5b;
   --p-red:#fb7185;
@@ -401,7 +401,7 @@ html,body,p,h1,h2,h3,h4,h5,h6,label,input,textarea,button,span,div{
 .stApp{
   color:var(--p-text);
   background:
-    radial-gradient(900px 520px at 8% -10%,rgba(79,141,247,.14),transparent 64%),
+    radial-gradient(900px 520px at 8% -10%,rgba(115,103,240,.16),transparent 64%),
     radial-gradient(700px 480px at 100% 10%,rgba(73,214,188,.08),transparent 65%),
     var(--p-bg);
   background-attachment:fixed;
@@ -479,12 +479,20 @@ div[data-testid="stVerticalBlockBorderWrapper"]:hover{border-color:var(--p-line-
 }
 .stTextInput input:focus,.stTextArea textarea:focus{border-color:var(--p-blue)!important;box-shadow:0 0 0 3px rgba(116,167,255,.12)!important;}
 .stTextInput label p,.stSelectbox label p,.stTextArea label p{font-size:.72rem;color:#a7b3c6;text-transform:none;letter-spacing:0;}
-div.stButton>button{min-height:44px;padding:.68rem 1rem;border:1px solid rgba(116,167,255,.3);border-radius:11px;background:linear-gradient(180deg,#6ea2fb,#4f86e8);color:white;font-size:.82rem;font-weight:750;letter-spacing:0;box-shadow:0 8px 22px rgba(79,141,247,.18);transition:transform .15s ease,filter .15s ease,border-color .15s ease;}
-div.stButton>button:hover{filter:brightness(1.08);border-color:#9cc2ff;}
+input[type="checkbox"],input[type="radio"]{accent-color:#7367f0!important;}
+[data-testid="stCheckbox"] input:checked+div,[data-testid="stToggle"] input:checked+div{background-color:#7367f0!important;border-color:#9b8cff!important;}
+div.stButton>button{min-height:44px;padding:.68rem 1rem;border:1px solid rgba(155,140,255,.3);border-radius:11px;background:linear-gradient(135deg,#8274f3 0%,#685be4 55%,#5549ce 100%);color:white;font-size:.82rem;font-weight:750;letter-spacing:0;box-shadow:0 10px 26px rgba(91,77,210,.24);transition:transform .15s ease,filter .15s ease,border-color .15s ease,box-shadow .15s ease;}
+div.stButton>button:hover{filter:brightness(1.08);border-color:#b7adff;box-shadow:0 12px 30px rgba(91,77,210,.32);}
 div.stButton>button:active{transform:translateY(1px) scale(.99);}
-div.stButton>button[kind="secondary"]{background:rgba(255,255,255,.045);border-color:var(--p-line);box-shadow:none;color:#d5deeb;}
+div.stButton>button[kind="secondary"]{background:linear-gradient(180deg,rgba(30,39,58,.88),rgba(19,26,41,.9));border-color:rgba(148,163,184,.2);box-shadow:0 5px 14px rgba(0,0,0,.12);color:#dbe4f0;}
+div.stButton>button[kind="secondary"]:hover{background:linear-gradient(180deg,rgba(39,49,70,.94),rgba(25,33,50,.96));border-color:rgba(155,140,255,.38);}
+div.stLinkButton>a{min-height:46px;border:1px solid rgba(73,214,188,.34)!important;border-radius:11px!important;background:linear-gradient(135deg,#247f79 0%,#1f6b69 56%,#195657 100%)!important;color:#effffc!important;font-size:.82rem!important;font-weight:750!important;box-shadow:0 10px 25px rgba(22,101,96,.24)!important;}
+div.stLinkButton>a:hover{filter:brightness(1.1);border-color:rgba(112,231,210,.62)!important;}
+.st-key-confirm_submit button{background:linear-gradient(135deg,#2b9b88,#237c75 56%,#1c625f)!important;border-color:rgba(92,229,203,.4)!important;box-shadow:0 10px 26px rgba(24,125,112,.24)!important;}
+.st-key-reset_answers button{background:rgba(244,114,124,.07)!important;border-color:rgba(244,114,124,.24)!important;color:#f3a5ad!important;box-shadow:none!important;}
+.st-key-reset_answers button:hover{background:rgba(244,114,124,.12)!important;border-color:rgba(244,114,124,.4)!important;}
 [data-testid="stAlert"]{border-radius:12px;border-width:1px;}
-.stProgress>div>div>div>div{height:7px;border-radius:999px;background:linear-gradient(90deg,var(--p-blue-strong),var(--p-teal))!important;box-shadow:none;}
+.stProgress>div>div>div>div{height:7px;border-radius:999px;background:linear-gradient(90deg,#7367f0,#9b8cff 58%,var(--p-teal))!important;box-shadow:none;}
 .stProgress>div>div>div>div::after{display:none;}
 .confidence-track{height:7px;background:rgba(148,163,184,.12);box-shadow:none;}
 .confidence-fill{box-shadow:none;}
@@ -517,8 +525,8 @@ def inject_css() -> None:
     _raw(CSS + PRODUCT_CSS)
 
 def render_header(title: str = "EZEXAM",
-                  subtitle: str = "AUTO FORM SYSTEM",
-                  status: str = "SYSTEM ONLINE") -> None:
+                  subtitle: str = "ระบบช่วยตรวจแบบทดสอบ",
+                  status: str = "พร้อมใช้งาน") -> None:
     uri = _logo_uri()
     if uri:
         mark = f'<img src="{uri}" class="product-logo" alt="{title}">'

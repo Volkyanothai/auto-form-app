@@ -223,7 +223,7 @@ calculate_answer_reliability = getattr(
     lambda answer_data, **kwargs: {
         "reliability_score": int(answer_data.get("confidence", 0) or 0),
         "risk_level": "safe" if int(answer_data.get("confidence", 0) or 0) >= 80 else "review",
-        "risk_reasons": ["ประเมินจากความมั่นใจของโมเดล"],
+        "risk_reasons": ["ยังไม่ได้ผ่านการตรวจทานเพิ่มเติม"],
     },
 )
 answer_matches_review_filter = getattr(
@@ -257,7 +257,7 @@ from style import inject_css, render_header
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("ezexam")
 
-st.set_page_config(page_title="EZEXAM | Auto Form System", page_icon="⚡", layout="wide")
+st.set_page_config(page_title="EZEXAM | ระบบช่วยตรวจแบบทดสอบ", page_icon="logo.png", layout="wide")
 inject_css()
 
 UA = {
@@ -1332,7 +1332,7 @@ def parse_ai_response(resp_text: str) -> Dict[str, Any]:
             except Exception:
                 continue
 
-    raise RuntimeError(f"ไม่สามารถแปลงคำตอบ AI ได้: {raw[:200]}")
+    raise RuntimeError(f"รูปแบบผลการวิเคราะห์ไม่ถูกต้อง: {raw[:200]}")
 
 
 def call_gemini_chunk_with_key(
@@ -1504,17 +1504,17 @@ def analyze_all(
     if not chunks:
         return results, errors, debug_logs
     if not keys:
-        return results, ["ไม่มี API Key ที่ใช้งานได้"], ["❌ ไม่มี API Key"]
+        return results, ["ไม่มี API Key ที่ใช้งานได้"], ["ไม่มี API Key ที่ใช้งานได้"]
 
     # ไม่ยิง ping ตรวจโมเดลล่วงหน้า เพราะเท่ากับเพิ่ม API call และ latency
     # ทุกครั้งโดยไม่ช่วยวิเคราะห์คำถามจริง การเรียกงานจริงด้านล่างจะเป็นตัวตรวจเอง
     debug_logs.append(
-        f"⚡ แบ่ง {len(indexed)} ข้อเป็น {len(chunks)} ชุด "
+        f"แบ่ง {len(indexed)} ข้อเป็น {len(chunks)} ชุด "
         f"(โมเดลหลัก: {MODEL_CANDIDATES[0]})"
     )
     if verify_risky:
         debug_logs.append(
-            f"🧮 งบความแม่น: ตรวจอิสระไม่เกิน {MAX_VERIFICATION_ITEMS} ข้อ "
+            f"ขอบเขตการตรวจทาน: ตรวจอิสระไม่เกิน {MAX_VERIFICATION_ITEMS} ข้อ "
             f"และตัดสินข้อขัดแย้งไม่เกิน {MAX_ADJUDICATION_ITEMS} ข้อต่อการวิเคราะห์"
         )
 
@@ -1574,14 +1574,14 @@ def analyze_all(
                         1 for answer in chunk_result.values() if answer.get("answer")
                     )
                     debug_logs.append(
-                        f"✅ {phase} {chunk_index + 1}/{len(chunk_set)}: "
+                        f"{phase} {chunk_index + 1}/{len(chunk_set)}: "
                         f"รับผล {len(chunk_result)} รายการ ใช้ได้ {valid_count} คำตอบ "
                         f"— {used_model}{fallback}"
                     )
                 except Exception as e:
                     phase_errors.append(str(e))
                     debug_logs.append(
-                        f"❌ {phase} {chunk_index + 1}/{len(chunk_set)}: {str(e)}"
+                        f"{phase} {chunk_index + 1}/{len(chunk_set)} ไม่สำเร็จ: {str(e)}"
                     )
         return phase_results, phase_errors, completed_entry_ids
 
@@ -1619,7 +1619,7 @@ def analyze_all(
             max_images=3,
         )
         debug_logs.append(
-            f"🔧 ซ่อม {len(missing)} ข้อเป็น {len(repair_chunks)} ชุด "
+            f"ประมวลผลซ้ำ {len(missing)} ข้อเป็น {len(repair_chunks)} ชุด "
             f"(รอบ {repair_attempt + 1}/{MAX_REPAIR_ATTEMPTS})"
         )
         repaired, repair_errors, _ = run_chunks(
@@ -1685,7 +1685,7 @@ def analyze_all(
 
         if skipped:
             debug_logs.append(
-                f"🧮 คุมลิมิต: ตรวจซ้ำ {len(selected)}/{len(ranked_verification_items)} ข้อเสี่ยง "
+                f"ควบคุมการใช้งาน: ตรวจซ้ำ {len(selected)}/{len(ranked_verification_items)} ข้อที่ควรทบทวน "
                 f"และข้าม {len(skipped)} ข้อที่ลำดับความเสี่ยงต่ำกว่า"
             )
 
@@ -1698,7 +1698,7 @@ def analyze_all(
                 max_images=4,
             )
             debug_logs.append(
-                f"🛡️ ตรวจซ้ำเฉพาะข้อเสี่ยง {len(verification_items)} ข้อ "
+                f"ตรวจทานซ้ำเฉพาะข้อที่ควรทบทวน {len(verification_items)} ข้อ "
                 f"เป็น {len(verification_chunks)} ชุด"
             )
             checked, verification_errors, _ = run_chunks(
@@ -1731,7 +1731,7 @@ def analyze_all(
             adjudication_source = conflicts[:MAX_ADJUDICATION_ITEMS]
             if len(conflicts) > MAX_ADJUDICATION_ITEMS:
                 debug_logs.append(
-                    f"🧮 คุมลิมิต: ส่งรอบตัดสิน {MAX_ADJUDICATION_ITEMS}/{len(conflicts)} ข้อขัดแย้ง"
+                    f"ควบคุมการใช้งาน: ส่งรอบตัดสิน {MAX_ADJUDICATION_ITEMS}/{len(conflicts)} ข้อที่ผลต่างกัน"
                 )
 
             if adjudication_source:
@@ -1761,7 +1761,7 @@ def analyze_all(
                     max_images=4,
                 )
                 debug_logs.append(
-                    f"⚖️ ตัดสินเฉพาะ {len(adjudication_items)} ข้อที่สองรอบตอบไม่ตรงกัน "
+                    f"ตรวจรอบสุดท้าย {len(adjudication_items)} ข้อที่ผลสองรอบไม่ตรงกัน "
                     f"เป็น {len(adjudication_chunks)} ชุด"
                 )
                 judged, adjudication_errors, _ = run_chunks(
@@ -1778,13 +1778,13 @@ def analyze_all(
                     )
                 if adjudication_errors:
                     debug_logs.append(
-                        f"⚠️ รอบตัดสินล้มเหลวบางชุด {len(adjudication_errors)} ชุด "
+                        f"การตรวจรอบสุดท้ายไม่สำเร็จบางชุด {len(adjudication_errors)} ชุด "
                         "— ทำเครื่องหมายให้ผู้ใช้ตรวจเอง"
                     )
 
             if verification_errors:
                 debug_logs.append(
-                    f"⚠️ รอบตรวจซ้ำล้มเหลวบางชุด {len(verification_errors)} ชุด "
+                    f"การตรวจทานซ้ำไม่สำเร็จบางชุด {len(verification_errors)} ชุด "
                     "— คงคำตอบรอบแรกไว้"
                 )
 
@@ -1815,18 +1815,18 @@ def analyze_all(
         unresolved_numbers = ", ".join(str(idx) for idx, _ in unresolved[:12])
         suffix = "..." if len(unresolved) > 12 else ""
         errors.append(
-            f"AI ยังตอบไม่ได้ {len(unresolved)} ข้อ: {unresolved_numbers}{suffix}"
+            f"ระบบยังไม่มีคำตอบ {len(unresolved)} ข้อ: {unresolved_numbers}{suffix}"
         )
         errors.extend(first_pass_errors[:3])
     elif first_pass_errors:
-        debug_logs.append("✅ ระบบซ่อมคำตอบที่ล้มเหลวในรอบแรกได้ครบแล้ว")
+        debug_logs.append("ประมวลผลคำตอบที่ไม่สำเร็จในรอบแรกได้ครบแล้ว")
 
     if bad_keys:
-        debug_logs.append(f"⛔ ตัด API Key ที่ใช้ไม่ได้ออก {len(bad_keys)} ตัว")
+        debug_logs.append(f"ยกเลิกการใช้ API Key ที่มีปัญหา {len(bad_keys)} ตัว")
     if exhausted:
         exhausted_models = sorted({model for _, model in exhausted})
         debug_logs.append(
-            f"⚠️ โควตาบางโมเดลไม่พร้อม: {', '.join(exhausted_models)}"
+            f"โควตาบางโมเดลไม่พร้อม: {', '.join(exhausted_models)}"
         )
 
     return results, errors, debug_logs
@@ -2044,7 +2044,7 @@ def get_ai_answer(ai_answers: Dict[str, Any], entry_id: str) -> Dict[str, Any]:
     data = ai_answers.get(entry_id, {})
     if isinstance(data, dict):
         return data
-    return {"answer": str(data) if data else "", "confidence": 0, "reasoning": "AI ไม่ได้ตอบข้อนี้"}
+    return {"answer": str(data) if data else "", "confidence": 0, "reasoning": "ระบบยังไม่มีคำตอบสำหรับข้อนี้"}
 
 
 def apply_ai_answer_to_state(q: Question, ans_data: Dict[str, Any]) -> None:
@@ -2104,12 +2104,12 @@ def confidence_color(score: int) -> str:
 
 def render_image_status(img: QuestionImage):
     if img.status == "ok":
-        return "✅"
+        return "พร้อมใช้"
     elif img.status == "compressed":
-        return "⚡"
+        return "ปรับขนาดแล้ว"
     elif img.status == "failed":
-        return "❌"
-    return "⏳"
+        return "โหลดไม่สำเร็จ"
+    return "กำลังเตรียม"
 
 
 render_header()
@@ -2146,28 +2146,28 @@ if not st.session_state.get("workspace_started"):
     st.markdown(
         """
         <section class="landing-hero">
-          <span class="eyebrow">AI-powered Google Forms workspace</span>
+          <span class="eyebrow">GOOGLE FORMS WORKSPACE</span>
           <h1 class="landing-title">จากลิงก์แบบทดสอบ<br><em>สู่คำตอบที่ตรวจสอบได้</em></h1>
           <p class="landing-copy">
             EZEXAM อ่านคำถาม แยกข้อมูลส่วนตัว วิเคราะห์รูปภาพ ตรวจคำตอบเสี่ยงซ้ำ
-            และให้คุณทบทวนทุกอย่างก่อนส่งจริงผ่าน workflow เดียวที่ชัดเจน
+            และให้คุณทบทวนทุกอย่างก่อนส่งจริงผ่านขั้นตอนเดียวที่ชัดเจน
           </p>
           <div class="trust-row">
-            <span class="trust-chip">◈ รองรับคำถามจากรูป</span>
-            <span class="trust-chip">◇ ตรวจคำตอบหลายรอบ</span>
-            <span class="trust-chip">✓ ยืนยันก่อนส่งจริง</span>
+            <span class="trust-chip">รองรับคำถามจากรูป</span>
+            <span class="trust-chip">ตรวจทานคำตอบหลายรอบ</span>
+            <span class="trust-chip">ยืนยันก่อนส่งจริง</span>
           </div>
         </section>
         <div class="feature-grid">
-          <article class="feature-card"><div class="feature-icon">⌁</div><h3>วิเคราะห์เป็นระบบ</h3><p>แบ่งข้อสอบเป็นชุดที่เหมาะสม กู้คืนเฉพาะงานที่ล้ม และควบคุมลิมิต API อัตโนมัติ</p></article>
-          <article class="feature-card"><div class="feature-icon">◎</div><h3>เห็นระดับความเสี่ยง</h3><p>แยกความมั่นใจของโมเดลออกจากคะแนนความน่าเชื่อถือ เพื่อรู้ว่าข้อไหนควรตรวจเอง</p></article>
-          <article class="feature-card"><div class="feature-icon">▣</div><h3>ตรวจสอบก่อนส่ง</h3><p>แก้ข้อมูลส่วนตัวและคำตอบได้ทั้งหมด พร้อมป้องกันการส่งซ้ำโดยไม่ตั้งใจ</p></article>
+          <article class="feature-card"><div class="feature-icon">01</div><h3>วิเคราะห์อย่างเป็นขั้นตอน</h3><p>อ่านและจัดกลุ่มคำถาม ประมวลผลเฉพาะส่วนที่จำเป็น และกู้คืนงานที่ขัดข้องโดยอัตโนมัติ</p></article>
+          <article class="feature-card"><div class="feature-icon">02</div><h3>ประเมินความน่าเชื่อถือ</h3><p>แสดงระดับความน่าเชื่อถือของแต่ละคำตอบ เพื่อให้รู้ว่าข้อใดควรตรวจทานเพิ่มเติม</p></article>
+          <article class="feature-card"><div class="feature-icon">03</div><h3>ตรวจสอบก่อนส่ง</h3><p>แก้ข้อมูลส่วนตัวและคำตอบได้ทั้งหมด พร้อมป้องกันการส่งซ้ำโดยไม่ตั้งใจ</p></article>
         </div>
         """,
         unsafe_allow_html=True,
     )
     continue_label = "กลับไปตรวจคำตอบ" if "questions" in st.session_state else "เริ่มต้นใช้งาน"
-    if st.button(continue_label + "  →", type="primary", use_container_width=True):
+    if st.button(continue_label, type="primary", use_container_width=True, key="landing_start"):
         st.session_state["workspace_started"] = True
         st.rerun()
     st.stop()
@@ -2192,7 +2192,7 @@ workflow_labels = ("ตั้งค่าฟอร์ม", "ตรวจคำ�
 workflow_html = []
 for step_index, step_label in enumerate(workflow_labels, 1):
     state_class = "active" if step_index == active_step else ("done" if step_index < active_step else "")
-    step_mark = "✓" if step_index < active_step else str(step_index)
+    step_mark = str(step_index)
     workflow_html.append(
         f'<div class="workflow-step {state_class}"><span class="workflow-index">{step_mark}</span>'
         f'<span class="workflow-label">{step_label}</span></div>'
@@ -2201,7 +2201,7 @@ st.markdown('<div class="workflow">' + "".join(workflow_html) + '</div>', unsafe
 
 nav_home_col, nav_reset_col = st.columns([1, 1])
 with nav_home_col:
-    if st.button("← หน้าหลัก", use_container_width=True):
+    if st.button("กลับหน้าหลัก", use_container_width=True):
         save_workspace_draft()
         st.session_state["workspace_started"] = False
         st.rerun()
@@ -2236,7 +2236,7 @@ if submitted_now:
     st.markdown(
         f"""
         <section class="result-hero">
-          <div class="result-icon">✓</div>
+          <div class="result-icon">03</div>
           <h2>ส่งคำตอบเรียบร้อยแล้ว</h2>
           <p>Google Forms รับข้อมูลแล้ว {submitted_questions} ข้อ พร้อมข้อมูลส่วนตัว {submitted_profile_fields} ช่อง</p>
         </section>
@@ -2261,7 +2261,7 @@ if submitted_now:
                 components.html(page_html, height=500, scrolling=True)
             if score_url:
                 st.link_button(
-                    "เปิดหน้าคะแนนใน Google Forms ↗",
+                    "เปิดหน้าคะแนนใน Google Forms",
                     score_url,
                     use_container_width=True,
                 )
@@ -2282,7 +2282,7 @@ if not has_analysis:
 
     with st.container(border=True):
         st.markdown('<div class="glass-header">โปรไฟล์และการวิเคราะห์</div>', unsafe_allow_html=True)
-        st.caption("ข้อมูลส่วนตัวจะใช้เติมเฉพาะช่องที่ตรงกันในฟอร์ม และจะไม่ถูกส่งให้ AI ตอบแทน")
+        st.caption("ระบบจะใช้ข้อมูลนี้เติมเฉพาะช่องที่ตรงกันในฟอร์ม และไม่นำไปรวมกับคำถาม")
         exam_context = st.text_area(
             "บริบทของข้อสอบ",
             placeholder="เช่น ฟิสิกส์ ม.6 บทคลื่น หรือข้อมูลที่จำเป็นต่อการตอบ...",
@@ -2298,7 +2298,7 @@ if not has_analysis:
             ),
             key="accuracy_mode_toggle",
         )
-        debug_mode = st.checkbox("โหมด debug", value=False, key="debug_mode_toggle")
+        debug_mode = st.checkbox("แสดงรายละเอียดทางเทคนิค", value=False, key="debug_mode_toggle")
 
         col1, col2 = st.columns(2)
         with col1:
@@ -2319,12 +2319,12 @@ if not has_analysis:
     if "manual_images" not in st.session_state:
         st.session_state["manual_images"] = {}
 
-    if st.button("เริ่มวิเคราะห์ด้วย AI  →", type="primary", use_container_width=True):
+    if st.button("เริ่มวิเคราะห์", type="primary", use_container_width=True, key="start_analysis"):
         if not form_url:
             st.error("กรุณาใส่ลิงก์ Google Form ก่อน")
         else:
             save_workspace_draft()
-            with st.status("SYSTEM PROCESSING...", expanded=True) as status:
+            with st.status("กำลังประมวลผล", expanded=True) as status:
                 try:
                     for key in list(st.session_state.keys()):
                         if key.startswith(("ans_", "input_")) or key in {
@@ -2333,10 +2333,10 @@ if not has_analysis:
                         }:
                             del st.session_state[key]
 
-                    st.write("🔍 กำลังอ่านโครงสร้างฟอร์ม...")
+                    st.write("กำลังอ่านโครงสร้างฟอร์ม")
                     form_data, fbzx, fvv, raw_html, submit_url = fetch_form(form_url)
 
-                    st.write("🧩 กำลังสกัดคำถามและดาวน์โหลดรูปภาพ...")
+                    st.write("กำลังเตรียมคำถามและรูปภาพ")
                     questions, personal_data_map, default_next, page_count = parse_form(
                         form_data, raw_html, my_name, my_student_id, my_no, my_class
                     )
@@ -2351,12 +2351,12 @@ if not has_analysis:
                     qi_stat, qr_stat, ti_stat, tr_stat = compute_image_stats(questions)
                     if qi_stat > 0:
                         parse_logs.append(
-                            f"🖼️ พบคำถามที่มีรูปภาพ {qi_stat} ข้อ (รวม {ti_stat} รูป) — "
+                            f"พบคำถามที่มีรูปภาพ {qi_stat} ข้อ (รวม {ti_stat} รูป) — "
                             f"ดาวน์โหลด/ประมวลผลสำเร็จ {tr_stat}/{ti_stat} รูป (พร้อมใช้งาน {qr_stat} ข้อ)"
                         )
                         st.write(parse_logs[0])
                         if qr_stat < qi_stat:
-                            warn_msg = f"⚠️ มี {qi_stat - qr_stat} ข้อที่ดึงรูปอัตโนมัติไม่ได้ — เลื่อนลงไปอัปโหลดรูปเองได้ที่ด้านล่างหลังวิเคราะห์เสร็จ"
+                            warn_msg = f"มี {qi_stat - qr_stat} ข้อที่ดึงรูปอัตโนมัติไม่ได้ — สามารถอัปโหลดรูปเพิ่มเติมได้หลังวิเคราะห์เสร็จ"
                             parse_logs.append(warn_msg)
                             st.warning(warn_msg)
                     else:
@@ -2366,13 +2366,13 @@ if not has_analysis:
                         )
                         if hinted_image_questions:
                             warn_msg = (
-                                f"⚠️ พบข้อความที่น่าจะอ้างถึงรูป {hinted_image_questions} ข้อ "
-                                "แต่ดึงรูปอัตโนมัติไม่ได้ — สามารถแนบรูปให้แต่ละข้อในหน้า Review ได้"
+                                f"พบข้อความที่น่าจะอ้างถึงรูป {hinted_image_questions} ข้อ "
+                                "แต่ดึงรูปอัตโนมัติไม่ได้ — สามารถแนบรูปให้แต่ละข้อในหน้าตรวจคำตอบได้"
                             )
                             parse_logs.append(warn_msg)
                             st.warning(warn_msg)
 
-                    st.write(f"🤖 AI กำลังวิเคราะห์ {len(questions)} ข้อ...")
+                    st.write(f"กำลังวิเคราะห์คำถาม {len(questions)} ข้อ")
                     bar = st.progress(0.0)
 
                     def ai_cb(done, total):
@@ -2392,18 +2392,18 @@ if not has_analysis:
                     unanswered_count = len(questions) - answered_count
 
                     if ai_errors:
-                        st.warning(f"มีปัญหาบางส่วน — AI ตอบได้ {answered_count}/{len(questions)} ข้อ")
+                        st.warning(f"ประมวลผลได้ {answered_count}/{len(questions)} ข้อ และมีบางข้อที่ต้องตรวจเพิ่มเติม")
                         with st.expander("ดูรายละเอียดข้อผิดพลาด", expanded=True):
                             for err in ai_errors:
                                 st.code(err)
                         if unanswered_count > 0:
                             st.error(
-                                f"⚠️ มี {unanswered_count} ข้อที่ AI ไม่ได้ตอบเลย "
-                                "ถ้า Debug Logs บอกว่าโควตาต่อวันหมดทุกโมเดล/คีย์แล้ว "
-                                "กรุณารอถึงเที่ยงคืน (เวลา Pacific Time) หรือเพิ่ม API Key ใหม่ หรือเปิด Billing"
+                                f"มี {unanswered_count} ข้อที่ระบบยังไม่สามารถตอบได้ "
+                                "หากรายละเอียดทางเทคนิคระบุว่าโควตาของทุกโมเดลหรือคีย์หมด "
+                                "กรุณารอให้โควตารีเซ็ต เพิ่ม API Key หรือเปิดการเรียกเก็บเงินของบริการที่ใช้งาน"
                             )
                     else:
-                        st.success(f"✅ AI วิเคราะห์สำเร็จ {len(ai_answers)} ข้อ")
+                        st.success(f"วิเคราะห์ครบ {len(ai_answers)} ข้อ")
 
                     st.session_state.update({
                         "questions": questions,
@@ -2418,11 +2418,11 @@ if not has_analysis:
                         "submit_url": submit_url,
                         "debug_logs": debug_logs,
                     })
-                    status.update(label="ANALYSIS COMPLETE", state="complete", expanded=False)
+                    status.update(label="ประมวลผลเสร็จแล้ว", state="complete", expanded=False)
                     st.rerun()
 
                 except Exception as e:
-                    status.update(label="ERROR", state="error")
+                    status.update(label="ประมวลผลไม่สำเร็จ", state="error")
                     logger.error(traceback.format_exc())
                     st.error(f"เกิดข้อผิดพลาด: {str(e)}")
 
@@ -2471,7 +2471,7 @@ if "questions" in st.session_state:
             q.images.append(manual_images[q.entry_id])
 
     if st.session_state.get("debug_mode") or debug_mode:
-        with st.expander("🔧 Debug Logs", expanded=True):
+        with st.expander("รายละเอียดการประมวลผล", expanded=True):
             for log in debug_logs:
                 st.text(log)
 
@@ -2504,14 +2504,14 @@ if "questions" in st.session_state:
         st.markdown('<div class="glass-header">สรุปผลการวิเคราะห์</div>', unsafe_allow_html=True)
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("คำถามทั้งหมด", total_q)
-        c2.metric("AI ตอบแล้ว", answered)
-        c3.metric("AI ไม่ตอบ ⚠️", not_answered)
+        c2.metric("มีคำตอบแล้ว", answered)
+        c3.metric("ยังไม่มีคำตอบ", not_answered)
         c4.metric("ความน่าเชื่อถือ", f"{avg_conf:.0f}%")
-        st.caption(f"✅ พร้อมใช้ {safe_count} ข้อ · ⚠️ ควรตรวจ {review_count} ข้อ")
+        st.caption(f"พร้อมใช้ {safe_count} ข้อ · ควรตรวจทาน {review_count} ข้อ")
         if verified_count:
-            st.caption(f"🛡️ ผ่านการตรวจทานเพิ่มแล้ว {verified_count} ข้อ")
+            st.caption(f"ผ่านการตรวจทานเพิ่มเติมแล้ว {verified_count} ข้อ")
         if not_answered > 0:
-            st.warning(f"⚠️ มี {not_answered} ข้อที่ AI ไม่ได้ตอบ กรุณาตอบเองในข้อที่มีเครื่องหมายเตือนสีแดง")
+            st.warning(f"มี {not_answered} ข้อที่ระบบยังไม่มีคำตอบ กรุณาตรวจและกรอกคำตอบก่อนส่ง")
 
     if personal_data_map:
         with st.container(border=True):
@@ -2541,7 +2541,7 @@ if "questions" in st.session_state:
 
     col_safe, col_accept, col_reset = st.columns(3)
     with col_safe:
-        if st.button("✅ ใช้เฉพาะคำตอบปลอดภัย", use_container_width=True):
+        if st.button("ใช้เฉพาะคำตอบที่พร้อม", use_container_width=True):
             for q in questions:
                 ans_data = get_ai_answer(ai_answers, q.entry_id)
                 if ans_data.get("risk_level") == "safe":
@@ -2560,7 +2560,7 @@ if "questions" in st.session_state:
                 apply_ai_answer_to_state(q, ans_data)
             st.rerun()
     with col_reset:
-        if st.button("🔄 รีเซ็ตคำตอบทั้งหมด", use_container_width=True):
+        if st.button("ล้างคำตอบทั้งหมด", use_container_width=True, key="reset_answers"):
             for q in questions:
                 if f"ans_{q.entry_id}" in st.session_state:
                     del st.session_state[f"ans_{q.entry_id}"]
@@ -2601,7 +2601,7 @@ if "questions" in st.session_state:
                         if img.is_ready():
                             st.image(img.data, use_container_width=True, caption=f"รูป {i+1} {render_image_status(img)}")
                         else:
-                            st.markdown(f'<div class="image-fallback">❌ โหลดรูปที่ {i+1} ไม่ได้ ({img.error or "ไม่ทราบสาเหตุ"})</div>', unsafe_allow_html=True)
+                            st.markdown(f'<div class="image-fallback">โหลดรูปที่ {i+1} ไม่ได้ ({img.error or "ไม่ทราบสาเหตุ"})</div>', unsafe_allow_html=True)
                 st.markdown('</div>', unsafe_allow_html=True)
 
             choice_image_pairs = [
@@ -2623,8 +2623,8 @@ if "questions" in st.session_state:
             all_question_images = q.images + [image for _, image in choice_image_pairs]
             has_ready_image = any(img.is_ready() for img in all_question_images)
             if has_ready_image:
-                if st.button(f"🔄 วิเคราะห์ข้อ {idx} นี้ใหม่ (ใช้รูปล่าสุด)", key=f"reanalyze_{entry_id}"):
-                    with st.spinner("AI กำลังวิเคราะห์ข้อนี้..."):
+                if st.button(f"วิเคราะห์ข้อ {idx} ใหม่โดยใช้รูปล่าสุด", key=f"reanalyze_{entry_id}"):
+                    with st.spinner("กำลังวิเคราะห์คำถามนี้"):
                         bad_keys_local: set = set()
                         exhausted_local: set = set()
                         lock_local = threading.Lock()
@@ -2648,9 +2648,9 @@ if "questions" in st.session_state:
                                 ai_answers[entry_id] = result[entry_id]
                                 st.session_state["ai_answers"] = ai_answers
                                 apply_ai_answer_to_state(q, result[entry_id])
-                                st.success(f"✅ วิเคราะห์สำเร็จ (โมเดล: {used_model}) — คำตอบอัปเดตแล้ว")
+                                st.success(f"อัปเดตคำตอบแล้ว (โมเดล: {used_model})")
                             else:
-                                st.warning("AI ไม่ได้ตอบข้อนี้ ลองใหม่อีกครั้ง")
+                                st.warning("ระบบยังไม่สามารถตอบข้อนี้ได้ กรุณาลองอีกครั้ง")
                         except Exception as e:
                             st.error(f"เกิดข้อผิดพลาด: {e}")
                     st.rerun()
@@ -2662,7 +2662,7 @@ if "questions" in st.session_state:
             offer_manual_image_upload = True
             if offer_manual_image_upload:
                 with st.expander(
-                    ("📎 เพิ่มรูปเอง" if not has_ready_image else "📎 เปลี่ยน/เพิ่มรูปเอง")
+                    ("เพิ่มรูปด้วยตนเอง" if not has_ready_image else "เปลี่ยนหรือเพิ่มรูป")
                     + f" — ข้อ {idx}",
                     expanded=looks_like_image_q and not has_ready_image,
                 ):
@@ -2678,12 +2678,12 @@ if "questions" in st.session_state:
                         if st.session_state.get(marker_key) != file_hash:
                             valid, fmt, size = validate_image(raw_bytes)
                             if not valid:
-                                st.error("❌ ไฟล์นี้เปิดเป็นรูปภาพไม่ได้ กรุณาลองไฟล์อื่น (jpg, jpeg, png, webp)")
+                                st.error("ไฟล์นี้เปิดเป็นรูปภาพไม่ได้ กรุณาลองไฟล์อื่น (jpg, jpeg, png, webp)")
                             else:
                                 max_dim = MAX_IMAGE_DIM_TEXT if fmt in ("PNG", "GIF", "BMP") else MAX_IMAGE_DIM
                                 processed, out_mime, status = compress_image(raw_bytes, max_dim=max_dim)
                                 if not processed:
-                                    st.error("❌ ประมวลผลรูปไม่สำเร็จ กรุณาลองไฟล์อื่นหรือไฟล์ที่มีขนาดเล็กลง")
+                                    st.error("ประมวลผลรูปไม่สำเร็จ กรุณาลองไฟล์อื่นหรือไฟล์ที่มีขนาดเล็กลง")
                                 else:
                                     st.session_state[marker_key] = file_hash
                                     new_img = QuestionImage(
@@ -2700,7 +2700,7 @@ if "questions" in st.session_state:
                                     q.images = [img for img in q.images if img.source != "manual_upload"]
                                     q.images.append(new_img)
                                     st.success(
-                                        f"✅ อัปโหลดรูปข้อ {idx} สำเร็จ! กดปุ่ม '🔄 วิเคราะห์ข้อนี้ใหม่' ด้านบนเพื่อให้ AI ใช้รูปนี้"
+                                        f"อัปโหลดรูปข้อ {idx} แล้ว กดปุ่มวิเคราะห์ข้อ {idx} ใหม่เพื่อใช้รูปนี้ในการประมวลผล"
                                     )
                                     st.rerun()
 
@@ -2708,7 +2708,7 @@ if "questions" in st.session_state:
                 st.markdown(
                     '<div style="background:#3a1414;border:1px solid #ff6b6b;border-radius:8px;'
                     'padding:8px 12px;margin-bottom:8px;color:#ff9b9b;font-size:0.9em;">'
-                    '⚠️ AI ยังไม่ตอบข้อนี้ — กรุณาเลือก/พิมพ์คำตอบเอง'
+                    'ระบบยังไม่มีคำตอบสำหรับข้อนี้ กรุณาเลือกหรือพิมพ์คำตอบด้วยตนเอง'
                     '</div>',
                     unsafe_allow_html=True,
                 )
@@ -2725,25 +2725,25 @@ if "questions" in st.session_state:
                 }.get(risk_level, "ควรตรวจ")
                 st.markdown(
                     f'<div class="confidence-label">ความน่าเชื่อถือของระบบ: {reliability}% · {risk_text} '
-                    f'(AI ประเมินตัวเอง {confidence}%)</div>',
+                    f'(ความเชื่อมั่นจากการวิเคราะห์ {confidence}%)</div>',
                     unsafe_allow_html=True,
                 )
                 if risk_reasons:
                     st.caption(" · ".join(str(reason) for reason in risk_reasons[:3]))
             if reasoning and ai_has_answer:
-                st.markdown(f'<div class="reasoning-text">💡 {html_lib.escape(reasoning)}</div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="reasoning-text"><strong>เหตุผลประกอบ</strong><br>{html_lib.escape(reasoning)}</div>', unsafe_allow_html=True)
 
             verification = ans_data.get("verification")
             if verification == "verified":
-                st.success("🛡️ ตรวจคำตอบซ้ำแล้ว — ผลตรงกัน")
+                st.success("ตรวจทานซ้ำแล้ว ผลลัพธ์ตรงกัน")
             elif verification == "revised":
-                st.info("🛡️ ระบบตรวจซ้ำและแก้คำตอบจากรอบแรกแล้ว")
+                st.info("ตรวจทานซ้ำและปรับคำตอบจากรอบแรกแล้ว")
             elif verification == "adjudicated":
-                st.success("⚖️ สองรอบตอบต่างกัน และรอบตัดสินยืนยันคำตอบเดิม")
+                st.success("ผลตรวจสองรอบต่างกัน และการตรวจรอบสุดท้ายยืนยันคำตอบเดิม")
             elif verification == "adjudicated_revised":
-                st.info("⚖️ สองรอบตอบต่างกัน และรอบตัดสินเลือกคำตอบที่แก้ใหม่")
+                st.info("ผลตรวจสองรอบต่างกัน และการตรวจรอบสุดท้ายเลือกคำตอบที่ปรับใหม่")
             elif verification == "conflict":
-                st.warning("⚠️ ผลตรวจซ้ำไม่ตรงกันและยังไม่มั่นใจ — คงคำตอบรอบแรกไว้ กรุณาตรวจเอง")
+                st.warning("ผลตรวจซ้ำไม่ตรงกัน ระบบคงคำตอบรอบแรกไว้ กรุณาตรวจทานด้วยตนเอง")
             elif verification == "failed":
                 st.caption("รอบตรวจซ้ำไม่สำเร็จ แต่ระบบยังคงคำตอบรอบแรกไว้")
             elif verification == "budget_skipped":
@@ -2804,6 +2804,7 @@ if "questions" in st.session_state:
         "ตรวจสอบก่อนส่ง",
         type="primary",
         use_container_width=True,
+        key="review_submit",
         disabled=bool(st.session_state.get("submission_in_progress")),
     ):
         _, missing_required, payload, fingerprint = current_submission_snapshot()
@@ -2839,15 +2840,16 @@ if "questions" in st.session_state:
                         "ตรวจคำตอบด้านบนให้เรียบร้อยก่อนยืนยัน"
                     )
                 else:
-                    st.success("คำตอบ AI ทุกข้อผ่านเกณฑ์ความน่าเชื่อถือของระบบ")
+                    st.success("คำตอบทุกข้อผ่านเกณฑ์ความน่าเชื่อถือของระบบ")
                 st.caption("ระบบจะส่งไป Google Forms จริงเมื่อกดปุ่มยืนยันด้านล่างเท่านั้น")
 
                 confirm_col, cancel_col = st.columns(2)
                 with confirm_col:
                     confirm_clicked = st.button(
-                        "🚀 ยืนยันส่งจริง",
+                        "ยืนยันและส่งคำตอบ",
                         type="primary",
                         use_container_width=True,
+                        key="confirm_submit",
                         disabled=bool(st.session_state.get("submission_in_progress")),
                     )
                 with cancel_col:
@@ -2862,7 +2864,7 @@ if "questions" in st.session_state:
                         st.warning("คำตอบชุดนี้ถูกส่งสำเร็จไปแล้ว ระบบจึงไม่ส่งซ้ำ")
                     else:
                         st.session_state["submission_in_progress"] = True
-                        with st.spinner("กำลังส่งข้อมูล..."):
+                        with st.spinner("กำลังส่งข้อมูล"):
                             success, msg, confirmation_html, confirmation_url = submit_form(
                                 st.session_state["submit_url"], current_payload
                             )
@@ -2873,10 +2875,9 @@ if "questions" in st.session_state:
                             st.session_state["confirmation_url"] = confirmation_url
                             st.session_state["submitted"] = True
                             st.session_state.pop("pending_submission", None)
-                            st.success("🎉 " + msg)
-                            st.balloons()
+                            st.success(msg)
                             st.rerun()
                         else:
-                            st.error("❌ " + msg)
+                            st.error(msg)
                             with st.expander("ดู payload ที่ส่ง"):
                                 st.json(current_payload)
