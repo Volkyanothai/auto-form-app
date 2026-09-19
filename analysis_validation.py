@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import re
 import unicodedata
+import hashlib
+import json
 from typing import Any, Callable, Dict, List, Mapping, Sequence, TypeVar
 
 
@@ -223,6 +225,168 @@ def should_verify_answer(
     )
     folded = _canonical_text(title)
     return any(marker in folded for marker in risky_markers)
+
+
+def verification_priority(
+    title: str,
+    answer: Any,
+    confidence: int,
+    *,
+    has_images: bool = False,
+    is_multi: bool = False,
+) -> int:
+    """Rank risky answers so a fixed API budget is spent where it matters."""
+    if not answer:
+        return -1
+    score = max(0, 70 - int(confidence or 0))
+    if has_images:
+        score += 100
+    if is_multi:
+        score += 55
+    folded = _canonical_text(title)
+    high_risk_markers = (
+        "ไม่ถูก", "ไม่ใช่", "ยกเว้น", "ผิด", "except", "incorrect",
+        "not true", "คำนวณ", "จงหา", "สมการ", "calculate",
+    )
+    visual_markers = ("จากภาพ", "จากรูป", "แผนภาพ", "กราฟ", "ตาราง", "diagram", "graph")
+    if any(marker in folded for marker in high_risk_markers):
+        score += 45
+    if any(marker in folded for marker in visual_markers):
+        score += 35
+    return score
+
+
+def merge_adjudication_result(
+    original: Mapping[str, Any],
+    candidate: Mapping[str, Any] | None,
+    judge: Mapping[str, Any] | None,
+) -> Dict[str, Any]:
+    """Resolve an independent-pass disagreement without losing provenance."""
+    merged = dict(original)
+    candidate = candidate if isinstance(candidate, Mapping) else {}
+    judge = judge if isinstance(judge, Mapping) else {}
+    candidate_answer = candidate.get("answer")
+    judge_answer = judge.get("answer")
+    merged["verification_candidate"] = candidate_answer
+    merged["verification_reasoning"] = candidate.get("reasoning", "")
+
+    if not judge_answer:
+        merged["verification"] = "conflict"
+        return merged
+
+    merged["adjudication_reasoning"] = judge.get("reasoning", "")
+    if answers_equivalent(judge_answer, merged.get("answer")):
+        merged["verification"] = "adjudicated"
+        merged["confidence"] = max(
+            int(merged.get("confidence", 0) or 0),
+            int(judge.get("confidence", 0) or 0),
+        )
+        return merged
+
+    if candidate_answer and answers_equivalent(judge_answer, candidate_answer):
+        merged["initial_answer"] = merged.get("answer")
+        merged["answer"] = candidate_answer
+        merged["confidence"] = max(
+            int(candidate.get("confidence", 0) or 0),
+            int(judge.get("confidence", 0) or 0),
+        )
+        merged["reasoning"] = judge.get("reasoning") or candidate.get("reasoning", "")
+        merged["verification"] = "adjudicated_revised"
+        return merged
+
+    merged["verification"] = "conflict"
+    merged["adjudication_candidate"] = judge_answer
+    return merged
+
+
+def calculate_answer_reliability(
+    answer_data: Mapping[str, Any],
+    *,
+    has_images: bool = False,
+    image_expected: bool = False,
+    has_choices: bool = False,
+) -> Dict[str, Any]:
+    """Compute evidence-based reliability instead of trusting self-confidence alone."""
+    if not answer_data.get("answer"):
+        return {
+            "reliability_score": 0,
+            "risk_level": "risky",
+            "risk_reasons": ["AI ยังไม่มีคำตอบ"],
+        }
+
+    try:
+        model_confidence = max(0, min(100, int(answer_data.get("confidence", 0) or 0)))
+    except (TypeError, ValueError):
+        model_confidence = 0
+
+    score = 50 + round(model_confidence * 0.35)
+    reasons: list[str] = []
+    if has_choices:
+        score += 5
+
+    verification = str(answer_data.get("verification", "not_needed"))
+    if verification == "verified":
+        score += 12
+        reasons.append("คำตอบจากสองรอบตรงกัน")
+    elif verification in {"adjudicated", "adjudicated_revised"}:
+        score += 8
+        reasons.append("ผ่านรอบตัดสินเมื่อผลตรวจไม่ตรงกัน")
+    elif verification == "conflict":
+        score -= 35
+        reasons.append("ผลวิเคราะห์หลายรอบยังขัดแย้งกัน")
+    elif verification == "failed":
+        score -= 12
+        reasons.append("รอบตรวจทานไม่สำเร็จ")
+    elif verification == "budget_skipped":
+        reasons.append("ไม่ได้ตรวจซ้ำเพื่อควบคุมลิมิต API")
+
+    if image_expected and not has_images:
+        score -= 40
+        reasons.append("โจทย์อ้างถึงรูปแต่ระบบไม่มีรูปพร้อมวิเคราะห์")
+    elif has_images:
+        reasons.append("รูปประกอบพร้อมใช้")
+
+    if answer_data.get("source_pass") == "repair":
+        score -= 8
+        reasons.append("คำตอบได้จากรอบกู้คืน")
+
+    score = max(0, min(100, score))
+    risk_level = "safe" if score >= 80 else ("review" if score >= 55 else "risky")
+    if not reasons:
+        reasons.append("ประเมินจากความมั่นใจและความถูกต้องของรูปแบบคำตอบ")
+    return {
+        "reliability_score": score,
+        "risk_level": risk_level,
+        "risk_reasons": reasons,
+    }
+
+
+def answer_matches_review_filter(
+    answer_data: Mapping[str, Any],
+    filter_key: str,
+    *,
+    has_images: bool = False,
+) -> bool:
+    """Pure filtering rule used by the review UI and regression tests."""
+    if filter_key == "needs_review":
+        return answer_data.get("risk_level", "risky") != "safe"
+    if filter_key == "unanswered":
+        return not bool(answer_data.get("answer"))
+    if filter_key == "images":
+        return has_images
+    return True
+
+
+def submission_fingerprint(payload: Mapping[str, Any]) -> str:
+    """Stable identifier used to suppress accidental duplicate submissions."""
+    canonical = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    ).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
 
 
 def merge_verification_result(

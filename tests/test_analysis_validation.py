@@ -1,11 +1,16 @@
 import unittest
 
 from analysis_validation import (
+    answer_matches_review_filter,
     answers_equivalent,
     build_balanced_batches,
+    calculate_answer_reliability,
+    merge_adjudication_result,
     merge_verification_result,
     normalize_model_answers,
     should_verify_answer,
+    submission_fingerprint,
+    verification_priority,
 )
 
 
@@ -227,6 +232,82 @@ class SelectiveVerificationTests(unittest.TestCase):
         self.assertEqual(merged["answer"], ["A", "B"])
         self.assertEqual(merged["confidence"], 91)
         self.assertEqual(merged["verification"], "verified")
+
+    def test_prioritizes_images_inside_a_fixed_verification_budget(self):
+        image_score = verification_priority(
+            "อ่านข้อความจากรูป", "A", 95, has_images=True
+        )
+        plain_score = verification_priority("เมืองหลวงอังกฤษ", "ลอนดอน", 65)
+
+        self.assertGreater(image_score, plain_score)
+
+    def test_adjudicator_can_keep_original_or_choose_independent_candidate(self):
+        original = {"answer": "ลอนดอน", "confidence": 70, "reasoning": "รอบแรก"}
+        candidate = {"answer": "ปารีส", "confidence": 80, "reasoning": "รอบสอง"}
+
+        kept = merge_adjudication_result(
+            original, candidate,
+            {"answer": "ลอนดอน", "confidence": 92, "reasoning": "ตรวจหลักฐานแล้ว"},
+        )
+        revised = merge_adjudication_result(
+            original, candidate,
+            {"answer": "ปารีส", "confidence": 94, "reasoning": "ตรวจหลักฐานแล้ว"},
+        )
+
+        self.assertEqual(kept["answer"], "ลอนดอน")
+        self.assertEqual(kept["verification"], "adjudicated")
+        self.assertEqual(revised["answer"], "ปารีส")
+        self.assertEqual(revised["initial_answer"], "ลอนดอน")
+        self.assertEqual(revised["verification"], "adjudicated_revised")
+
+
+class ReliabilityScoreTests(unittest.TestCase):
+    def test_verified_choice_is_safe(self):
+        result = calculate_answer_reliability(
+            {"answer": "ลอนดอน", "confidence": 90, "verification": "verified"},
+            has_choices=True,
+        )
+
+        self.assertEqual(result["risk_level"], "safe")
+        self.assertGreaterEqual(result["reliability_score"], 80)
+
+    def test_missing_expected_image_is_risky_even_with_high_self_confidence(self):
+        result = calculate_answer_reliability(
+            {"answer": "โรงเรียน ก", "confidence": 99, "verification": "not_needed"},
+            image_expected=True,
+            has_images=False,
+        )
+
+        self.assertEqual(result["risk_level"], "risky")
+        self.assertIn("โจทย์อ้างถึงรูปแต่ระบบไม่มีรูปพร้อมวิเคราะห์", result["risk_reasons"])
+
+    def test_conflict_stays_below_safe_threshold(self):
+        result = calculate_answer_reliability(
+            {"answer": "A", "confidence": 100, "verification": "conflict"},
+            has_choices=True,
+        )
+
+        self.assertNotEqual(result["risk_level"], "safe")
+
+
+class ReviewAndSubmissionSafetyTests(unittest.TestCase):
+    def test_review_filters_use_system_risk_and_image_state(self):
+        safe = {"answer": "A", "risk_level": "safe"}
+        risky = {"answer": "B", "risk_level": "review"}
+        empty = {"answer": "", "risk_level": "risky"}
+
+        self.assertFalse(answer_matches_review_filter(safe, "needs_review"))
+        self.assertTrue(answer_matches_review_filter(risky, "needs_review"))
+        self.assertTrue(answer_matches_review_filter(empty, "unanswered"))
+        self.assertTrue(answer_matches_review_filter(safe, "images", has_images=True))
+
+    def test_submission_fingerprint_is_order_independent_but_value_sensitive(self):
+        first = {"entry.2": ["B", "C"], "entry.1": "A"}
+        reordered = {"entry.1": "A", "entry.2": ["B", "C"]}
+        changed = {"entry.1": "X", "entry.2": ["B", "C"]}
+
+        self.assertEqual(submission_fingerprint(first), submission_fingerprint(reordered))
+        self.assertNotEqual(submission_fingerprint(first), submission_fingerprint(changed))
 
 
 if __name__ == "__main__":
