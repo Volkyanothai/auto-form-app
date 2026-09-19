@@ -372,25 +372,163 @@ div[data-testid="stVerticalBlockBorderWrapper"]{padding:1.05rem;border-radius:16
 }
 </style>"""
 
+# Product UI V2 overrides the original experimental skin without touching the
+# application widgets. Keeping this as a second layer also makes rollback easy.
+PRODUCT_CSS = """<style>
+@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Noto+Sans+Thai:wght@400;500;600;700&display=swap');
+
+:root{
+  --p-bg:#070a12;
+  --p-panel:#0d1220;
+  --p-panel-2:#111827;
+  --p-panel-3:#151d2e;
+  --p-line:rgba(148,163,184,.16);
+  --p-line-strong:rgba(148,163,184,.27);
+  --p-text:#f4f7fb;
+  --p-muted:#94a3b8;
+  --p-blue:#74a7ff;
+  --p-blue-strong:#4f8df7;
+  --p-teal:#49d6bc;
+  --p-amber:#f5bf5b;
+  --p-red:#fb7185;
+  --p-radius:18px;
+  --p-shadow:0 24px 70px rgba(0,0,0,.34);
+}
+
+html,body,p,h1,h2,h3,h4,h5,h6,label,input,textarea,button,span,div{
+  font-family:'Manrope','Noto Sans Thai',system-ui,sans-serif;
+}
+.stApp{
+  color:var(--p-text);
+  background:
+    radial-gradient(900px 520px at 8% -10%,rgba(79,141,247,.14),transparent 64%),
+    radial-gradient(700px 480px at 100% 10%,rgba(73,214,188,.08),transparent 65%),
+    var(--p-bg);
+  background-attachment:fixed;
+}
+[data-testid="stHeader"]{background:transparent;height:0;}
+[data-testid="stToolbar"],#MainMenu,footer{display:none!important;}
+.block-container{max-width:1180px;padding:1rem 1.25rem 5rem;}
+
+/* Top application shell */
+.product-topbar{
+  display:flex;align-items:center;justify-content:space-between;gap:1rem;
+  min-height:68px;padding:12px 16px;margin:0 0 26px;
+  border:1px solid var(--p-line);border-radius:16px;
+  background:rgba(13,18,32,.76);backdrop-filter:blur(18px);
+  box-shadow:0 10px 34px rgba(0,0,0,.24);
+}
+.product-brand{display:flex;align-items:center;gap:12px;min-width:0;}
+.product-logo{display:block;max-width:132px;max-height:34px;object-fit:contain;}
+.product-wordmark{font-weight:800;font-size:1.08rem;letter-spacing:-.02em;color:var(--p-text);}
+.product-wordmark span{color:var(--p-blue);}
+.product-sub{font-size:.72rem;color:var(--p-muted);margin-top:2px;}
+.product-status{display:flex;align-items:center;gap:8px;padding:7px 11px;border:1px solid rgba(73,214,188,.2);border-radius:999px;background:rgba(73,214,188,.07);font-size:.72rem;font-weight:700;color:#8be8d7;white-space:nowrap;}
+.product-status i{width:7px;height:7px;border-radius:50%;background:var(--p-teal);box-shadow:0 0 0 4px rgba(73,214,188,.1);}
+
+/* Landing */
+.landing-hero{position:relative;overflow:hidden;padding:clamp(2rem,5vw,4.5rem);border:1px solid var(--p-line);border-radius:26px;background:linear-gradient(145deg,rgba(17,24,39,.96),rgba(9,14,26,.98));box-shadow:var(--p-shadow);}
+.landing-hero::after{content:"";position:absolute;width:460px;height:460px;border-radius:50%;right:-160px;top:-220px;background:radial-gradient(circle,rgba(79,141,247,.24),transparent 68%);pointer-events:none;}
+.eyebrow{display:inline-flex;align-items:center;gap:8px;padding:7px 11px;border:1px solid rgba(116,167,255,.22);border-radius:999px;background:rgba(116,167,255,.07);font-size:.7rem;font-weight:800;letter-spacing:.08em;color:#a9c8ff;text-transform:uppercase;}
+.landing-title{max-width:790px;margin:24px 0 14px;font-size:clamp(2.1rem,5.6vw,4.2rem);line-height:1.08;letter-spacing:-.055em;font-weight:800;color:var(--p-text);}
+.landing-title em{font-style:normal;background:linear-gradient(100deg,#92b9ff,#65dfc9);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;}
+.landing-copy{max-width:690px;color:#aab7ca;font-size:clamp(.95rem,1.8vw,1.08rem);line-height:1.8;margin:0 0 18px;}
+.trust-row{display:flex;gap:10px;flex-wrap:wrap;margin-top:20px;}
+.trust-chip{display:inline-flex;align-items:center;gap:7px;color:#b7c2d3;font-size:.76rem;padding:8px 10px;border-radius:10px;background:rgba(255,255,255,.035);border:1px solid var(--p-line);}
+.feature-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin:18px 0 8px;}
+.feature-card{padding:19px;border:1px solid var(--p-line);border-radius:16px;background:rgba(13,18,32,.72);}
+.feature-icon{display:grid;place-items:center;width:36px;height:36px;border-radius:11px;background:rgba(116,167,255,.1);border:1px solid rgba(116,167,255,.18);font-size:1rem;margin-bottom:15px;}
+.feature-card h3{margin:0 0 7px;font-size:.93rem;color:var(--p-text);}
+.feature-card p{margin:0;color:var(--p-muted);font-size:.78rem;line-height:1.65;}
+
+/* Workspace hierarchy */
+.workspace-head{display:flex;align-items:flex-end;justify-content:space-between;gap:18px;margin:6px 2px 18px;}
+.workspace-kicker{font-size:.69rem;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:var(--p-blue);}
+.workspace-title{font-size:clamp(1.55rem,3vw,2.2rem);font-weight:800;letter-spacing:-.035em;margin:5px 0 4px;color:var(--p-text);}
+.workspace-copy{font-size:.85rem;color:var(--p-muted);margin:0;}
+.workflow{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:0 0 22px;padding:8px;border:1px solid var(--p-line);border-radius:15px;background:rgba(13,18,32,.72);}
+.workflow-step{display:flex;align-items:center;gap:10px;min-width:0;padding:11px 12px;border-radius:10px;color:#738198;}
+.workflow-step.active{background:rgba(116,167,255,.1);color:#c9dcff;}
+.workflow-step.done{color:#8be8d7;}
+.workflow-index{display:grid;place-items:center;width:26px;height:26px;flex:0 0 auto;border-radius:8px;border:1px solid currentColor;font-size:.68rem;font-weight:800;}
+.workflow-label{font-size:.76rem;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.section-title{font-size:1.35rem;letter-spacing:-.025em;margin:28px 0 14px;padding:0;color:var(--p-text);}
+.section-title::before{display:none;}
+.glass-header{font-size:.69rem;letter-spacing:.08em;margin-bottom:16px;color:#9ebfff;}
+.glass-header::before{width:7px;height:7px;background:var(--p-blue);box-shadow:none;}
+
+/* Cards and widgets */
+div[data-testid="stVerticalBlockBorderWrapper"]{
+  padding:1.25rem!important;border:1px solid var(--p-line)!important;border-radius:var(--p-radius)!important;
+  background:linear-gradient(145deg,rgba(17,24,39,.86),rgba(12,17,30,.86))!important;
+  box-shadow:0 12px 40px rgba(0,0,0,.2)!important;backdrop-filter:blur(12px)!important;
+  animation:none!important;transition:border-color .2s ease,transform .2s ease!important;
+}
+div[data-testid="stVerticalBlockBorderWrapper"]:hover{border-color:var(--p-line-strong)!important;}
+[data-testid="stExpander"]{padding-top:0!important;border:1px solid var(--p-line)!important;border-radius:14px!important;background:rgba(12,17,30,.86)!important;box-shadow:none!important;animation:none!important;filter:none!important;overflow:hidden!important;}
+[data-testid="stExpander"]::before,[data-testid="stExpander"]::after{display:none!important;content:none!important;animation:none!important;}
+[data-testid="stExpander"] [data-testid="stMarkdownContainer"] p,[data-testid="stExpander"] label p,[data-testid="stExpander"] summary p{font-family:'Manrope','Noto Sans Thai',sans-serif!important;font-size:.82rem!important;color:#cbd5e1!important;text-shadow:none!important;letter-spacing:0!important;}
+[data-testid="stExpander"] [data-testid="stMarkdownContainer"] p::before{display:none!important;content:none!important;}
+[data-testid="stMetric"]{padding:16px;border:1px solid var(--p-line);border-radius:14px;background:rgba(116,167,255,.045);}
+[data-testid="stMetricLabel"]{color:var(--p-muted);}
+[data-testid="stMetricValue"]{font-weight:750;letter-spacing:-.04em;}
+.q-title{font-size:1.03rem;font-weight:700;line-height:1.65;color:var(--p-text);}
+
+.stTextInput input,.stTextArea textarea,.stSelectbox div[data-baseweb="select"]>div{
+  min-height:46px;background:rgba(7,10,18,.72)!important;border:1px solid var(--p-line)!important;border-radius:11px!important;color:var(--p-text)!important;box-shadow:none!important;
+}
+.stTextInput input:focus,.stTextArea textarea:focus{border-color:var(--p-blue)!important;box-shadow:0 0 0 3px rgba(116,167,255,.12)!important;}
+.stTextInput label p,.stSelectbox label p,.stTextArea label p{font-size:.72rem;color:#a7b3c6;text-transform:none;letter-spacing:0;}
+div.stButton>button{min-height:44px;padding:.68rem 1rem;border:1px solid rgba(116,167,255,.3);border-radius:11px;background:linear-gradient(180deg,#6ea2fb,#4f86e8);color:white;font-size:.82rem;font-weight:750;letter-spacing:0;box-shadow:0 8px 22px rgba(79,141,247,.18);transition:transform .15s ease,filter .15s ease,border-color .15s ease;}
+div.stButton>button:hover{filter:brightness(1.08);border-color:#9cc2ff;}
+div.stButton>button:active{transform:translateY(1px) scale(.99);}
+div.stButton>button[kind="secondary"]{background:rgba(255,255,255,.045);border-color:var(--p-line);box-shadow:none;color:#d5deeb;}
+[data-testid="stAlert"]{border-radius:12px;border-width:1px;}
+.stProgress>div>div>div>div{height:7px;border-radius:999px;background:linear-gradient(90deg,var(--p-blue-strong),var(--p-teal))!important;box-shadow:none;}
+.stProgress>div>div>div>div::after{display:none;}
+.confidence-track{height:7px;background:rgba(148,163,184,.12);box-shadow:none;}
+.confidence-fill{box-shadow:none;}
+.reasoning-text{background:rgba(116,167,255,.055);border:1px solid rgba(116,167,255,.13);border-left:3px solid var(--p-blue);color:#c7d2e3;}
+
+/* Status and empty/result surfaces */
+.empty-state{text-align:center;padding:42px 20px;border:1px dashed var(--p-line-strong);border-radius:18px;background:rgba(13,18,32,.45);}
+.empty-icon{display:grid;place-items:center;width:52px;height:52px;margin:0 auto 16px;border-radius:15px;background:rgba(116,167,255,.09);font-size:1.35rem;}
+.empty-state h3{font-size:1.05rem;margin:0 0 7px;}
+.empty-state p{max-width:480px;margin:0 auto;color:var(--p-muted);font-size:.82rem;line-height:1.65;}
+.result-hero{text-align:center;padding:38px 22px;border:1px solid rgba(73,214,188,.2);border-radius:22px;background:linear-gradient(145deg,rgba(73,214,188,.08),rgba(13,18,32,.9));}
+.result-icon{display:grid;place-items:center;width:58px;height:58px;margin:0 auto 16px;border-radius:18px;background:rgba(73,214,188,.12);border:1px solid rgba(73,214,188,.22);font-size:1.5rem;}
+.result-hero h2{margin:0 0 8px;font-size:1.65rem;}
+.result-hero p{margin:0;color:var(--p-muted);font-size:.86rem;}
+
+@media(max-width:760px){
+  .block-container{padding:.65rem .72rem 4rem;}
+  .product-topbar{min-height:58px;padding:9px 11px;margin-bottom:15px;border-radius:13px;}
+  .product-logo{max-width:104px;max-height:28px;}.product-sub{display:none;}.product-status{font-size:.62rem;padding:6px 8px;}
+  .landing-hero{padding:2rem 1.15rem;border-radius:20px;}.landing-title{letter-spacing:-.04em;}
+  .feature-grid{grid-template-columns:1fr;gap:9px}.feature-card{padding:15px;}
+  .workflow{grid-template-columns:1fr;padding:6px}.workflow-step{padding:8px 10px}.workflow-step:not(.active){display:none;}
+  .workspace-head{align-items:flex-start;flex-direction:column;}
+  div[data-testid="stVerticalBlockBorderWrapper"]{padding:1rem!important;border-radius:15px!important;backdrop-filter:none!important;}
+  [data-testid="stMetric"]{padding:12px;}
+}
+</style>"""
+
 def inject_css() -> None:
-    _raw(CSS)
+    _raw(CSS + PRODUCT_CSS)
 
 def render_header(title: str = "EZEXAM",
                   subtitle: str = "AUTO FORM SYSTEM",
                   status: str = "SYSTEM ONLINE") -> None:
     uri = _logo_uri()
     if uri:
-        mark = ('<div class="hero-logo-wrap">'
-                f'<img src="{uri}" class="hero-logo" alt="{title}">'
-                '</div>')
+        mark = f'<img src="{uri}" class="product-logo" alt="{title}">'
+        identity = f'<div class="product-sub">{subtitle}</div>'
     else:
-        mark = ('<div class="wordmark">'
-                '<span class="a">EZ</span><span class="b">EXAM</span></div>')
+        mark = '<div class="product-wordmark">EZ<span>EXAM</span></div>'
+        identity = f'<div><div class="product-wordmark">{title}</div><div class="product-sub">{subtitle}</div></div>'
     _raw(
-        '<div class="hero"><div class="hero-inner">'
-        + mark +
-        '<div class="hero-meta">'
-        f'<span class="hero-pill"><i></i>{status}</span>'
-        f'<span class="hero-tag">{subtitle}</span>'
-        '</div></div></div>'
+        '<div class="product-topbar">'
+        '<div class="product-brand">' + mark +
+        identity + '</div>'
+        f'<div class="product-status"><i></i>{status}</div></div>'
     )

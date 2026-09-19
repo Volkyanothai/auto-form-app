@@ -256,7 +256,7 @@ from style import inject_css, render_header
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("ezexam")
 
-st.set_page_config(page_title="EZEXAM | Auto Form System", page_icon="⚡", layout="centered")
+st.set_page_config(page_title="EZEXAM | Auto Form System", page_icon="⚡", layout="wide")
 inject_css()
 
 UA = {
@@ -2042,150 +2042,315 @@ def render_image_status(img: QuestionImage):
 
 render_header()
 
-with st.container(border=True):
-    st.markdown('<div class="glass-header">TARGET FORM LINK</div>', unsafe_allow_html=True)
-    form_url = st.text_input("Form URL", placeholder="วางลิงก์ Google Form ที่นี่...", label_visibility="collapsed")
+WORKSPACE_DRAFT_KEYS = (
+    "target_form_url",
+    "exam_context_input",
+    "profile_name",
+    "profile_class_number",
+    "profile_student_id",
+    "profile_classroom",
+    "accuracy_mode_toggle",
+    "debug_mode_toggle",
+)
 
-with st.container(border=True):
-    st.markdown('<div class="glass-header">PERSONAL DATA & CONTEXT</div>', unsafe_allow_html=True)
-    exam_context = st.text_area("EXAM CONTEXT", placeholder="เช่น ฟิสิกส์ ม.6 บทคลื่น...", height=68)
-    accuracy_mode = st.checkbox(
-        "ตรวจซ้ำข้อเสี่ยงเพื่อเพิ่มความแม่นยำ",
-        value=True,
-        help=(
-            "ตรวจอิสระเฉพาะข้อเสี่ยงสูงสุดไม่เกิน 8 ข้อ และใช้รอบตัดสินเฉพาะ "
-            "ข้อที่คำตอบขัดแย้งไม่เกิน 3 ข้อ เพื่อควบคุมลิมิต API"
-        ),
+
+def save_workspace_draft() -> None:
+    for draft_key in WORKSPACE_DRAFT_KEYS:
+        if draft_key in st.session_state:
+            st.session_state[f"_workspace_draft_{draft_key}"] = st.session_state[draft_key]
+
+
+def restore_workspace_draft() -> None:
+    for draft_key in WORKSPACE_DRAFT_KEYS:
+        saved_key = f"_workspace_draft_{draft_key}"
+        if draft_key not in st.session_state and saved_key in st.session_state:
+            st.session_state[draft_key] = st.session_state[saved_key]
+
+
+if "workspace_started" not in st.session_state:
+    st.session_state["workspace_started"] = "questions" in st.session_state
+
+if not st.session_state.get("workspace_started"):
+    st.markdown(
+        """
+        <section class="landing-hero">
+          <span class="eyebrow">AI-powered Google Forms workspace</span>
+          <h1 class="landing-title">จากลิงก์แบบทดสอบ<br><em>สู่คำตอบที่ตรวจสอบได้</em></h1>
+          <p class="landing-copy">
+            EZEXAM อ่านคำถาม แยกข้อมูลส่วนตัว วิเคราะห์รูปภาพ ตรวจคำตอบเสี่ยงซ้ำ
+            และให้คุณทบทวนทุกอย่างก่อนส่งจริงผ่าน workflow เดียวที่ชัดเจน
+          </p>
+          <div class="trust-row">
+            <span class="trust-chip">◈ รองรับคำถามจากรูป</span>
+            <span class="trust-chip">◇ ตรวจคำตอบหลายรอบ</span>
+            <span class="trust-chip">✓ ยืนยันก่อนส่งจริง</span>
+          </div>
+        </section>
+        <div class="feature-grid">
+          <article class="feature-card"><div class="feature-icon">⌁</div><h3>วิเคราะห์เป็นระบบ</h3><p>แบ่งข้อสอบเป็นชุดที่เหมาะสม กู้คืนเฉพาะงานที่ล้ม และควบคุมลิมิต API อัตโนมัติ</p></article>
+          <article class="feature-card"><div class="feature-icon">◎</div><h3>เห็นระดับความเสี่ยง</h3><p>แยกความมั่นใจของโมเดลออกจากคะแนนความน่าเชื่อถือ เพื่อรู้ว่าข้อไหนควรตรวจเอง</p></article>
+          <article class="feature-card"><div class="feature-icon">▣</div><h3>ตรวจสอบก่อนส่ง</h3><p>แก้ข้อมูลส่วนตัวและคำตอบได้ทั้งหมด พร้อมป้องกันการส่งซ้ำโดยไม่ตั้งใจ</p></article>
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
-    debug_mode = st.checkbox("โหมด debug", value=False)
+    continue_label = "กลับไปตรวจคำตอบ" if "questions" in st.session_state else "เริ่มต้นใช้งาน"
+    if st.button(continue_label + "  →", type="primary", use_container_width=True):
+        st.session_state["workspace_started"] = True
+        st.rerun()
+    st.stop()
 
-    col1, col2 = st.columns(2)
-    with col1:
-        my_name = st.text_input(
-            "FULL NAME", placeholder="ชื่อ-นามสกุล", key="profile_name"
-        )
-        my_no = st.text_input(
-            "CLASS NUMBER", placeholder="เลขที่", key="profile_class_number"
-        )
-    with col2:
-        my_student_id = st.text_input(
-            "STUDENT ID", placeholder="เลขประจำตัว", key="profile_student_id"
-        )
-        my_class = st.text_input(
-            "CLASSROOM", placeholder="เช่น 6/3", key="profile_classroom"
-        )
+restore_workspace_draft()
+submitted_now = bool(st.session_state.get("submitted"))
+has_analysis = "questions" in st.session_state
+active_step = 3 if submitted_now else (2 if has_analysis else 1)
+
+st.markdown(
+    """
+    <div class="workspace-head">
+      <div><div class="workspace-kicker">EZEXAM WORKSPACE</div>
+      <div class="workspace-title">วิเคราะห์และตรวจคำตอบ</div>
+      <p class="workspace-copy">ดำเนินการทีละขั้น ตรวจสอบได้ และส่งเมื่อคุณพร้อมเท่านั้น</p></div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+workflow_labels = ("ตั้งค่าฟอร์ม", "ตรวจคำตอบ", "ส่งสำเร็จ")
+workflow_html = []
+for step_index, step_label in enumerate(workflow_labels, 1):
+    state_class = "active" if step_index == active_step else ("done" if step_index < active_step else "")
+    step_mark = "✓" if step_index < active_step else str(step_index)
+    workflow_html.append(
+        f'<div class="workflow-step {state_class}"><span class="workflow-index">{step_mark}</span>'
+        f'<span class="workflow-label">{step_label}</span></div>'
+    )
+st.markdown('<div class="workflow">' + "".join(workflow_html) + '</div>', unsafe_allow_html=True)
+
+nav_home_col, nav_reset_col = st.columns([1, 1])
+with nav_home_col:
+    if st.button("← หน้าหลัก", use_container_width=True):
+        save_workspace_draft()
+        st.session_state["workspace_started"] = False
+        st.rerun()
+with nav_reset_col:
+    if has_analysis and st.button("เริ่มวิเคราะห์ฟอร์มใหม่", use_container_width=True):
+        for state_key in list(st.session_state.keys()):
+            if state_key in {
+                "questions", "personal_data_map", "ai_answers", "fbzx", "fvv",
+                "default_next", "page_count", "submit_url", "debug_logs",
+                "pending_submission", "submitted", "confirmation_html", "confirmation_url",
+                "last_submitted_fingerprint", "_personal_autofill_history",
+            } or state_key.startswith(("ans_", "input_", "upload_", "_upload_marker_")):
+                del st.session_state[state_key]
+        st.rerun()
+
+# Keep review and re-analysis values available even when the setup stage is hidden.
+form_url = str(st.session_state.get("target_form_url", ""))
+exam_context = str(st.session_state.get("exam_context_input", ""))
+my_name = str(st.session_state.get("profile_name", ""))
+my_no = str(st.session_state.get("profile_class_number", ""))
+my_student_id = str(st.session_state.get("profile_student_id", ""))
+my_class = str(st.session_state.get("profile_classroom", ""))
+accuracy_mode = bool(st.session_state.get("accuracy_mode_toggle", True))
+debug_mode = bool(st.session_state.get("debug_mode_toggle", False))
 
 if "manual_images" not in st.session_state:
     st.session_state["manual_images"] = {}
 
-if st.button("INITIATE ANALYSIS", type="primary", use_container_width=True):
-    if not form_url:
-        st.error("กรุณาใส่ลิงก์ Google Form ก่อน")
-    else:
-        with st.status("SYSTEM PROCESSING...", expanded=True) as status:
-            try:
-                for key in list(st.session_state.keys()):
-                    if key.startswith(("ans_", "input_")) or key in {
-                        "pending_submission", "submission_in_progress",
-                        "submitted", "confirmation_html", "confirmation_url",
-                    }:
-                        del st.session_state[key]
-
-                st.write("🔍 กำลังอ่านโครงสร้างฟอร์ม...")
-                form_data, fbzx, fvv, raw_html, submit_url = fetch_form(form_url)
-
-                st.write("🧩 กำลังสกัดคำถามและดาวน์โหลดรูปภาพ...")
-                questions, personal_data_map, default_next, page_count = parse_form(
-                    form_data, raw_html, my_name, my_student_id, my_no, my_class
+if submitted_now:
+    submitted_questions = len(st.session_state.get("questions", []))
+    submitted_profile_fields = len(st.session_state.get("personal_data_map", {}))
+    st.markdown(
+        f"""
+        <section class="result-hero">
+          <div class="result-icon">✓</div>
+          <h2>ส่งคำตอบเรียบร้อยแล้ว</h2>
+          <p>Google Forms รับข้อมูลแล้ว {submitted_questions} ข้อ พร้อมข้อมูลส่วนตัว {submitted_profile_fields} ช่อง</p>
+        </section>
+        """,
+        unsafe_allow_html=True,
+    )
+    confirmation_html = st.session_state.get("confirmation_html")
+    if confirmation_html:
+        with st.container(border=True):
+            st.markdown('<div class="glass-header">ผลลัพธ์จาก GOOGLE FORMS</div>', unsafe_allow_html=True)
+            st.caption("หน้านี้มาจาก Google Forms หลังระบบบันทึกคำตอบสำเร็จ คุณเลือกเปิดดูรายละเอียดได้โดยไม่กระทบคำตอบที่ส่งแล้ว")
+            show_score = st.toggle("แสดงหน้ายืนยันและคะแนน", value=True, key="show_score_toggle")
+            if show_score:
+                page_html = build_score_page_html(
+                    confirmation_html,
+                    base_url=st.session_state.get("confirmation_url"),
                 )
-
-                manual_images = st.session_state["manual_images"]
-                for q in questions:
-                    if q.entry_id in manual_images:
-                        q.images = [img for img in q.images if img.source != "manual_upload"]
-                        q.images.append(manual_images[q.entry_id])
-
-                parse_logs: List[str] = []
-                qi_stat, qr_stat, ti_stat, tr_stat = compute_image_stats(questions)
-                if qi_stat > 0:
-                    parse_logs.append(
-                        f"🖼️ พบคำถามที่มีรูปภาพ {qi_stat} ข้อ (รวม {ti_stat} รูป) — "
-                        f"ดาวน์โหลด/ประมวลผลสำเร็จ {tr_stat}/{ti_stat} รูป (พร้อมใช้งาน {qr_stat} ข้อ)"
-                    )
-                    st.write(parse_logs[0])
-                    if qr_stat < qi_stat:
-                        warn_msg = f"⚠️ มี {qi_stat - qr_stat} ข้อที่ดึงรูปอัตโนมัติไม่ได้ — เลื่อนลงไปอัปโหลดรูปเองได้ที่ด้านล่างหลังวิเคราะห์เสร็จ"
-                        parse_logs.append(warn_msg)
-                        st.warning(warn_msg)
-                else:
-                    hinted_image_questions = sum(
-                        1 for question in questions
-                        if "รูป" in question.title or "ภาพ" in question.title
-                    )
-                    if hinted_image_questions:
-                        warn_msg = (
-                            f"⚠️ พบข้อความที่น่าจะอ้างถึงรูป {hinted_image_questions} ข้อ "
-                            "แต่ดึงรูปอัตโนมัติไม่ได้ — สามารถแนบรูปให้แต่ละข้อในหน้า Review ได้"
-                        )
-                        parse_logs.append(warn_msg)
-                        st.warning(warn_msg)
-
-                st.write(f"🤖 AI กำลังวิเคราะห์ {len(questions)} ข้อ...")
-                bar = st.progress(0.0)
-
-                def ai_cb(done, total):
-                    bar.progress(done / total, text=f"วิเคราะห์ {done}/{total}")
-
-                ai_answers, ai_errors, debug_logs = analyze_all(
-                    questions,
-                    api_keys,
-                    exam_context,
-                    ai_cb,
-                    verify_risky=accuracy_mode,
+                components.html(page_html, height=500, scrolling=True)
+            if st.session_state.get("confirmation_url"):
+                st.link_button(
+                    "เปิดผลลัพธ์ใน Google Forms ↗",
+                    st.session_state["confirmation_url"],
+                    use_container_width=True,
                 )
-                debug_logs = parse_logs + debug_logs
-                bar.empty()
+    st.stop()
 
-                answered_count = sum(1 for q in questions if get_ai_answer(ai_answers, q.entry_id).get("answer"))
-                unanswered_count = len(questions) - answered_count
+# UI_SETUP_STAGE_START
+if not has_analysis:
+    with st.container(border=True):
+        st.markdown('<div class="glass-header">เชื่อมต่อ GOOGLE FORM</div>', unsafe_allow_html=True)
+        form_url = st.text_input(
+            "ลิงก์แบบทดสอบ",
+            placeholder="https://forms.gle/...",
+            label_visibility="collapsed",
+            key="target_form_url",
+        )
 
-                if ai_errors:
-                    st.warning(f"มีปัญหาบางส่วน — AI ตอบได้ {answered_count}/{len(questions)} ข้อ")
-                    with st.expander("ดูรายละเอียดข้อผิดพลาด", expanded=True):
-                        for err in ai_errors:
-                            st.code(err)
-                    if unanswered_count > 0:
-                        st.error(
-                            f"⚠️ มี {unanswered_count} ข้อที่ AI ไม่ได้ตอบเลย "
-                            "ถ้า Debug Logs บอกว่าโควตาต่อวันหมดทุกโมเดล/คีย์แล้ว "
-                            "กรุณารอถึงเที่ยงคืน (เวลา Pacific Time) หรือเพิ่ม API Key ใหม่ หรือเปิด Billing"
+    with st.container(border=True):
+        st.markdown('<div class="glass-header">โปรไฟล์และการวิเคราะห์</div>', unsafe_allow_html=True)
+        st.caption("ข้อมูลส่วนตัวจะใช้เติมเฉพาะช่องที่ตรงกันในฟอร์ม และจะไม่ถูกส่งให้ AI ตอบแทน")
+        exam_context = st.text_area(
+            "บริบทของข้อสอบ",
+            placeholder="เช่น ฟิสิกส์ ม.6 บทคลื่น หรือข้อมูลที่จำเป็นต่อการตอบ...",
+            height=82,
+            key="exam_context_input",
+        )
+        accuracy_mode = st.checkbox(
+            "ตรวจซ้ำข้อเสี่ยงเพื่อเพิ่มความแม่นยำ",
+            value=True,
+            help=(
+                "ตรวจอิสระเฉพาะข้อเสี่ยงสูงสุดไม่เกิน 8 ข้อ และใช้รอบตัดสินเฉพาะ "
+                "ข้อที่คำตอบขัดแย้งไม่เกิน 3 ข้อ เพื่อควบคุมลิมิต API"
+            ),
+            key="accuracy_mode_toggle",
+        )
+        debug_mode = st.checkbox("โหมด debug", value=False, key="debug_mode_toggle")
+
+        col1, col2 = st.columns(2)
+        with col1:
+            my_name = st.text_input(
+                "ชื่อ-นามสกุล", placeholder="เช่น สมชาย ใจดี", key="profile_name"
+            )
+            my_no = st.text_input(
+                "เลขที่", placeholder="เช่น 12", key="profile_class_number"
+            )
+        with col2:
+            my_student_id = st.text_input(
+                "เลขประจำตัว", placeholder="เช่น 12345", key="profile_student_id"
+            )
+            my_class = st.text_input(
+                "ชั้น/ห้อง", placeholder="เช่น 6/3", key="profile_classroom"
+            )
+
+    if "manual_images" not in st.session_state:
+        st.session_state["manual_images"] = {}
+
+    if st.button("เริ่มวิเคราะห์ด้วย AI  →", type="primary", use_container_width=True):
+        if not form_url:
+            st.error("กรุณาใส่ลิงก์ Google Form ก่อน")
+        else:
+            save_workspace_draft()
+            with st.status("SYSTEM PROCESSING...", expanded=True) as status:
+                try:
+                    for key in list(st.session_state.keys()):
+                        if key.startswith(("ans_", "input_")) or key in {
+                            "pending_submission", "submission_in_progress",
+                            "submitted", "confirmation_html", "confirmation_url",
+                        }:
+                            del st.session_state[key]
+
+                    st.write("🔍 กำลังอ่านโครงสร้างฟอร์ม...")
+                    form_data, fbzx, fvv, raw_html, submit_url = fetch_form(form_url)
+
+                    st.write("🧩 กำลังสกัดคำถามและดาวน์โหลดรูปภาพ...")
+                    questions, personal_data_map, default_next, page_count = parse_form(
+                        form_data, raw_html, my_name, my_student_id, my_no, my_class
+                    )
+
+                    manual_images = st.session_state["manual_images"]
+                    for q in questions:
+                        if q.entry_id in manual_images:
+                            q.images = [img for img in q.images if img.source != "manual_upload"]
+                            q.images.append(manual_images[q.entry_id])
+
+                    parse_logs: List[str] = []
+                    qi_stat, qr_stat, ti_stat, tr_stat = compute_image_stats(questions)
+                    if qi_stat > 0:
+                        parse_logs.append(
+                            f"🖼️ พบคำถามที่มีรูปภาพ {qi_stat} ข้อ (รวม {ti_stat} รูป) — "
+                            f"ดาวน์โหลด/ประมวลผลสำเร็จ {tr_stat}/{ti_stat} รูป (พร้อมใช้งาน {qr_stat} ข้อ)"
                         )
-                else:
-                    st.success(f"✅ AI วิเคราะห์สำเร็จ {len(ai_answers)} ข้อ")
+                        st.write(parse_logs[0])
+                        if qr_stat < qi_stat:
+                            warn_msg = f"⚠️ มี {qi_stat - qr_stat} ข้อที่ดึงรูปอัตโนมัติไม่ได้ — เลื่อนลงไปอัปโหลดรูปเองได้ที่ด้านล่างหลังวิเคราะห์เสร็จ"
+                            parse_logs.append(warn_msg)
+                            st.warning(warn_msg)
+                    else:
+                        hinted_image_questions = sum(
+                            1 for question in questions
+                            if "รูป" in question.title or "ภาพ" in question.title
+                        )
+                        if hinted_image_questions:
+                            warn_msg = (
+                                f"⚠️ พบข้อความที่น่าจะอ้างถึงรูป {hinted_image_questions} ข้อ "
+                                "แต่ดึงรูปอัตโนมัติไม่ได้ — สามารถแนบรูปให้แต่ละข้อในหน้า Review ได้"
+                            )
+                            parse_logs.append(warn_msg)
+                            st.warning(warn_msg)
 
-                st.session_state.update({
-                    "questions": questions,
-                    "personal_data_map": personal_data_map,
-                    "ai_answers": ai_answers,
-                    "fbzx": fbzx,
-                    "fvv": fvv,
-                    "default_next": default_next,
-                    "page_count": page_count,
-                    "exam_context": exam_context,
-                    "accuracy_mode": accuracy_mode,
-                    "submit_url": submit_url,
-                    "debug_logs": debug_logs,
-                })
-                status.update(label="ANALYSIS COMPLETE", state="complete", expanded=False)
+                    st.write(f"🤖 AI กำลังวิเคราะห์ {len(questions)} ข้อ...")
+                    bar = st.progress(0.0)
 
-            except Exception as e:
-                status.update(label="ERROR", state="error")
-                logger.error(traceback.format_exc())
-                st.error(f"เกิดข้อผิดพลาด: {str(e)}")
+                    def ai_cb(done, total):
+                        bar.progress(done / total, text=f"วิเคราะห์ {done}/{total}")
 
+                    ai_answers, ai_errors, debug_logs = analyze_all(
+                        questions,
+                        api_keys,
+                        exam_context,
+                        ai_cb,
+                        verify_risky=accuracy_mode,
+                    )
+                    debug_logs = parse_logs + debug_logs
+                    bar.empty()
 
+                    answered_count = sum(1 for q in questions if get_ai_answer(ai_answers, q.entry_id).get("answer"))
+                    unanswered_count = len(questions) - answered_count
+
+                    if ai_errors:
+                        st.warning(f"มีปัญหาบางส่วน — AI ตอบได้ {answered_count}/{len(questions)} ข้อ")
+                        with st.expander("ดูรายละเอียดข้อผิดพลาด", expanded=True):
+                            for err in ai_errors:
+                                st.code(err)
+                        if unanswered_count > 0:
+                            st.error(
+                                f"⚠️ มี {unanswered_count} ข้อที่ AI ไม่ได้ตอบเลย "
+                                "ถ้า Debug Logs บอกว่าโควตาต่อวันหมดทุกโมเดล/คีย์แล้ว "
+                                "กรุณารอถึงเที่ยงคืน (เวลา Pacific Time) หรือเพิ่ม API Key ใหม่ หรือเปิด Billing"
+                            )
+                    else:
+                        st.success(f"✅ AI วิเคราะห์สำเร็จ {len(ai_answers)} ข้อ")
+
+                    st.session_state.update({
+                        "questions": questions,
+                        "personal_data_map": personal_data_map,
+                        "ai_answers": ai_answers,
+                        "fbzx": fbzx,
+                        "fvv": fvv,
+                        "default_next": default_next,
+                        "page_count": page_count,
+                        "exam_context": exam_context,
+                        "accuracy_mode": accuracy_mode,
+                        "submit_url": submit_url,
+                        "debug_logs": debug_logs,
+                    })
+                    status.update(label="ANALYSIS COMPLETE", state="complete", expanded=False)
+                    st.rerun()
+
+                except Exception as e:
+                    status.update(label="ERROR", state="error")
+                    logger.error(traceback.format_exc())
+                    st.error(f"เกิดข้อผิดพลาด: {str(e)}")
+
+# UI_SETUP_STAGE_END
 if "questions" in st.session_state:
-    st.markdown('<div class="section-title">REVIEW & EDIT</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">ตรวจและแก้ไขคำตอบ</div>', unsafe_allow_html=True)
 
     questions = st.session_state["questions"]
     ai_answers = st.session_state.get("ai_answers", {})
@@ -2258,7 +2423,7 @@ if "questions" in st.session_state:
     review_count = total_q - safe_count
 
     with st.container(border=True):
-        st.markdown('<div class="glass-header">ANALYSIS SUMMARY</div>', unsafe_allow_html=True)
+        st.markdown('<div class="glass-header">สรุปผลการวิเคราะห์</div>', unsafe_allow_html=True)
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("คำถามทั้งหมด", total_q)
         c2.metric("AI ตอบแล้ว", answered)
@@ -2272,7 +2437,7 @@ if "questions" in st.session_state:
 
     if personal_data_map:
         with st.container(border=True):
-            st.markdown('<div class="glass-header">AUTO-FILLED DATA</div>', unsafe_allow_html=True)
+            st.markdown('<div class="glass-header">ข้อมูลส่วนตัวที่ตรวจพบ</div>', unsafe_allow_html=True)
             items = list(personal_data_map.items())
             cols = st.columns(min(len(items), 2))
             for idx, (entry_id, info) in enumerate(items):
@@ -2588,7 +2753,7 @@ if "questions" in st.session_state:
                 if get_ai_answer(ai_answers, question.entry_id).get("risk_level") != "safe"
             )
             with st.container(border=True):
-                st.markdown('<div class="glass-header">CONFIRM SUBMISSION</div>', unsafe_allow_html=True)
+                st.markdown('<div class="glass-header">ยืนยันก่อนส่งจริง</div>', unsafe_allow_html=True)
                 st.write(f"พร้อมส่งข้อมูลส่วนตัว {len(personal_data_map)} ช่อง และคำตอบ {len(questions)} ข้อ")
                 if risky_before_submit:
                     st.warning(
