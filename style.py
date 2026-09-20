@@ -617,8 +617,150 @@ div.stLinkButton>a:hover{box-shadow:inset 0 1px 0 rgba(255,255,255,.3),0 14px 34
 }
 </style>"""
 
+
+# Responsive layout overrides. These rules only affect presentation; application
+# state, form parsing, AI analysis and submission behavior remain unchanged.
+RESPONSIVE_CSS = """<style>
+/* Predictable sizing and overflow at every viewport */
+.stApp,.block-container,[data-testid="stAppViewContainer"],
+[data-testid="stMain"],[data-testid="stVerticalBlock"],
+[data-testid="stHorizontalBlock"],[data-testid="column"]{box-sizing:border-box;}
+.stApp{min-height:100svh;overflow-x:clip;}
+.block-container{width:100%;margin-inline:auto;}
+[data-testid="stMarkdownContainer"],
+[data-testid="stCaptionContainer"],.q-title,.reasoning-text,
+.workspace-copy,.landing-copy,.feature-card p{overflow-wrap:anywhere;}
+[data-testid="stImage"] img{max-width:100%;height:auto;border-radius:12px;}
+[data-testid="stAlert"]{overflow-wrap:anywhere;}
+[data-baseweb="popover"]{max-width:min(92vw,520px);}
+[data-testid="stExpander"] summary{min-height:46px;}
+.stTextArea textarea{resize:vertical;}
+
+/* A clearer desktop canvas without stretching content on large monitors */
+@media (min-width:1025px){
+  .block-container{max-width:1180px;padding:1.15rem 1.5rem 5rem;}
+  .landing-hero{min-height:390px;display:flex;flex-direction:column;justify-content:center;}
+  .feature-grid{gap:16px;}
+  div[data-testid="stVerticalBlockBorderWrapper"]{padding:1.35rem!important;}
+}
+@media (min-width:1440px){
+  .block-container{max-width:1240px;}
+}
+
+/* Tablet: allow Streamlit columns to wrap into comfortable two-column rows */
+@media (min-width:641px) and (max-width:1024px){
+  .block-container{
+    max-width:940px;
+    padding:calc(.9rem + env(safe-area-inset-top))
+            calc(1rem + env(safe-area-inset-right))
+            calc(4.5rem + env(safe-area-inset-bottom))
+            calc(1rem + env(safe-area-inset-left));
+  }
+  .product-topbar{margin-bottom:20px;}
+  .landing-hero{padding:clamp(2rem,5vw,3.2rem);}
+  .feature-grid{grid-template-columns:repeat(2,minmax(0,1fr));}
+  .feature-card:last-child:nth-child(odd){grid-column:1/-1;}
+  [data-testid="stHorizontalBlock"]{flex-wrap:wrap!important;gap:.8rem!important;}
+  [data-testid="stHorizontalBlock"]>[data-testid="column"]{
+    flex:1 1 calc(50% - .4rem)!important;
+    width:calc(50% - .4rem)!important;
+    min-width:260px!important;
+  }
+  .workflow-step{padding:10px;}
+  .workflow-label{font-size:.72rem;}
+}
+
+/* Phone: one clear reading column and finger-friendly controls */
+@media (max-width:640px){
+  .stApp{
+    background:
+      radial-gradient(520px 300px at 0% -5%,rgba(22,139,210,.15),transparent 66%),
+      radial-gradient(420px 320px at 110% 12%,rgba(73,214,188,.07),transparent 68%),
+      var(--p-bg);
+    background-attachment:scroll;
+  }
+  .block-container{
+    max-width:none;
+    padding:calc(.55rem + env(safe-area-inset-top))
+            calc(.7rem + env(safe-area-inset-right))
+            calc(4rem + env(safe-area-inset-bottom))
+            calc(.7rem + env(safe-area-inset-left));
+  }
+  .product-topbar{
+    min-height:56px;padding:9px 10px;margin-bottom:13px;border-radius:13px;gap:8px;
+    position:sticky;top:calc(.35rem + env(safe-area-inset-top));z-index:20;
+  }
+  .product-brand{gap:8px;}
+  .product-logo{max-width:94px;max-height:27px;}
+  .product-wordmark{font-size:.98rem;}
+  .product-status{
+    max-width:43%;padding:6px 8px;font-size:.6rem;overflow:hidden;
+    text-overflow:ellipsis;
+  }
+  .landing-hero{padding:1.65rem 1rem 1.45rem;border-radius:18px;}
+  .landing-hero::after{width:300px;height:300px;right:-160px;top:-170px;}
+  .eyebrow{font-size:.61rem;padding:6px 9px;letter-spacing:.06em;}
+  .landing-title{font-size:clamp(1.9rem,10vw,2.65rem);line-height:1.1;margin:18px 0 12px;}
+  .landing-copy{font-size:.9rem;line-height:1.7;}
+  .trust-row{gap:7px;margin-top:16px;}
+  .trust-chip{font-size:.68rem;padding:7px 8px;}
+  .feature-grid{grid-template-columns:minmax(0,1fr);gap:9px;margin-top:13px;}
+  .feature-card{padding:15px;}
+  .workspace-head{margin:2px 1px 13px;gap:9px;}
+  .workspace-title{font-size:1.55rem;}
+  .workspace-copy{font-size:.78rem;line-height:1.55;}
+
+  /* Keep the whole progress path visible instead of hiding inactive steps. */
+  .workflow{grid-template-columns:repeat(3,minmax(0,1fr));gap:4px;padding:5px;margin-bottom:14px;}
+  .workflow-step,.workflow-step:not(.active){
+    display:flex;flex-direction:column;justify-content:center;gap:5px;
+    padding:7px 3px;text-align:center;
+  }
+  .workflow-index{width:23px;height:23px;border-radius:7px;font-size:.62rem;}
+  .workflow-label{width:100%;font-size:.58rem;line-height:1.25;white-space:normal;}
+
+  [data-testid="stHorizontalBlock"]{
+    flex-direction:column!important;flex-wrap:nowrap!important;gap:.65rem!important;
+  }
+  [data-testid="stHorizontalBlock"]>[data-testid="column"]{
+    flex:1 1 100%!important;width:100%!important;min-width:0!important;
+  }
+  div[data-testid="stVerticalBlockBorderWrapper"]{
+    padding:.92rem!important;border-radius:14px!important;
+  }
+  .section-title{font-size:1.18rem;margin:22px 0 11px;}
+  .glass-header{margin-bottom:12px;}
+  [data-testid="stMetric"]{padding:12px 13px;}
+  [data-testid="stMetricValue"]{font-size:1.55rem;}
+  [data-testid="stExpander"] summary{min-height:48px;padding-inline:.8rem;}
+  [data-testid="stRadio"] div[role="radiogroup"]{gap:.5rem;}
+  [data-testid="stRadio"] label{min-height:44px;align-items:flex-start;}
+  .stTextInput input,.stTextArea textarea,
+  .stSelectbox div[data-baseweb="select"]>div{min-height:48px;font-size:16px!important;}
+  .stTextArea textarea{line-height:1.55;}
+  div.stButton>button,div.stLinkButton>a{min-height:48px;padding:.75rem .9rem;}
+  .empty-state{padding:32px 14px;}
+  .result-hero{padding:30px 15px;border-radius:18px;}
+  .result-hero h2{font-size:1.42rem;}
+  [data-testid="stToast"]{max-width:calc(100vw - 1.4rem);}
+}
+
+/* Coarse pointers benefit from larger targets, including tablets in landscape. */
+@media (pointer:coarse){
+  div.stButton>button,div.stLinkButton>a,
+  [data-testid="stExpander"] summary{min-height:48px;}
+  [data-testid="stCheckbox"] label,[data-testid="stToggle"] label{min-height:44px;}
+}
+
+/* Keyboard focus remains obvious across native and Streamlit controls. */
+button:focus-visible,a:focus-visible,input:focus-visible,textarea:focus-visible,
+[role="radio"]:focus-visible,[role="checkbox"]:focus-visible{
+  outline:3px solid rgba(67,200,232,.34)!important;outline-offset:2px!important;
+}
+</style>"""
+
 def inject_css() -> None:
-    _raw(CSS + PRODUCT_CSS)
+    _raw(CSS + PRODUCT_CSS + RESPONSIVE_CSS)
 
 def render_header(title: str = "EZEXAM",
                   subtitle: str = "ระบบช่วยตรวจแบบทดสอบ",
