@@ -763,7 +763,7 @@ def inject_css() -> None:
     _raw(CSS + PRODUCT_CSS + RESPONSIVE_CSS)
 
 def render_header(title: str = "EZEXAM",
-                  subtitle: str = "ระบบช่วยตรวจแบบทดสอบ",
+                  subtitle: str = "ระบบช่วยทำแบบทดสอบ",
                   status: str = "พร้อมใช้งาน") -> None:
     uri = _logo_uri()
     if uri:
