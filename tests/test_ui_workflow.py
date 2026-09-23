@@ -148,6 +148,7 @@ def test_review_compares_answer_and_shows_final_overview_without_submitting():
 
     assert not app.exception
     assert app.get("toggle")[0].label == "ดูโจทย์คู่กับคำตอบ AI"
+    assert any('class="question-card-mark review featured"' in item.value for item in app.markdown)
     assert any("AI เสนอคำตอบ" in item.value for item in app.markdown)
     assert any('class="review-answer">B' in item.value for item in app.markdown)
 
