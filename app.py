@@ -2121,9 +2121,14 @@ def answer_text(value: Any) -> str:
     return str(value or "").strip()
 
 
-def live_answer_cards(questions: List[Question], answers: Dict[str, Any]) -> str:
+def live_answer_cards(
+    questions: List[Question],
+    answers: Dict[str, Any],
+    fresh_entry_ids: Optional[set[str]] = None,
+) -> str:
     """Render real completed results; pending questions never show invented answers."""
     cards = []
+    scanning_count = 0
     for index, question in enumerate(questions, 1):
         result = answers.get(question.entry_id)
         answer = answer_text(result.get("answer")) if result else ""
@@ -2135,14 +2140,42 @@ def live_answer_cards(questions: List[Question], answers: Dict[str, Any]) -> str
             label, state = "ควรตรวจทาน", "review"
         else:
             label, state = "ได้คำตอบแล้ว", "ready"
+        effects = []
+        if state == "pending" and scanning_count < 2:
+            effects.append("scanning")
+            scanning_count += 1
+        if fresh_entry_ids and question.entry_id in fresh_entry_ids:
+            effects.append("revealed")
+        card_class = " ".join(("live-answer-card", state, *effects))
         cards.append(
-            f'<div class="live-answer-card {state}">'
+            f'<div class="{card_class}">'
             f'<div class="live-answer-head"><span>ข้อ {index:02d}</span><span>{label}</span></div>'
             f'<div class="live-question">{html_lib.escape(question.title)}</div>'
             f'<div class="live-answer">{html_lib.escape(answer) if answer else "รอผลลัพธ์…"}</div>'
             '</div>'
         )
     return '<div class="live-answer-grid">' + "".join(cards) + '</div>'
+
+
+def analysis_stage_markup(stage: str, answered: int = 0, total: int = 0) -> str:
+    """Show the actual analysis stage, without inventing per-question progress."""
+    stages = ("อ่านฟอร์ม", "เตรียมโจทย์", "วิเคราะห์", "ตรวจทาน")
+    active = stages.index(stage)
+    steps = "".join(
+        f'<span class="analysis-step {"done" if index < active else "active" if index == active else "waiting"}">'
+        f'<i aria-hidden="true"></i>{label}</span>'
+        for index, label in enumerate(stages)
+    )
+    detail = (
+        f"ได้คำตอบแล้ว {answered}/{total} ข้อ" if active >= 2 and total
+        else "กำลังอ่านและจัดเตรียมข้อมูลจากฟอร์ม"
+    )
+    return (
+        '<div class="analysis-dashboard" role="status" aria-live="polite">'
+        '<div class="analysis-dashboard-head"><span>EZEXAM · ANALYSIS</span>'
+        f'<strong>{html_lib.escape(detail)}</strong></div>'
+        f'<div class="analysis-steps">{steps}</div></div>'
+    )
 
 
 @st.dialog("ดูรูปโจทย์")
@@ -2367,6 +2400,8 @@ if not has_analysis:
             save_workspace_draft()
             with st.status("กำลังประมวลผล", expanded=True) as status:
                 try:
+                    stage_board = st.empty()
+                    stage_board.markdown(analysis_stage_markup("อ่านฟอร์ม"), unsafe_allow_html=True)
                     for key in list(st.session_state.keys()):
                         if key.startswith(("ans_", "input_")) or key in {
                             "pending_submission", "submission_in_progress",
@@ -2374,10 +2409,9 @@ if not has_analysis:
                         }:
                             del st.session_state[key]
 
-                    st.write("กำลังอ่านโครงสร้างฟอร์ม")
                     form_data, fbzx, fvv, raw_html, submit_url = fetch_form(form_url)
 
-                    st.write("กำลังเตรียมคำถามและรูปภาพ")
+                    stage_board.markdown(analysis_stage_markup("เตรียมโจทย์"), unsafe_allow_html=True)
                     questions, personal_data_map, default_next, page_count = parse_form(
                         form_data, raw_html, my_name, my_student_id, my_no, my_class
                     )
@@ -2413,7 +2447,7 @@ if not has_analysis:
                             parse_logs.append(warn_msg)
                             st.warning(warn_msg)
 
-                    st.write(f"กำลังวิเคราะห์คำถาม {len(questions)} ข้อ")
+                    stage_board.markdown(analysis_stage_markup("วิเคราะห์", 0, len(questions)), unsafe_allow_html=True)
                     bar = st.progress(0.0)
                     live_heading = st.empty()
                     live_board = st.empty()
@@ -2426,16 +2460,25 @@ if not has_analysis:
 
                     def live_cb(phase: str, new_answers: Dict[str, Any]) -> None:
                         if phase in {"ชุดหลัก", "ชุดซ่อม", "ซ่อมรายข้อ"}:
+                            fresh_ids = {
+                                entry_id for entry_id, result in new_answers.items()
+                                if answers_equivalent(live_answers.get(entry_id, {}).get("answer"), result.get("answer")) is False
+                            }
                             live_answers.update(new_answers)
                             count = sum(bool(answer_text(item.get("answer"))) for item in live_answers.values())
+                            stage_board.markdown(analysis_stage_markup("วิเคราะห์", count, len(questions)), unsafe_allow_html=True)
                             live_heading.caption(f"ได้คำตอบ {count}/{len(questions)} ข้อ · {phase}")
                             live_board.markdown(
-                                live_answer_cards(questions, live_answers),
+                                live_answer_cards(questions, live_answers, fresh_ids),
                                 unsafe_allow_html=True,
                             )
                         elif phase == "ตรวจอิสระ":
+                            count = sum(bool(answer_text(item.get("answer"))) for item in live_answers.values())
+                            stage_board.markdown(analysis_stage_markup("ตรวจทาน", count, len(questions)), unsafe_allow_html=True)
                             live_heading.caption("กำลังตรวจทานข้อที่มีความเสี่ยงเพิ่มเติม")
                         elif phase == "รอบตัดสิน":
+                            count = sum(bool(answer_text(item.get("answer"))) for item in live_answers.values())
+                            stage_board.markdown(analysis_stage_markup("ตรวจทาน", count, len(questions)), unsafe_allow_html=True)
                             live_heading.caption("กำลังตรวจคำตอบที่ผลสองรอบต่างกัน")
 
                     ai_answers, ai_errors, debug_logs = analyze_all(
