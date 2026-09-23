@@ -34,6 +34,7 @@ from google.genai import types
 
 import analysis_validation as _analysis_validation
 import form_media as _form_media
+import submission_flow as _submission_flow
 
 # Streamlit Cloud อาจ hot-reload app.py ขณะที่ process ยังเก็บ module รุ่นเก่า
 # อยู่ใน sys.modules การใช้ ``from module import new_name`` จะทำให้ทั้งเว็บล้ม
@@ -263,7 +264,17 @@ choose_autofill_value = getattr(
     ),
 )
 from style import inject_css, render_header
-from submission_flow import build_original_form_url, build_prefilled_form_url, post_form_response
+_SUBMISSION_HELPERS = (
+    "build_original_form_url",
+    "build_prefilled_form_url",
+    "post_form_response",
+)
+if not all(hasattr(_submission_flow, name) for name in _SUBMISSION_HELPERS):
+    _submission_flow = importlib.reload(_submission_flow)
+
+build_original_form_url = _submission_flow.build_original_form_url
+build_prefilled_form_url = _submission_flow.build_prefilled_form_url
+post_form_response = _submission_flow.post_form_response
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("ezexam")
