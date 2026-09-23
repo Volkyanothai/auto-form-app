@@ -276,6 +276,8 @@ _SUBMISSION_HELPERS = (
     "build_original_form_url",
     "build_prefilled_form_url",
     "post_form_response",
+    "post_form_response_with_pages",
+    "build_entry_page_map",
 )
 if not all(hasattr(_submission_flow, name) for name in _SUBMISSION_HELPERS):
     _submission_flow = importlib.reload(_submission_flow)
@@ -283,6 +285,8 @@ if not all(hasattr(_submission_flow, name) for name in _SUBMISSION_HELPERS):
 build_original_form_url = _submission_flow.build_original_form_url
 build_prefilled_form_url = _submission_flow.build_prefilled_form_url
 post_form_response = _submission_flow.post_form_response
+post_form_response_with_pages = _submission_flow.post_form_response_with_pages
+build_entry_page_map = _submission_flow.build_entry_page_map
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("ezexam")
@@ -2038,7 +2042,9 @@ def extract_score_url(confirmation_html: str, base_url: Optional[str] = None) ->
     return max(candidates, default=(0, None), key=lambda item: item[0])[1]
 
 
-def submit_form(submit_url: str, payload: Dict[str, Any]) -> Tuple[bool, str, Optional[str], Optional[str]]:
+def submit_form(
+    submit_url: str, payload: Dict[str, Any], entry_pages: Dict[str, int]
+) -> Tuple[bool, str, Optional[str], Optional[str]]:
     """
     ส่งคำตอบไปยัง Google Form
 
@@ -2048,7 +2054,7 @@ def submit_form(submit_url: str, payload: Dict[str, Any]) -> Tuple[bool, str, Op
     ที่ใช้แสดงคะแนนอยู่ในตัว — เราจึงเก็บ HTML นี้ไว้เพื่อฝังแสดงในแอปภายหลัง
     แทนที่จะพยายามพาร์สคะแนนเองด้วย regex ซึ่งเปราะบางและอาจไม่ตรงกับทุกฟอร์ม
     """
-    return post_form_response(submit_url, payload, UA, SUBMIT_TIMEOUT)
+    return post_form_response_with_pages(submit_url, payload, entry_pages, UA, SUBMIT_TIMEOUT)
 
 
 def get_ai_answer(ai_answers: Dict[str, Any], entry_id: str) -> Dict[str, Any]:
@@ -2298,6 +2304,7 @@ with nav_reset_col:
                 "_alternative_proposals", "_alternative_notice", "_alternative_history",
                 "_reviewed_entries", "_answer_undo", "_answer_snapshot", "_answer_values",
                 "question_map", "focus_mode", "review_filter", "review_risk_ack",
+                "submission_entry_pages", "_submission_failure",
             } or state_key.startswith(("ans_", "input_", "upload_", "_upload_marker_")):
                 del st.session_state[state_key]
         st.rerun()
@@ -2527,7 +2534,7 @@ if not has_analysis:
                             "_alternative_proposals", "_alternative_notice", "_alternative_history",
                             "_reviewed_entries", "_answer_undo", "_answer_snapshot", "_answer_values",
                             "question_map", "focus_mode", "review_filter", "review_risk_ack",
-                            "pending_submission", "submitted",
+                            "pending_submission", "submitted", "submission_entry_pages", "_submission_failure",
                         }:
                             del st.session_state[old_key]
                     st.session_state.update({
@@ -2541,6 +2548,7 @@ if not has_analysis:
                         "exam_context": exam_context,
                         "accuracy_mode": accuracy_mode,
                         "submit_url": submit_url,
+                        "submission_entry_pages": build_entry_page_map(form_data),
                         "debug_logs": debug_logs,
                         "analysis_errors": ai_errors,
                     })
@@ -3254,6 +3262,7 @@ if "questions" in st.session_state:
             )
         else:
             st.session_state["review_risk_ack"] = False
+            st.session_state.pop("_submission_failure", None)
             st.session_state["pending_submission"] = {
                 "payload": payload,
                 "fingerprint": fingerprint,
@@ -3313,35 +3322,27 @@ if "questions" in st.session_state:
                 st.caption("ระบบจะส่งไป Google Forms จริงเมื่อกดปุ่มยืนยันด้านล่างเท่านั้น")
                 if outstanding:
                     st.checkbox(
-                        f"ฉันตรวจข้อเสี่ยงที่เหลือ {outstanding} ข้อแล้ว และยืนยันคำตอบที่เลือก",
+                        f"ยืนยันว่าตรวจข้อเสี่ยงที่เหลือ {outstanding} ข้อแล้ว เพื่อเปิดปุ่มส่งในแอป",
                         key="review_risk_ack",
                     )
 
                 original_url = build_original_form_url(st.session_state["submit_url"])
                 prefilled_url = build_prefilled_form_url(st.session_state["submit_url"], current_payload)
-                if prefilled_url:
-                    st.link_button(
-                        "เปิด Google Forms พร้อมคำตอบเพื่อตรวจและส่งด้วยตัวเอง",
-                        prefilled_url,
-                        use_container_width=True,
-                    )
-                    st.caption(
-                        "ตรวจคำตอบและข้อมูลส่วนตัวใน Google Forms อีกครั้ง แล้วกดส่งในหน้านั้น "
-                        "หากเคยกดส่งในแอป ให้ตรวจว่าฟอร์มได้รับคำตอบแล้วหรือยังก่อนส่งซ้ำ"
-                    )
-                elif original_url:
-                    st.warning(
-                        "คำตอบชุดนี้ยาวเกินกว่าจะใส่ทั้งหมดในลิงก์ Google Forms ได้ "
-                        "เปิดฟอร์มต้นฉบับแล้วกรอกคำตอบด้วยตัวเอง โดยคัดลอกจากรายการด้านล่าง"
-                    )
-                    st.link_button("เปิด Google Forms ต้นฉบับ", original_url, use_container_width=True)
-                    answer_summary = "\n".join(
-                        f"ข้อ {index}: {answer_text(current_answers.get(question.entry_id))}"
-                        for index, question in enumerate(questions, 1)
-                    )
-                    with st.expander("คัดลอกคำตอบทั้งหมดเพื่อกรอกใน Google Forms"):
-                        st.code(answer_summary, language=None)
-                    st.caption("กรอกข้อมูลส่วนตัวและตรวจคำตอบใน Google Forms ก่อนกดส่ง และตรวจว่าฟอร์มได้รับคำตอบก่อนหน้านี้หรือยังเพื่อเลี่ยงการส่งซ้ำ")
+                failure = st.session_state.get("_submission_failure")
+                if failure:
+                    st.error(failure)
+                    st.warning("ยังไม่เห็นหน้ายืนยันจาก Google Forms อย่ากดส่งซ้ำจนกว่าจะตรวจว่าฟอร์มรับคำตอบแล้วหรือยัง")
+                    with st.expander("หากส่งในแอปไม่สำเร็จ · เปิดฟอร์มเอง", expanded=True):
+                        if prefilled_url:
+                            st.link_button("เปิด Google Forms พร้อมคำตอบ", prefilled_url, use_container_width=True)
+                        elif original_url:
+                            st.info("คำตอบยาวเกินลิงก์อัตโนมัติ กรุณากรอกเองจากรายการด้านล่าง")
+                            st.link_button("เปิด Google Forms ต้นฉบับ", original_url, use_container_width=True)
+                            with st.expander("คัดลอกคำตอบทั้งหมด"):
+                                st.code("\n".join(
+                                    f"ข้อ {index}: {answer_text(current_answers.get(question.entry_id))}"
+                                    for index, question in enumerate(questions, 1)
+                                ), language=None)
 
                 confirm_col, cancel_col = st.columns(2)
                 with confirm_col:
@@ -3368,10 +3369,12 @@ if "questions" in st.session_state:
                         st.session_state["submission_in_progress"] = True
                         with st.spinner("กำลังส่งข้อมูล"):
                             success, msg, confirmation_html, confirmation_url = submit_form(
-                                st.session_state["submit_url"], current_payload
+                                st.session_state["submit_url"], current_payload,
+                                st.session_state.get("submission_entry_pages", {}),
                             )
                         st.session_state["submission_in_progress"] = False
                         if success:
+                            st.session_state.pop("_submission_failure", None)
                             st.session_state["last_submitted_fingerprint"] = current_fingerprint
                             st.session_state["confirmation_html"] = confirmation_html
                             st.session_state["confirmation_url"] = confirmation_url
@@ -3380,9 +3383,8 @@ if "questions" in st.session_state:
                             st.success(msg)
                             st.rerun()
                         else:
-                            st.error(msg)
-                            if original_url:
-                                st.info("หากไม่เห็นหน้ายืนยัน ให้ใช้ปุ่มเปิด Google Forms ด้านบนเพื่อตรวจและส่งในเบราว์เซอร์")
+                            st.session_state["_submission_failure"] = msg
+                            st.rerun()
                             if debug_mode:
                                 with st.expander("ดู payload ที่ส่ง"):
                                     st.json(current_payload)
