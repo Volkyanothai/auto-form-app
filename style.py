@@ -773,42 +773,93 @@ RESPONSIVE_CSS = """<style>
 }
 
 /* Question cards respond to touch and focus; the rest of the dashboard stays quiet. */
-div[data-testid="stVerticalBlockBorderWrapper"]:has(.review-panel-label){
+div[data-testid="stVerticalBlockBorderWrapper"]:has(.question-card-mark){
   position:relative;isolation:isolate;
   transition:transform .24s ease,border-color .24s ease,box-shadow .28s ease!important;
 }
-div[data-testid="stVerticalBlockBorderWrapper"]:has(.review-panel-label)::before{
+div[data-testid="stVerticalBlockBorderWrapper"]:has(.question-card-mark)::before{
   content:"";position:absolute;inset:0;border-radius:inherit;pointer-events:none;z-index:0;
   opacity:0;background:radial-gradient(ellipse 70% 90% at 88% 0%,rgba(67,200,232,.14),transparent 75%);
   transition:opacity .3s ease;
 }
-div[data-testid="stVerticalBlockBorderWrapper"]:has(.review-panel-label)::after{
+div[data-testid="stVerticalBlockBorderWrapper"]:has(.question-card-mark)::after{
   content:"";position:absolute;inset:0;border-radius:inherit;pointer-events:none;z-index:0;
   opacity:0;transform:translateX(-110%);
   background:linear-gradient(110deg,transparent 28%,rgba(115,210,241,.07) 47%,rgba(95,227,208,.12) 50%,transparent 70%);
 }
-div[data-testid="stVerticalBlockBorderWrapper"]:has(.review-panel-label)>[data-testid="stVerticalBlock"]{
+div[data-testid="stVerticalBlockBorderWrapper"]:has(.question-card-mark)>[data-testid="stVerticalBlock"]{
   position:relative;z-index:1;
 }
-div[data-testid="stVerticalBlockBorderWrapper"]:has(.review-panel-label):is(:focus-within,:active){
+div[data-testid="stVerticalBlockBorderWrapper"]:has(.question-card-mark):is(:focus-within,:active){
   border-color:rgba(95,227,208,.68)!important;
   box-shadow:0 16px 42px rgba(0,0,0,.28),0 0 0 1px rgba(95,227,208,.18),0 0 26px rgba(67,200,232,.12)!important;
 }
-div[data-testid="stVerticalBlockBorderWrapper"]:has(.review-panel-label):is(:focus-within,:active)::before{opacity:1;}
-div[data-testid="stVerticalBlockBorderWrapper"]:has(.review-panel-label):is(:focus-within,:active)::after{
+div[data-testid="stVerticalBlockBorderWrapper"]:has(.question-card-mark):is(:focus-within,:active)::before{opacity:1;}
+div[data-testid="stVerticalBlockBorderWrapper"]:has(.question-card-mark):is(:focus-within,:active)::after{
   opacity:1;animation:questionSheen .8s ease-out 1 both;
 }
 @media (hover:hover) and (pointer:fine){
-  div[data-testid="stVerticalBlockBorderWrapper"]:has(.review-panel-label):hover{
+  div[data-testid="stVerticalBlockBorderWrapper"]:has(.question-card-mark):hover{
     transform:translateY(-3px);border-color:rgba(127,179,255,.55)!important;
     box-shadow:0 20px 48px rgba(0,0,0,.3),0 0 25px rgba(67,200,232,.1)!important;
   }
-  div[data-testid="stVerticalBlockBorderWrapper"]:has(.review-panel-label):hover::before{opacity:1;}
+  div[data-testid="stVerticalBlockBorderWrapper"]:has(.question-card-mark):hover::before{opacity:1;}
 }
 @keyframes questionSheen{from{transform:translateX(-110%)}to{transform:translateX(110%)}}
 
+/* The identity and colored light are visible even on touch devices at rest. */
+div[data-testid="stVerticalBlockBorderWrapper"]:has(.question-card-mark){
+  border:1.5px solid transparent!important;
+  background:
+    radial-gradient(ellipse 65% 95% at 100% 0%,rgba(49,166,220,.22),transparent 78%) padding-box,
+    linear-gradient(145deg,rgba(16,34,57,.98),rgba(10,20,35,.96)) padding-box,
+    linear-gradient(120deg,rgba(127,179,255,.82),rgba(95,227,208,.72),rgba(232,201,138,.52)) border-box!important;
+  box-shadow:0 19px 46px rgba(0,0,0,.32),inset 0 1px 0 rgba(219,245,255,.12),0 0 28px rgba(67,200,232,.075)!important;
+}
+div[data-testid="stVerticalBlockBorderWrapper"]:has(.question-card-mark)::before{
+  opacity:1;background:radial-gradient(ellipse 45% 85% at 97% 0%,rgba(69,219,218,.15),transparent 82%);
+}
+@media(prefers-reduced-motion:no-preference){
+  div[data-testid="stVerticalBlockBorderWrapper"]:has(.question-card-mark.featured)::before{
+    background:radial-gradient(ellipse 70% 105% at 95% 0%,rgba(95,227,208,.31),transparent 78%);
+    animation:featuredAura 3.2s ease-in-out infinite;
+  }
+}
+@keyframes featuredAura{0%,100%{opacity:.35}50%{opacity:1}}
+.question-card-mark{
+  position:relative;display:flex;align-items:center;gap:12px;min-width:0;
+  margin:-2px 0 18px;padding:10px 12px 10px 10px;border-radius:14px;
+  border:1px solid rgba(108,213,231,.27);
+  background:linear-gradient(100deg,rgba(35,111,146,.26),rgba(16,39,66,.5) 68%,rgba(27,80,100,.24));
+  box-shadow:inset 0 1px 0 rgba(194,244,255,.11),0 8px 26px rgba(0,0,0,.16);
+  cursor:pointer;
+}
+.question-card-mark:focus-visible{outline:2px solid #7cebdc;outline-offset:3px;}
+.question-card-number{
+  display:grid;place-items:center;flex:0 0 auto;width:44px;height:44px;border-radius:12px;
+  color:#08202b;font-size:1.05rem;font-weight:900;letter-spacing:-.06em;
+  background:linear-gradient(135deg,#b9e8ff 0%,#56d9dc 60%,#b5f8d9 100%);
+  box-shadow:0 0 0 1px rgba(238,255,255,.4),0 0 25px rgba(67,200,232,.4);
+}
+.question-card-caption{flex:1;min-width:0;font-size:.66rem;letter-spacing:.16em;font-weight:800;color:#9ccadd;}
+.question-card-caption strong{display:block;margin-top:3px;font-size:1.02rem;line-height:1;letter-spacing:-.02em;color:#effbff;}
+.question-card-state{font-size:.69rem;font-weight:800;white-space:nowrap;color:#91ecda;padding:7px 11px;border:1px solid rgba(95,227,208,.4);border-radius:99px;background:rgba(37,150,137,.16);}
+.question-card-mark.review .question-card-state{color:#f5d796;border-color:rgba(232,201,138,.48);background:rgba(232,201,138,.12);}
+.question-card-mark.risky .question-card-state{color:#ffaaa6;border-color:rgba(255,138,145,.46);background:rgba(255,107,107,.12);}
+div[data-testid="stVerticalBlockBorderWrapper"]:has(.question-card-mark):focus-within .question-card-number{
+  box-shadow:0 0 0 4px rgba(95,227,208,.18),0 0 36px rgba(67,200,232,.75);
+}
+@media(max-width:640px){
+  .question-card-mark{gap:9px;padding:8px;margin-bottom:15px;}
+  .question-card-number{width:38px;height:38px;font-size:.96rem;}
+  .question-card-caption{font-size:.56rem;letter-spacing:.1em;}
+  .question-card-state{font-size:.61rem;padding:6px 8px;}
+}
+
 /* A compact, truthful phase display; answer count is updated only on completed batches. */
-.analysis-dashboard{padding:15px;border:1px solid rgba(95,227,208,.3);border-radius:16px;background:linear-gradient(135deg,rgba(13,42,61,.84),rgba(12,22,46,.88));margin:5px 0 14px;box-shadow:inset 0 1px rgba(255,255,255,.07),0 14px 36px rgba(0,0,0,.18);}
+.analysis-dashboard{position:relative;overflow:hidden;padding:17px;border:1px solid rgba(95,227,208,.65);border-radius:16px;background:linear-gradient(135deg,rgba(15,62,78,.94),rgba(10,28,58,.94));margin:5px 0 14px;box-shadow:inset 0 1px rgba(255,255,255,.14),0 14px 36px rgba(0,0,0,.22),0 0 32px rgba(67,200,232,.15);}
+.analysis-dashboard::before{content:"";position:absolute;top:0;left:0;right:0;height:3px;background:linear-gradient(90deg,#7fb3ff,#5fe3d0,#e8c98a,#5fe3d0);background-size:250% 100%;animation:dashboardSignal 4s linear infinite;}
+@keyframes dashboardSignal{to{background-position:250% 0}}
 .analysis-dashboard-head{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:12px;font-size:.74rem;color:#8bc6d7;}
 .analysis-dashboard-head>span{font-size:.6rem;letter-spacing:.14em;font-weight:800;white-space:nowrap;}
 .analysis-dashboard-head strong{color:#e7f8ff;font-size:.82rem;text-align:right;}
@@ -817,13 +868,13 @@ div[data-testid="stVerticalBlockBorderWrapper"]:has(.review-panel-label):is(:foc
 .analysis-step i{width:7px;height:7px;flex:0 0 auto;border-radius:50%;background:#53637c;}
 .analysis-step.done{color:#9fe2d8;border-color:rgba(95,227,208,.25);}
 .analysis-step.done i{background:#5fe3d0;}
-.analysis-step.active{color:#fff;background:rgba(67,200,232,.13);border-color:rgba(95,227,208,.53);box-shadow:inset 0 0 16px rgba(67,200,232,.08);}
+.analysis-step.active{color:#fff;background:linear-gradient(120deg,rgba(46,126,170,.48),rgba(29,149,138,.3));border-color:rgba(95,227,208,.8);box-shadow:inset 0 0 16px rgba(67,200,232,.13),0 0 19px rgba(67,200,232,.2);}
 .analysis-step.active i{background:#5fe3d0;box-shadow:0 0 0 4px rgba(95,227,208,.13),0 0 13px rgba(95,227,208,.8);animation:activeStepPulse 2s ease-in-out infinite;}
 @keyframes activeStepPulse{50%{box-shadow:0 0 0 6px rgba(95,227,208,.04),0 0 18px rgba(95,227,208,.9)}}
 
 .live-answer-card{position:relative;overflow:hidden;isolation:isolate;}
 .live-answer-card>*{position:relative;z-index:1;}
-.live-answer-card.pending.scanning::before{content:"";position:absolute;inset:0;background:linear-gradient(105deg,transparent 25%,rgba(95,227,208,.085) 47%,transparent 68%);transform:translateX(-105%);animation:pendingScan 2.5s ease-in-out infinite;pointer-events:none;}
+.live-answer-card.pending.scanning::before{content:"";position:absolute;inset:0;background:linear-gradient(105deg,transparent 20%,rgba(95,227,208,.22) 47%,transparent 72%);transform:translateX(-105%);animation:pendingScan 2.5s ease-in-out infinite;pointer-events:none;}
 .live-answer-card.revealed{animation:liveReveal .48s cubic-bezier(.2,.8,.2,1) both,answerArrival .95s ease-out 1;}
 @keyframes pendingScan{55%,100%{transform:translateX(105%)}}
 @keyframes answerArrival{0%{box-shadow:0 0 0 0 rgba(95,227,208,.34)}60%{box-shadow:0 0 0 4px rgba(95,227,208,.13)}100%{box-shadow:0 0 0 0 rgba(95,227,208,0)}}
@@ -834,7 +885,8 @@ div[data-testid="stVerticalBlockBorderWrapper"]:has(.review-panel-label):is(:foc
 }
 @media(prefers-reduced-motion:reduce){
   .live-answer-card.pending.scanning::before,.live-answer-card.revealed,
-  .analysis-step.active i,div[data-testid="stVerticalBlockBorderWrapper"]:has(.review-panel-label)::after{
+  .analysis-step.active i,.analysis-dashboard::before,
+  div[data-testid="stVerticalBlockBorderWrapper"]:has(.question-card-mark)::after{
     animation:none!important;
   }
 }
