@@ -3058,3 +3058,6 @@ if "questions" in st.session_state:
                             st.error(msg)
                             if original_url:
                                 st.info("หากไม่เห็นหน้ายืนยัน ให้ใช้ปุ่มเปิด Google Forms ด้านบนเพื่อตรวจและส่งในเบราว์เซอร์")
+                            if debug_mode:
+                                with st.expander("ดู payload ที่ส่ง"):
+                                    st.json(current_payload)
