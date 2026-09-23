@@ -277,7 +277,10 @@ _SUBMISSION_HELPERS = (
     "build_prefilled_form_url",
     "post_form_response",
 )
-if not all(hasattr(_submission_flow, name) for name in _SUBMISSION_HELPERS):
+if (
+    getattr(_submission_flow, "SUBMISSION_FLOW_VERSION", 0) < 2
+    or not all(hasattr(_submission_flow, name) for name in _SUBMISSION_HELPERS)
+):
     _submission_flow = importlib.reload(_submission_flow)
 
 build_original_form_url = _submission_flow.build_original_form_url
