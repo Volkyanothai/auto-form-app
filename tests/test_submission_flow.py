@@ -29,6 +29,25 @@ def test_only_google_confirmation_page_proves_submission():
     assert "ลงชื่อเข้าใช้" in message
 
 
+def test_modern_visible_confirmation_is_accepted_without_legacy_css_marker():
+    for message in ("Your response has been recorded.", "บันทึกคำตอบของคุณแล้ว"):
+        html = f"<html><body><main><p>{message}</p></main></body></html>"
+        assert check_submit_success(html, 200, FORM_RESPONSE) == (True, None)
+        success, _, returned_html, _ = post_form_response(
+            FORM_RESPONSE, {"entry.1": "A"}, {}, 5,
+            lambda *args, **kwargs: SimpleNamespace(text=html, status_code=200, url=FORM_RESPONSE),
+        )
+        assert success and returned_html == html
+
+
+def test_form_or_script_text_cannot_masquerade_as_confirmation():
+    for html in (
+        '<form action="formResponse"><p>Your response has been recorded.</p><input name="entry.1"></form>',
+        '<script>const message = "Your response has been recorded.";</script>',
+    ):
+        assert not check_submit_success(html, 200, FORM_RESPONSE)[0]
+
+
 def test_prefill_uses_only_answer_fields_and_keeps_checkbox_values():
     url = build_prefilled_form_url(FORM_RESPONSE, {
         "entry.123": "ภาษาไทย & วิทย์",
