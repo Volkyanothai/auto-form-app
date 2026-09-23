@@ -40,6 +40,12 @@ def test_modern_visible_confirmation_is_accepted_without_legacy_css_marker():
         assert success and returned_html == html
 
 
+def test_confirmation_with_google_page_data_and_decorative_form_is_not_called_unanswered():
+    html = ('<script>FB_PUBLIC_LOAD_DATA_ = [];</script>'
+            '<form action="/search"></form><p>Submit another response</p>')
+    assert check_submit_success(html, 200, FORM_RESPONSE) == (True, None)
+
+
 def test_form_or_script_text_cannot_masquerade_as_confirmation():
     for html in (
         '<form action="formResponse"><p>Your response has been recorded.</p><input name="entry.1"></form>',
@@ -78,7 +84,7 @@ def test_returned_form_and_timeout_never_trigger_automatic_second_post():
 
     def returns_form(*args, **kwargs):
         calls.append((args, kwargs))
-        return SimpleNamespace(text="FB_PUBLIC_LOAD_DATA_ = [];", status_code=200, url=FORM_RESPONSE)
+        return SimpleNamespace(text='<form action="formResponse"><input name="entry.1"></form>', status_code=200, url=FORM_RESPONSE)
 
     success, message, html, url = post_form_response(FORM_RESPONSE, {"entry.1": "A"}, {}, 5, returns_form)
     assert not success and "หน้าฟอร์มกลับมา" in message
