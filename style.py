@@ -892,6 +892,36 @@ div[data-testid="stVerticalBlockBorderWrapper"]:has(.question-card-mark):focus-w
 }
 
 /* Keyboard focus remains obvious across native and Streamlit controls. */
+.review-hub-mark,.review-dock-mark{
+  font-size:.72rem;font-weight:800;letter-spacing:.14em;color:#75dfea;
+  text-transform:uppercase;margin:4px 0 10px;
+}
+.review-hub-mark{padding:13px 17px;border-radius:13px;
+  background:linear-gradient(95deg,rgba(40,132,199,.2),rgba(67,200,232,.06) 55%,transparent);
+  border-left:3px solid #4bd6eb;
+}
+div[data-testid="stVerticalBlockBorderWrapper"]:has(.review-dock-mark){
+  position:sticky;top:10px;z-index:20;
+  background:linear-gradient(115deg,rgba(13,23,42,.97),rgba(25,37,59,.97));
+  backdrop-filter:blur(10px);box-shadow:0 12px 35px rgba(0,0,0,.3);
+}
+.focus-count{text-align:center;color:#a9eaf4;font-size:1.3rem;font-weight:800;
+  font-variant-numeric:tabular-nums;padding:8px 0;
+}
+.alternative-compare{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:14px 0;}
+.alternative-compare>div{padding:14px 16px;border-radius:12px;
+  background:rgba(22,38,60,.85);border:1px solid rgba(114,178,224,.24);
+  overflow-wrap:anywhere;}
+.alternative-compare>div:last-child{background:rgba(18,68,67,.5);
+  border-color:rgba(95,227,208,.55);box-shadow:0 0 24px rgba(95,227,208,.1);}
+.alternative-compare small{display:block;color:#9fb2c4;margin-bottom:6px;}
+.alternative-compare strong{font-size:1.05rem;color:#eefaff;}
+@media(max-width:640px){.alternative-compare{grid-template-columns:1fr;}}
+@media(prefers-reduced-motion:no-preference){
+  .alternative-compare>div:last-child{animation:alternativeReveal .45s ease-out both;}
+  .result-hero{animation:alternativeReveal .65s ease-out both;}
+}
+@keyframes alternativeReveal{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
 button:focus-visible,a:focus-visible,input:focus-visible,textarea:focus-visible,
 [role="radio"]:focus-visible,[role="checkbox"]:focus-visible{
   outline:3px solid rgba(67,200,232,.34)!important;outline-offset:2px!important;
