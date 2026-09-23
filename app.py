@@ -263,7 +263,7 @@ choose_autofill_value = getattr(
     ),
 )
 from style import inject_css, render_header
-from submission_flow import build_prefilled_form_url, post_form_response
+from submission_flow import build_original_form_url, build_prefilled_form_url, post_form_response
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("ezexam")
@@ -2994,9 +2994,8 @@ if "questions" in st.session_state:
                         st.write(f"ข้อ {qidx}: {current_value or 'ยังไม่ตอบ'}{marker}")
                 st.caption("ระบบจะส่งไป Google Forms จริงเมื่อกดปุ่มยืนยันด้านล่างเท่านั้น")
 
-                prefilled_url = build_prefilled_form_url(
-                    st.session_state["submit_url"], current_payload
-                )
+                original_url = build_original_form_url(st.session_state["submit_url"])
+                prefilled_url = build_prefilled_form_url(st.session_state["submit_url"], current_payload)
                 if prefilled_url:
                     st.link_button(
                         "เปิด Google Forms พร้อมคำตอบเพื่อตรวจและส่งด้วยตัวเอง",
@@ -3007,6 +3006,19 @@ if "questions" in st.session_state:
                         "ตรวจคำตอบและข้อมูลส่วนตัวใน Google Forms อีกครั้ง แล้วกดส่งในหน้านั้น "
                         "หากเคยกดส่งในแอป ให้ตรวจว่าฟอร์มได้รับคำตอบแล้วหรือยังก่อนส่งซ้ำ"
                     )
+                elif original_url:
+                    st.warning(
+                        "คำตอบชุดนี้ยาวเกินกว่าจะใส่ทั้งหมดในลิงก์ Google Forms ได้ "
+                        "เปิดฟอร์มต้นฉบับแล้วกรอกคำตอบด้วยตัวเอง โดยคัดลอกจากรายการด้านล่าง"
+                    )
+                    st.link_button("เปิด Google Forms ต้นฉบับ", original_url, use_container_width=True)
+                    answer_summary = "\n".join(
+                        f"ข้อ {index}: {answer_text(current_answers.get(question.entry_id))}"
+                        for index, question in enumerate(questions, 1)
+                    )
+                    with st.expander("คัดลอกคำตอบทั้งหมดเพื่อกรอกใน Google Forms"):
+                        st.code(answer_summary, language=None)
+                    st.caption("กรอกข้อมูลส่วนตัวและตรวจคำตอบใน Google Forms ก่อนกดส่ง และตรวจว่าฟอร์มได้รับคำตอบก่อนหน้านี้หรือยังเพื่อเลี่ยงการส่งซ้ำ")
 
                 confirm_col, cancel_col = st.columns(2)
                 with confirm_col:
@@ -3044,8 +3056,8 @@ if "questions" in st.session_state:
                             st.rerun()
                         else:
                             st.error(msg)
-                            if prefilled_url:
-                                st.info("หากไม่เห็นหน้ายืนยัน ให้ใช้ปุ่มเปิด Google Forms ด้านบนเพื่อตรวจข้อที่ฟอร์มต้องการและส่งในเบราว์เซอร์")
+                            if original_url:
+                                st.info("หากไม่เห็นหน้ายืนยัน ให้ใช้ปุ่มเปิด Google Forms ด้านบนเพื่อตรวจและส่งในเบราว์เซอร์")
                             if debug_mode:
                                 with st.expander("ดู payload ที่ส่ง"):
                                     st.json(current_payload)
