@@ -19,7 +19,6 @@ import json
 import logging
 import re
 import threading
-import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field, replace
@@ -264,6 +263,7 @@ choose_autofill_value = getattr(
     ),
 )
 from style import inject_css, render_header
+from submission_flow import build_prefilled_form_url, post_form_response
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("ezexam")
@@ -1910,27 +1910,6 @@ def build_submit_payload(
     return payload
 
 
-def check_submit_success(response_text: str, status_code: int) -> Tuple[bool, Optional[str]]:
-    if status_code != 200:
-        return False, f"HTTP {status_code}"
-
-    success_markers = [
-        "freebirdformviewerviewresponseconfirmationmessage",
-        "บันทึกคำตอบ",
-        "response received",
-        "thank you",
-        "ขอบคุณ",
-        "สำเร็จ",
-    ]
-    if any(marker in response_text.lower() for marker in success_markers):
-        return True, None
-
-    if "FB_PUBLIC_LOAD_DATA_" in response_text or 'role="form"' in response_text:
-        return False, "ฟอร์มยังแสดงผลอยู่ (อาจมีข้อผิดพลาด)"
-
-    return True, None
-
-
 def build_score_page_html(html: str, base_url: Optional[str] = None) -> str:
     """
     เตรียม HTML หน้ายืนยันของ Google สำหรับฝังแสดงในแอป
@@ -2040,7 +2019,7 @@ def extract_score_url(confirmation_html: str, base_url: Optional[str] = None) ->
     return max(candidates, default=(0, None), key=lambda item: item[0])[1]
 
 
-def submit_form(submit_url: str, payload: Dict[str, Any], max_retries: int = 2) -> Tuple[bool, str, Optional[str], Optional[str]]:
+def submit_form(submit_url: str, payload: Dict[str, Any]) -> Tuple[bool, str, Optional[str], Optional[str]]:
     """
     ส่งคำตอบไปยัง Google Form
 
@@ -2050,28 +2029,7 @@ def submit_form(submit_url: str, payload: Dict[str, Any], max_retries: int = 2) 
     ที่ใช้แสดงคะแนนอยู่ในตัว — เราจึงเก็บ HTML นี้ไว้เพื่อฝังแสดงในแอปภายหลัง
     แทนที่จะพยายามพาร์สคะแนนเองด้วย regex ซึ่งเปราะบางและอาจไม่ตรงกับทุกฟอร์ม
     """
-    for attempt in range(max_retries + 1):
-        try:
-            res = requests.post(submit_url, data=payload, headers=UA, timeout=SUBMIT_TIMEOUT)
-            success, err = check_submit_success(res.text, res.status_code)
-            if success:
-                return True, "ส่งข้อมูลสำเร็จ", res.text, res.url
-            if attempt < max_retries:
-                time.sleep(2 ** attempt)
-                continue
-            return False, err or f"ส่งไม่สำเร็จ (HTTP {res.status_code})", None, None
-        except requests.exceptions.Timeout:
-            if attempt < max_retries:
-                time.sleep(2 ** attempt)
-                continue
-            return False, "หมดเวลาการเชื่อมต่อ", None, None
-        except Exception as e:
-            if attempt < max_retries:
-                time.sleep(2 ** attempt)
-                continue
-            return False, f"ข้อผิดพลาด: {str(e)}", None, None
-
-    return False, "ไม่สามารถส่งข้อมูลได้", None, None
+    return post_form_response(submit_url, payload, UA, SUBMIT_TIMEOUT)
 
 
 def get_ai_answer(ai_answers: Dict[str, Any], entry_id: str) -> Dict[str, Any]:
@@ -3036,6 +2994,20 @@ if "questions" in st.session_state:
                         st.write(f"ข้อ {qidx}: {current_value or 'ยังไม่ตอบ'}{marker}")
                 st.caption("ระบบจะส่งไป Google Forms จริงเมื่อกดปุ่มยืนยันด้านล่างเท่านั้น")
 
+                prefilled_url = build_prefilled_form_url(
+                    st.session_state["submit_url"], current_payload
+                )
+                if prefilled_url:
+                    st.link_button(
+                        "เปิด Google Forms พร้อมคำตอบเพื่อตรวจและส่งด้วยตัวเอง",
+                        prefilled_url,
+                        use_container_width=True,
+                    )
+                    st.caption(
+                        "ตรวจคำตอบและข้อมูลส่วนตัวใน Google Forms อีกครั้ง แล้วกดส่งในหน้านั้น "
+                        "หากเคยกดส่งในแอป ให้ตรวจว่าฟอร์มได้รับคำตอบแล้วหรือยังก่อนส่งซ้ำ"
+                    )
+
                 confirm_col, cancel_col = st.columns(2)
                 with confirm_col:
                     confirm_clicked = st.button(
@@ -3072,5 +3044,8 @@ if "questions" in st.session_state:
                             st.rerun()
                         else:
                             st.error(msg)
-                            with st.expander("ดู payload ที่ส่ง"):
-                                st.json(current_payload)
+                            if prefilled_url:
+                                st.info("หากไม่เห็นหน้ายืนยัน ให้ใช้ปุ่มเปิด Google Forms ด้านบนเพื่อตรวจข้อที่ฟอร์มต้องการและส่งในเบราว์เซอร์")
+                            if debug_mode:
+                                with st.expander("ดู payload ที่ส่ง"):
+                                    st.json(current_payload)
