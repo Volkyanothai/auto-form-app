@@ -51,6 +51,7 @@ _ANALYSIS_HELPERS = (
     "merge_verification_result",
     "should_verify_answer",
     "submission_fingerprint",
+    "validate_distinct_alternative",
     "verification_priority",
 )
 if not all(hasattr(_analysis_validation, name) for name in _ANALYSIS_HELPERS):
@@ -211,6 +212,13 @@ answers_equivalent = getattr(
     _analysis_validation,
     "answers_equivalent",
     lambda left, right: str(left).strip().casefold() == str(right).strip().casefold(),
+)
+validate_distinct_alternative = getattr(
+    _analysis_validation,
+    "validate_distinct_alternative",
+    lambda candidate, forbidden, choices, is_multi: (
+        False, "ระบบตรวจคำตอบทางเลือกยังไม่พร้อม กรุณาลองรีเฟรชหน้า"
+    ),
 )
 verification_priority = getattr(
     _analysis_validation,
@@ -2287,6 +2295,9 @@ with nav_reset_col:
                 "analysis_errors", "retry_notice",
                 "pending_submission", "submitted", "confirmation_html", "confirmation_url",
                 "last_submitted_fingerprint", "_personal_autofill_history",
+                "_alternative_proposals", "_alternative_notice", "_alternative_history",
+                "_reviewed_entries", "_answer_undo", "_answer_snapshot", "_answer_values",
+                "question_map", "focus_mode", "review_filter", "review_risk_ack",
             } or state_key.startswith(("ans_", "input_", "upload_", "_upload_marker_")):
                 del st.session_state[state_key]
         st.rerun()
@@ -2511,6 +2522,14 @@ if not has_analysis:
                     else:
                         st.success(f"วิเคราะห์ครบ {len(ai_answers)} ข้อ")
 
+                    for old_key in list(st.session_state):
+                        if old_key.startswith("ans_") or old_key in {
+                            "_alternative_proposals", "_alternative_notice", "_alternative_history",
+                            "_reviewed_entries", "_answer_undo", "_answer_snapshot", "_answer_values",
+                            "question_map", "focus_mode", "review_filter", "review_risk_ack",
+                            "pending_submission", "submitted",
+                        }:
+                            del st.session_state[old_key]
                     st.session_state.update({
                         "questions": questions,
                         "personal_data_map": personal_data_map,
@@ -2576,6 +2595,74 @@ if "questions" in st.session_state:
         if q.entry_id in manual_images:
             q.images = [img for img in q.images if img.source != "manual_upload"]
             q.images.append(manual_images[q.entry_id])
+        # Initialize every question before focus/filter hides its widget. Hidden
+        # answers must still be included in the final Google Forms payload.
+        if f"ans_{q.entry_id}" not in st.session_state:
+            stored_answers = st.session_state.setdefault("_answer_values", {})
+            if q.entry_id in stored_answers:
+                st.session_state[f"ans_{q.entry_id}"] = stored_answers[q.entry_id]
+            else:
+                apply_ai_answer_to_state(q, get_ai_answer(ai_answers, q.entry_id))
+        st.session_state.setdefault("_answer_values", {})[q.entry_id] = st.session_state[f"ans_{q.entry_id}"]
+
+    reviewed_entries = st.session_state.setdefault("_reviewed_entries", set())
+    proposals = st.session_state.setdefault("_alternative_proposals", {})
+    history = st.session_state.setdefault("_alternative_history", {})
+    undo_answers = st.session_state.setdefault("_answer_undo", {})
+    snapshots = st.session_state.setdefault("_answer_snapshot", {})
+    for q in questions:
+        snapshots.setdefault(q.entry_id, st.session_state[f"ans_{q.entry_id}"])
+
+    def on_answer_edit(entry_id: str) -> None:
+        current = st.session_state.get(f"ans_{entry_id}")
+        previous = snapshots.get(entry_id)
+        if not answers_equivalent(current, previous):
+            undo_answers[entry_id] = previous
+            reviewed_entries.discard(entry_id)
+            proposals.pop(entry_id, None)
+            st.session_state["review_risk_ack"] = False
+        snapshots[entry_id] = current
+        st.session_state["_answer_values"][entry_id] = current
+
+    def restore_answer(entry_id: str) -> None:
+        previous = undo_answers.pop(entry_id)
+        st.session_state[f"ans_{entry_id}"] = previous
+        st.session_state["_answer_values"][entry_id] = previous
+        snapshots[entry_id] = previous
+        proposals.pop(entry_id, None)
+
+    def navigate_to(entry_id: str) -> None:
+        st.session_state["question_map"] = entry_id
+        st.session_state["focus_mode"] = True
+        st.session_state["review_filter"] = "ทั้งหมด"
+
+    def accept_alternative(question: Question) -> None:
+        entry_id = question.entry_id
+        proposal = proposals.pop(entry_id)
+        previous_ai = get_ai_answer(st.session_state["ai_answers"], entry_id)
+        previous_choice = st.session_state.get(f"ans_{entry_id}")
+        forbidden = [previous_ai.get("answer"), previous_choice, *history.get(entry_id, [])]
+        valid, reason = validate_distinct_alternative(
+            proposal, forbidden, question.choices, question.is_multi
+        )
+        if not valid:
+            st.session_state["_alternative_notice"] = reason
+            return
+        undo_answers[entry_id] = previous_choice
+        history.setdefault(entry_id, []).append(previous_ai.get("answer"))
+        history[entry_id].append(previous_choice)
+        alternative = dict(proposal)
+        alternative["verification"] = "alternative_selected"
+        alternative["risk_level"] = "review"
+        alternative["risk_reasons"] = ["คำตอบใหม่ต้องตรวจด้วยตนเองก่อนส่ง"]
+        alternative["reliability_score"] = min(int(alternative.get("confidence", 0) or 0), 69)
+        st.session_state["ai_answers"][entry_id] = alternative
+        apply_ai_answer_to_state(question, alternative)
+        st.session_state["_answer_values"][entry_id] = st.session_state[f"ans_{entry_id}"]
+        snapshots[entry_id] = st.session_state[f"ans_{entry_id}"]
+        reviewed_entries.discard(entry_id)
+        st.session_state["review_risk_ack"] = False
+        st.session_state["_alternative_notice"] = "เปลี่ยนเป็นคำตอบทางเลือกแล้ว กรุณาตรวจเหตุผลอีกครั้ง"
 
     if st.session_state.get("debug_mode") or debug_mode:
         with st.expander("รายละเอียดการประมวลผล", expanded=True):
@@ -2661,6 +2748,7 @@ if "questions" in st.session_state:
                     ans_key = f"ans_{question.entry_id}"
                     if not st.session_state.get(ans_key):
                         apply_ai_answer_to_state(question, answer)
+                        st.session_state["_answer_values"][question.entry_id] = st.session_state[ans_key]
             st.session_state["ai_answers"] = ai_answers
             st.session_state["analysis_errors"] = new_errors
             st.session_state["debug_logs"] = debug_logs + new_logs
@@ -2691,10 +2779,35 @@ if "questions" in st.session_state:
 
     filter_labels = {
         "ทั้งหมด": "all",
+        "คิวตรวจ": "queue",
         "ต้องตรวจ": "needs_review",
         "ยังไม่ตอบ": "unanswered",
         "มีรูป": "images",
     }
+    pending_ids = {
+        q.entry_id for q in questions
+        if q.entry_id not in reviewed_entries and (
+            get_ai_answer(ai_answers, q.entry_id).get("risk_level") != "safe"
+            or not st.session_state.get(f"ans_{q.entry_id}")
+        )
+    }
+    st.markdown('<div class="review-hub-mark">REVIEW MISSION CONTROL</div>', unsafe_allow_html=True)
+    st.caption(f"เหลือในคิวตรวจ {len(pending_ids)} ข้อ · ตรวจแล้ว {len(reviewed_entries)} ข้อ")
+    if questions:
+        valid_ids = [q.entry_id for q in questions]
+        if st.session_state.get("question_map") not in valid_ids:
+            st.session_state["question_map"] = valid_ids[0]
+        st.pills(
+            "แผนที่ข้อสอบ · แตะหมายเลขเพื่อเปิดข้อนั้น",
+            valid_ids,
+            format_func=lambda entry_id: (
+                f"{'✓' if entry_id in reviewed_entries else '!' if entry_id in pending_ids else '·'} "
+                f"{valid_ids.index(entry_id) + 1:02d}"
+            ),
+            key="question_map",
+            on_change=lambda: navigate_to(st.session_state["question_map"]),
+        )
+    st.toggle("โหมดโฟกัสทีละข้อ", key="focus_mode")
     selected_filter_label = st.radio(
         "แสดงคำถาม",
         list(filter_labels),
@@ -2722,29 +2835,57 @@ if "questions" in st.session_state:
                     st.session_state[f"ans_{q.entry_id}"] = None
                 else:
                     st.session_state[f"ans_{q.entry_id}"] = ""
+                snapshots[q.entry_id] = st.session_state[f"ans_{q.entry_id}"]
+                st.session_state["_answer_values"][q.entry_id] = st.session_state[f"ans_{q.entry_id}"]
+            reviewed_entries.clear()
+            proposals.clear()
             st.rerun()
     with col_accept:
         if st.button("ยอมรับคำตอบทั้งหมด", use_container_width=True):
             for q in questions:
                 ans_data = get_ai_answer(ai_answers, q.entry_id)
                 apply_ai_answer_to_state(q, ans_data)
+                snapshots[q.entry_id] = st.session_state[f"ans_{q.entry_id}"]
+                st.session_state["_answer_values"][q.entry_id] = st.session_state[f"ans_{q.entry_id}"]
+            reviewed_entries.clear()
+            proposals.clear()
             st.rerun()
     with col_reset:
         if st.button("ล้างคำตอบทั้งหมด", use_container_width=True, key="reset_answers"):
             for q in questions:
-                if f"ans_{q.entry_id}" in st.session_state:
-                    del st.session_state[f"ans_{q.entry_id}"]
+                st.session_state[f"ans_{q.entry_id}"] = (
+                    [] if q.choices and q.is_multi else None if q.choices else ""
+                )
+                snapshots[q.entry_id] = st.session_state[f"ans_{q.entry_id}"]
+                st.session_state["_answer_values"][q.entry_id] = st.session_state[f"ans_{q.entry_id}"]
+            reviewed_entries.clear()
+            proposals.clear()
             st.rerun()
 
     review_items = [
         (idx, question)
         for idx, question in enumerate(questions, 1)
-        if answer_matches_review_filter(
+        if (selected_filter != "queue" or question.entry_id in pending_ids)
+        and answer_matches_review_filter(
             get_ai_answer(ai_answers, question.entry_id),
-            selected_filter,
+            "all" if selected_filter == "queue" else selected_filter,
             has_images=_ready_image_count((idx, question)) > 0,
         )
     ]
+    if st.session_state.get("focus_mode") and questions:
+        selected_id = st.session_state["question_map"]
+        review_items = [item for item in review_items if item[1].entry_id == selected_id]
+        current_idx = valid_ids.index(selected_id)
+        with st.container(border=True):
+            st.markdown('<div class="review-dock-mark">FOCUS / QUESTION NAVIGATION</div>', unsafe_allow_html=True)
+            previous_col, position_col, next_col = st.columns([1, 1, 1])
+            previous_col.button("← ก่อนหน้า", key="focus_previous", use_container_width=True,
+                                disabled=current_idx == 0, on_click=navigate_to,
+                                args=(valid_ids[max(0, current_idx - 1)],))
+            position_col.markdown(f'<div class="focus-count">{current_idx + 1:02d} / {len(questions):02d}</div>', unsafe_allow_html=True)
+            next_col.button("ถัดไป →", key="focus_next", use_container_width=True,
+                            disabled=current_idx == len(questions) - 1, on_click=navigate_to,
+                            args=(valid_ids[min(len(questions) - 1, current_idx + 1)],))
     if not review_items:
         st.info("ไม่มีคำถามในตัวกรองนี้")
 
@@ -2774,6 +2915,88 @@ if "questions" in st.session_state:
                 f'<span class="question-card-state">{card_status}</span></div>',
                 unsafe_allow_html=True,
             )
+            if risk_level != "safe" or not ai_has_answer:
+                action_col, reviewed_col = st.columns([1.5, 1])
+                with action_col:
+                    if st.button("✦ หาคำตอบใหม่ที่ไม่ซ้ำ", key=f"alternative_{entry_id}", use_container_width=True):
+                        previous_answers = [
+                            default_val, st.session_state.get(f"ans_{entry_id}"),
+                            *history.get(entry_id, []),
+                        ]
+                        proposals.pop(entry_id, None)
+                        if not api_keys:
+                            st.session_state["_alternative_notice"] = "ยังไม่มีคีย์ AI สำหรับวิเคราะห์ซ้ำ"
+                        elif q.choices and not q.is_multi and len(q.choices) <= 1:
+                            st.session_state["_alternative_notice"] = "ข้อนี้ไม่มีตัวเลือกอื่นให้เสนอ"
+                        else:
+                            excluded = ", ".join(answer_text(item) for item in previous_answers if item)
+                            instruction = (
+                                "\n\nคำสั่งเฉพาะการตรวจข้อนี้: หาคำตอบที่ถูกต้องด้วยเหตุผลใหม่ "
+                                "ห้ามเสนอคำตอบเดิมหรือความหมายเดิมโดยเด็ดขาด "
+                                f"คำตอบที่ห้ามใช้: {excluded}. "
+                                "ถ้าไม่มีคำตอบใหม่ที่มีหลักฐานเพียงพอให้เว้น answer เป็นอาร์เรย์ว่าง "
+                                "และอธิบายเหตุผลอย่างตรงไปตรงมา ห้ามเดาหรือสร้างคำตอบเพื่อให้แตกต่างเท่านั้น"
+                            )
+                            with st.spinner(f"กำลังค้นคำตอบอื่นสำหรับข้อ {idx}…"):
+                                try:
+                                    result, _model = call_gemini_chunk(
+                                        api_keys, 0,
+                                        st.session_state.get("exam_context", exam_context) + instruction,
+                                        [(idx, q)], MODEL_CANDIDATES,
+                                        set(), threading.Lock(), set(), threading.Lock(),
+                                    )
+                                    candidate = result.get(entry_id, {})
+                                    valid, reason = validate_distinct_alternative(
+                                        candidate, previous_answers, q.choices, q.is_multi
+                                    )
+                                    if valid:
+                                        proposals[entry_id] = candidate
+                                    else:
+                                        st.session_state["_alternative_notice"] = reason
+                                except Exception as error:
+                                    logger.exception("Alternative answer failed for %s", entry_id)
+                                    st.session_state["_alternative_notice"] = (
+                                        "ค้นคำตอบใหม่ไม่สำเร็จ คำตอบเดิมยังอยู่ครบ: " + str(error)[:180]
+                                    )
+                        st.rerun()
+                with reviewed_col:
+                    if st.button(
+                        "✓ ตรวจแล้ว" if entry_id not in reviewed_entries else "↺ กลับเข้าคิวตรวจ",
+                        key=f"reviewed_{entry_id}", use_container_width=True,
+                    ):
+                        if entry_id in reviewed_entries:
+                            reviewed_entries.discard(entry_id)
+                        else:
+                            reviewed_entries.add(entry_id)
+                        st.session_state["review_risk_ack"] = False
+                        st.rerun()
+                proposal = proposals.get(entry_id)
+                if proposal:
+                    valid, _ = validate_distinct_alternative(
+                        proposal,
+                        [default_val, st.session_state.get(f"ans_{entry_id}"), *history.get(entry_id, [])],
+                        q.choices, q.is_multi,
+                    )
+                    if valid:
+                        st.markdown(
+                            '<div class="alternative-compare">'
+                            f'<div><small>คำตอบปัจจุบัน</small><strong>{html_lib.escape(answer_text(st.session_state.get(f"ans_{entry_id}")) or "ยังว่าง")}</strong></div>'
+                            f'<div><small>คำตอบทางเลือก</small><strong>{html_lib.escape(answer_text(proposal["answer"]))}</strong></div>'
+                            '</div>', unsafe_allow_html=True,
+                        )
+                        st.caption("เหตุผลคำตอบใหม่: " + str(proposal.get("reasoning", "")))
+                        take_col, discard_col = st.columns(2)
+                        take_col.button("ใช้คำตอบใหม่", key=f"accept_alt_{entry_id}",
+                                        type="primary", use_container_width=True,
+                                        on_click=accept_alternative, args=(q,))
+                        if discard_col.button("คงคำตอบเดิม", key=f"discard_alt_{entry_id}", use_container_width=True):
+                            proposals.pop(entry_id, None)
+                            st.rerun()
+                    else:
+                        proposals.pop(entry_id, None)
+                notice = st.session_state.pop("_alternative_notice", None)
+                if notice:
+                    st.info(notice)
             question_panel, ai_panel = st.columns([1.12, 1], gap="large") if compare_view else (st.container(), st.container())
             with question_panel:
                 st.markdown('<div class="review-panel-label">โจทย์ต้นฉบับ</div>', unsafe_allow_html=True)
@@ -2845,6 +3068,10 @@ if "questions" in st.session_state:
                                     ai_answers[entry_id] = result[entry_id]
                                     st.session_state["ai_answers"] = ai_answers
                                     apply_ai_answer_to_state(q, result[entry_id])
+                                    st.session_state["_answer_values"][entry_id] = st.session_state[f"ans_{entry_id}"]
+                                    snapshots[entry_id] = st.session_state[f"ans_{entry_id}"]
+                                    reviewed_entries.discard(entry_id)
+                                    proposals.pop(entry_id, None)
                                     st.success(f"อัปเดตคำตอบแล้ว (โมเดล: {used_model})")
                                 else:
                                     st.warning("ระบบยังไม่สามารถตอบข้อนี้ได้ กรุณาลองอีกครั้ง")
@@ -2949,6 +3176,8 @@ if "questions" in st.session_state:
                     st.caption("รอบตรวจซ้ำไม่สำเร็จ แต่ระบบยังคงคำตอบรอบแรกไว้")
                 elif verification == "budget_skipped":
                     st.caption("ไม่ได้ตรวจซ้ำข้อนี้ เพื่อควบคุมลิมิต API")
+                elif verification == "alternative_selected":
+                    st.warning("คำตอบทางเลือกที่เลือกเอง กรุณาตรวจเหตุผลก่อนส่ง")
 
 
             ans_key = f"ans_{entry_id}"
@@ -2962,11 +3191,19 @@ if "questions" in st.session_state:
 
             if q.choices:
                 if q.is_multi:
-                    st.multiselect("คำตอบ (เลือกได้หลายข้อ)", q.choices, key=ans_key)
+                    st.multiselect("คำตอบ (เลือกได้หลายข้อ)", q.choices, key=ans_key,
+                                   on_change=on_answer_edit, args=(entry_id,))
                 else:
-                    st.radio("คำตอบ", q.choices, key=ans_key)
+                    st.radio("คำตอบ", q.choices, key=ans_key,
+                             on_change=on_answer_edit, args=(entry_id,))
             else:
-                st.text_input("คำตอบ", key=ans_key)
+                st.text_input("คำตอบ", key=ans_key,
+                              on_change=on_answer_edit, args=(entry_id,))
+            if not answers_equivalent(st.session_state.get(ans_key), default_val):
+                st.caption("✎ คำตอบที่เลือกต่างจากคำตอบ AI")
+            if entry_id in undo_answers:
+                st.button("↶ ย้อนการแก้ไขล่าสุด", key=f"undo_{entry_id}",
+                          on_click=restore_answer, args=(entry_id,))
 
     def current_submission_snapshot() -> Tuple[Dict[str, Any], List[str], Dict[str, Any], str]:
         final_answers = {
@@ -2979,7 +3216,7 @@ if "questions" in st.session_state:
             if is_required and not str(final_answers.get(entry_id, "")).strip():
                 missing_required.append(info[2])
         for qidx, question in enumerate(questions, 1):
-            value = st.session_state.get(f"ans_{question.entry_id}", "")
+            value = st.session_state["_answer_values"].get(question.entry_id, "")
             final_answers[question.entry_id] = value
             if question.is_required and (
                 not value or (isinstance(value, list) and not value)
@@ -3016,6 +3253,7 @@ if "questions" in st.session_state:
                 f"{'...' if len(missing_required) > 5 else ''}"
             )
         else:
+            st.session_state["review_risk_ack"] = False
             st.session_state["pending_submission"] = {
                 "payload": payload,
                 "fingerprint": fingerprint,
@@ -3047,6 +3285,18 @@ if "questions" in st.session_state:
                     '</div>', unsafe_allow_html=True,
                 )
                 st.caption(f"ข้อมูลส่วนตัว {len(personal_data_map)} ช่อง · ตรวจคำตอบที่แก้เองได้ด้านบน")
+                manual_changes = sum(
+                    not answers_equivalent(
+                        current_answers.get(question.entry_id),
+                        get_ai_answer(ai_answers, question.entry_id).get("answer"),
+                    ) for question in questions
+                )
+                outstanding = sum(
+                    question.entry_id not in reviewed_entries
+                    and get_ai_answer(ai_answers, question.entry_id).get("risk_level") != "safe"
+                    for question in questions
+                )
+                st.caption(f"แก้คำตอบเอง {manual_changes} ข้อ · ข้อเสี่ยงที่ยังไม่กดตรวจแล้ว {outstanding} ข้อ")
                 if risky_before_submit:
                     st.warning(
                         f"มี {risky_before_submit} ข้อที่ระบบจัดว่า ‘ควรตรวจ/เสี่ยง’ "
@@ -3061,6 +3311,11 @@ if "questions" in st.session_state:
                         marker = " · แก้เอง" if current_value != ai_value else ""
                         st.write(f"ข้อ {qidx}: {current_value or 'ยังไม่ตอบ'}{marker}")
                 st.caption("ระบบจะส่งไป Google Forms จริงเมื่อกดปุ่มยืนยันด้านล่างเท่านั้น")
+                if outstanding:
+                    st.checkbox(
+                        f"ฉันตรวจข้อเสี่ยงที่เหลือ {outstanding} ข้อแล้ว และยืนยันคำตอบที่เลือก",
+                        key="review_risk_ack",
+                    )
 
                 original_url = build_original_form_url(st.session_state["submit_url"])
                 prefilled_url = build_prefilled_form_url(st.session_state["submit_url"], current_payload)
@@ -3095,7 +3350,9 @@ if "questions" in st.session_state:
                         type="primary",
                         use_container_width=True,
                         key="confirm_submit",
-                        disabled=bool(st.session_state.get("submission_in_progress")),
+                        disabled=bool(st.session_state.get("submission_in_progress")) or (
+                            bool(outstanding) and not st.session_state.get("review_risk_ack", False)
+                        ),
                     )
                 with cancel_col:
                     cancel_clicked = st.button("ยกเลิก", use_container_width=True)

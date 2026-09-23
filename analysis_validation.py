@@ -219,6 +219,28 @@ def answers_equivalent(left: Any, right: Any) -> bool:
     return left_normalized == right_normalized
 
 
+def validate_distinct_alternative(
+    candidate: Mapping[str, Any],
+    forbidden_answers: list[Any],
+    choices: list[str],
+    is_multi: bool,
+) -> tuple[bool, str]:
+    """Only present a nonempty, valid alternative that differs from every excluded answer."""
+    value = candidate.get("answer") if isinstance(candidate, dict) else None
+    values = value if isinstance(value, list) else ([value] if value else [])
+    if not values or any(not str(item).strip() for item in values):
+        return False, "AI ยังไม่พบคำตอบทางเลือกที่ใช้ได้"
+    if not is_multi and len(values) != 1:
+        return False, "คำตอบทางเลือกไม่ตรงกับรูปแบบของคำถาม"
+    if choices and any(item not in choices for item in values):
+        return False, "คำตอบทางเลือกไม่ตรงกับตัวเลือกในฟอร์ม"
+    if any(answers_equivalent(value, previous) for previous in forbidden_answers):
+        return False, "AI ยังเสนอคำตอบเดิม ระบบจึงไม่เปลี่ยนคำตอบให้"
+    if str(candidate.get("reasoning") or "").strip() in {"", "ไม่มีคำอธิบายประกอบ"}:
+        return False, "AI ยังไม่ให้เหตุผลสำหรับคำตอบทางเลือก"
+    return True, ""
+
+
 def should_verify_answer(
     title: str,
     answer: Any,
