@@ -3,7 +3,13 @@ from urllib.parse import parse_qs, urlsplit
 
 import requests
 
-from submission_flow import build_prefilled_form_url, check_submit_success, post_form_response
+from submission_flow import (
+    MAX_PREFILL_URL_LENGTH,
+    build_original_form_url,
+    build_prefilled_form_url,
+    check_submit_success,
+    post_form_response,
+)
 
 
 FORM_RESPONSE = "https://docs.google.com/forms/d/e/FORM_ID/formResponse"
@@ -37,6 +43,15 @@ def test_prefill_uses_only_answer_fields_and_keeps_checkbox_values():
         "usp": ["pp_url"], "entry.123": ["ภาษาไทย & วิทย์"], "entry.456": ["ก", "ข"],
     }
     assert build_prefilled_form_url("https://evil.example/forms/d/e/id/formResponse", {"entry.1": "a"}) is None
+
+
+def test_long_thai_answers_fall_back_to_clean_original_form():
+    long_answers = {f"entry.{index}": "ภาษาไทย" * 50 for index in range(30)}
+    assert build_prefilled_form_url(FORM_RESPONSE, long_answers) is None
+    original = build_original_form_url(FORM_RESPONSE + "?usp=pp_url&entry.1=private")
+    assert original == "https://docs.google.com/forms/d/e/FORM_ID/viewform"
+    short_url = build_prefilled_form_url(FORM_RESPONSE, {"entry.1": "ภาษาไทย"})
+    assert short_url is not None and len(short_url) <= MAX_PREFILL_URL_LENGTH
 
 
 def test_returned_form_and_timeout_never_trigger_automatic_second_post():
