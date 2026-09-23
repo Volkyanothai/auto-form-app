@@ -12,6 +12,7 @@ import requests
 # Google can reject long prefilled links with HTTP 400. Leave room below its
 # usual request-line limit for redirects and browser-added parameters.
 MAX_PREFILL_URL_LENGTH = 6000
+SUBMISSION_FLOW_VERSION = 2
 
 
 class _VisibleFormText(HTMLParser):
@@ -26,9 +27,9 @@ class _VisibleFormText(HTMLParser):
     def handle_starttag(self, tag, attrs):
         if tag in {"script", "style", "noscript"}:
             self.hidden += 1
-        if tag == "form":
-            self.has_form = True
-        if tag == "input" and any(name == "name" and (value or "").startswith("entry.") for name, value in attrs):
+        if tag in {"input", "select", "textarea"} and any(
+            name == "name" and (value or "").startswith("entry.") for name, value in attrs
+        ):
             self.has_form = True
 
     def handle_endtag(self, tag):
@@ -60,6 +61,8 @@ def check_submit_success(
         "บันทึกคำตอบของคุณแล้ว",
         "บันทึกคำตอบของคุณเรียบร้อยแล้ว",
         "ส่งคำตอบของคุณแล้ว",
+        "submit another response",
+        "ส่งคำตอบอีกครั้ง",
     ))
     # The old CSS marker and modern visible messages are both valid, but a
     # returned form can contain confirmation text in its description or JS.
@@ -77,7 +80,7 @@ def check_submit_success(
     ):
         return False, "ฟอร์มนี้อาจต้องลงชื่อเข้าใช้บัญชี Google กรุณาเปิดฟอร์มพร้อมคำตอบในเบราว์เซอร์"
 
-    if "fb_public_load_data_" in body or 'role="form"' in body or url.endswith("/viewform"):
+    if page.has_form or 'role="form"' in body or url.endswith("/viewform"):
         return False, (
             "Google Forms ส่งหน้าฟอร์มกลับมาแทนหน้ายืนยัน "
             "อาจมีข้อบังคับหรือการแบ่งหน้าที่ต้องตรวจในฟอร์มต้นฉบับ"
