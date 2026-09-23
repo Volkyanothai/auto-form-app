@@ -44,6 +44,7 @@ _ANALYSIS_HELPERS = (
     "answer_matches_review_filter",
     "answers_equivalent",
     "build_balanced_batches",
+    "build_recovery_batches",
     "calculate_answer_reliability",
     "choose_autofill_value",
     "merge_adjudication_result",
@@ -186,6 +187,16 @@ build_balanced_batches = getattr(
     "build_balanced_batches",
     _fallback_build_balanced_batches,
 )
+build_recovery_batches = getattr(
+    _analysis_validation,
+    "build_recovery_batches",
+    lambda items, image_count, attempt: build_balanced_batches(
+        items, image_count,
+        max_text_items=2 if attempt == 0 else 1,
+        max_image_items=2 if attempt == 0 else 1,
+        max_images=2,
+    ),
+)
 should_verify_answer = getattr(
     _analysis_validation,
     "should_verify_answer",
@@ -276,7 +287,7 @@ TYPE_PARAGRAPH = 1
 TYPE_IMAGE = 11
 
 MAX_PARALLEL_WORKERS = 2
-MAX_REPAIR_ATTEMPTS = 1
+MAX_REPAIR_ATTEMPTS = 2
 MAX_ROUTE_ATTEMPTS = 2
 MAX_VERIFICATION_ITEMS = 8
 MAX_ADJUDICATION_ITEMS = 3
@@ -1538,7 +1549,7 @@ def analyze_all(
 
         # API limits are project-based, not key-count-based. Two workers keep
         # throughput useful without serialising users who configure one key.
-        workers = min(MAX_PARALLEL_WORKERS, len(chunk_set))
+        workers = min(MAX_PARALLEL_WORKERS if phase == "ชุดหลัก" else 1, len(chunk_set))
         with ThreadPoolExecutor(max_workers=workers) as pool:
             futures = {
                 pool.submit(
@@ -1579,6 +1590,14 @@ def analyze_all(
                         f"รับผล {len(chunk_result)} รายการ ใช้ได้ {valid_count} คำตอบ "
                         f"— {used_model}{fallback}"
                     )
+                    missing_in_chunk = [
+                        str(idx) for idx, question in chunk_set[chunk_index]
+                        if not chunk_result.get(question.entry_id, {}).get("answer")
+                    ]
+                    if missing_in_chunk:
+                        debug_logs.append(
+                            f"{phase} ชุด {chunk_index + 1} ยังไม่มีคำตอบข้อ {', '.join(missing_in_chunk)}"
+                        )
                 except Exception as e:
                     phase_errors.append(str(e))
                     if live_cb:
@@ -1616,20 +1635,14 @@ def analyze_all(
         # A repair request should be deliberately smaller than the first pass.
         # If one large response is malformed, retrying the same large payload
         # is both slow and more likely to hit Gemini's deadline again.
-        repair_chunks = build_balanced_batches(
-            missing,
-            _ready_image_count,
-            max_text_items=3,
-            max_image_items=2,
-            max_images=3,
-        )
+        repair_chunks = build_recovery_batches(missing, _ready_image_count, repair_attempt)
         debug_logs.append(
             f"ประมวลผลซ้ำ {len(missing)} ข้อเป็น {len(repair_chunks)} ชุด "
             f"(รอบ {repair_attempt + 1}/{MAX_REPAIR_ATTEMPTS})"
         )
         repaired, repair_errors, _ = run_chunks(
             repair_chunks,
-            phase="ชุดซ่อม",
+            phase="ชุดซ่อม" if repair_attempt == 0 else "ซ่อมรายข้อ",
             route_limit=MAX_ROUTE_ATTEMPTS,
         )
         for entry_id, answer in repaired.items():
@@ -1637,6 +1650,16 @@ def analyze_all(
                 answer["source_pass"] = "repair"
                 results[entry_id] = answer
         first_pass_errors.extend(repair_errors)
+        # Once every key/model is exhausted, more retries only consume time.
+        if len(bad_keys) == len(keys) or len(exhausted) == len(keys) * len(MODEL_CANDIDATES):
+            debug_logs.append("หยุดกู้คำตอบ: คีย์หรือโควตาที่ตั้งไว้ใช้งานไม่ได้แล้ว")
+            break
+        if not any(answer.get("answer") for answer in repaired.values()) and any(
+            "429" in error or "resource_exhausted" in error.lower()
+            for error in repair_errors
+        ):
+            debug_logs.append("หยุดกู้คำตอบ: ชุดนี้ชนโควตาและไม่ได้คำตอบเพิ่ม")
+            break
 
     # Accuracy mode: an independent pass never sees the first answer. Spend a
     # fixed budget on the highest-risk items, then use a small third-pass budget
@@ -1644,7 +1667,13 @@ def analyze_all(
     for answer_data in results.values():
         answer_data.setdefault("verification", "not_needed")
 
-    if verify_risky:
+    remaining_missing = [q for _, q in indexed if not results.get(q.entry_id, {}).get("answer")]
+    if verify_risky and remaining_missing:
+        debug_logs.append(
+            f"ยังมี {len(remaining_missing)} ข้อที่ไม่มีคำตอบ จึงพักการตรวจซ้ำข้อที่ตอบแล้วเพื่อประหยัดโควตา"
+        )
+
+    if verify_risky and not remaining_missing:
         ranked_verification_items: List[Tuple[int, int, Question]] = []
         for idx, question in indexed:
             original = results.get(question.entry_id, {})
@@ -2253,6 +2282,7 @@ with nav_reset_col:
             if state_key in {
                 "questions", "personal_data_map", "ai_answers", "fbzx", "fvv",
                 "default_next", "page_count", "submit_url", "debug_logs",
+                "analysis_errors", "retry_notice",
                 "pending_submission", "submitted", "confirmation_html", "confirmation_url",
                 "last_submitted_fingerprint", "_personal_autofill_history",
             } or state_key.startswith(("ans_", "input_", "upload_", "_upload_marker_")):
@@ -2426,7 +2456,7 @@ if not has_analysis:
                         bar.progress(done / total, text=f"วิเคราะห์ {done}/{total}")
 
                     def live_cb(phase: str, new_answers: Dict[str, Any]) -> None:
-                        if phase in {"ชุดหลัก", "ชุดซ่อม"}:
+                        if phase in {"ชุดหลัก", "ชุดซ่อม", "ซ่อมรายข้อ"}:
                             live_answers.update(new_answers)
                             count = sum(bool(answer_text(item.get("answer"))) for item in live_answers.values())
                             live_heading.caption(f"ได้คำตอบ {count}/{len(questions)} ข้อ · {phase}")
@@ -2481,6 +2511,7 @@ if not has_analysis:
                         "accuracy_mode": accuracy_mode,
                         "submit_url": submit_url,
                         "debug_logs": debug_logs,
+                        "analysis_errors": ai_errors,
                     })
                     status.update(label="ประมวลผลเสร็จแล้ว", state="complete", expanded=False)
                     st.rerun()
@@ -2542,6 +2573,10 @@ if "questions" in st.session_state:
     total_q = len(questions)
     answered = sum(1 for q in questions if get_ai_answer(ai_answers, q.entry_id).get("answer"))
     not_answered = total_q - answered
+    missing_questions = [
+        (idx, question) for idx, question in enumerate(questions, 1)
+        if not get_ai_answer(ai_answers, question.entry_id).get("answer")
+    ]
     verified_count = sum(
         1
         for q in questions
@@ -2576,6 +2611,59 @@ if "questions" in st.session_state:
             st.caption(f"ผ่านการตรวจทานเพิ่มเติมแล้ว {verified_count} ข้อ")
         if not_answered > 0:
             st.warning(f"มี {not_answered} ข้อที่ระบบยังไม่มีคำตอบ กรุณาตรวจและกรอกคำตอบก่อนส่ง")
+
+    if missing_questions:
+        errors = st.session_state.get("analysis_errors", [])
+        with st.expander("ทำไมบางข้อยังไม่มีคำตอบ", expanded=True):
+            st.write("ข้อที่ยังว่าง: " + ", ".join(str(idx) for idx, _ in missing_questions))
+            if any(is_daily_quota_error(str(error)) for error in errors):
+                st.warning("โควตา AI รายวันหมด บางข้อจึงตอบต่อไม่ได้ ต้องรอรีเซ็ตโควตาหรือใช้โควตาที่พร้อม")
+            elif any(is_quota_or_transient_error(str(error)) for error in errors):
+                st.warning("AI ตอบกลับช้าหรือชนข้อจำกัดการเรียกใช้งาน ลองใหม่เฉพาะข้อที่ยังว่างได้")
+            elif errors:
+                st.info("บางชุดวิเคราะห์ไม่สำเร็จ ลองใหม่เฉพาะข้อที่ยังว่างได้")
+            invalid = [
+                idx for idx, question in missing_questions
+                if get_ai_answer(ai_answers, question.entry_id).get("empty_reason") == "choice_mismatch"
+            ]
+            if invalid:
+                st.info("คำตอบ AI ไม่ตรงกับตัวเลือกของข้อ " + ", ".join(map(str, invalid)) + " ระบบจึงไม่เลือกคำตอบแทน")
+            if not errors and not invalid:
+                st.info("AI ไม่ส่งคำตอบของบางข้อกลับมา หรือเว้นคำตอบไว้ ระบบจะแสดงข้อเหล่านี้ให้ตรวจ")
+            if st.session_state.get("debug_mode") or debug_mode:
+                for error in errors[:4]:
+                    st.code(str(error))
+
+        if st.button("ลองตอบเฉพาะข้อที่ยังว่าง", use_container_width=True, key="retry_unanswered"):
+            missing_only = [question for _, question in missing_questions]
+            with st.spinner(f"กำลังวิเคราะห์ซ้ำ {len(missing_only)} ข้อ"):
+                new_answers, new_errors, new_logs = analyze_all(
+                    missing_only, api_keys,
+                    st.session_state.get("exam_context", exam_context),
+                    verify_risky=False,
+                )
+            for question in missing_only:
+                answer = new_answers.get(question.entry_id)
+                if answer and answer.get("answer"):
+                    ai_answers[question.entry_id] = answer
+                    ans_key = f"ans_{question.entry_id}"
+                    if not st.session_state.get(ans_key):
+                        apply_ai_answer_to_state(question, answer)
+            st.session_state["ai_answers"] = ai_answers
+            st.session_state["analysis_errors"] = new_errors
+            st.session_state["debug_logs"] = debug_logs + new_logs
+            still_missing = sum(
+                not get_ai_answer(ai_answers, question.entry_id).get("answer")
+                for question in missing_only
+            )
+            st.session_state["retry_notice"] = (
+                f"ตอบเพิ่มได้ {len(missing_only) - still_missing} ข้อ · ยังว่าง {still_missing} ข้อ"
+            )
+            st.rerun()
+
+    retry_notice = st.session_state.pop("retry_notice", None)
+    if retry_notice:
+        st.info(retry_notice)
 
     if personal_data_map:
         with st.container(border=True):

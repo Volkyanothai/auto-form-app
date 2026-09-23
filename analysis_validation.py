@@ -195,6 +195,21 @@ def build_balanced_batches(
     return batches
 
 
+def build_recovery_batches(
+    items: Sequence[T],
+    image_count: Callable[[T], int],
+    attempt: int,
+) -> List[List[T]]:
+    """Retry unanswered items in pairs, then individually if needed."""
+    size = 2 if attempt == 0 else 1
+    return build_balanced_batches(
+        items, image_count,
+        max_text_items=size,
+        max_image_items=size,
+        max_images=2,
+    )
+
+
 def answers_equivalent(left: Any, right: Any) -> bool:
     """Compare normalized single/multi answers without depending on order."""
     left_values = left if isinstance(left, list) else ([left] if left else [])
@@ -460,7 +475,7 @@ def normalize_model_answers(
             continue
         entry_id = str(item.get("entry_id", "")).strip()
         spec = expected.get(entry_id)
-        if not spec or entry_id in result:
+        if not spec:
             continue
 
         raw_value = item.get("answer", [])
@@ -473,6 +488,16 @@ def normalize_model_answers(
         if choices:
             matched: list[str] = []
             for value in values:
+                # A complete option may itself contain a comma, semicolon or
+                # "and". Match it before treating those characters as a list.
+                whole_choice = next(
+                    (choice for choice in choices if _canonical_text(value) == _canonical_text(choice)),
+                    None,
+                )
+                if whole_choice is not None:
+                    if whole_choice not in matched:
+                        matched.append(whole_choice)
+                    continue
                 # Some model versions return multiple checkbox choices in one
                 # string even though the schema requests an array. Split only
                 # on explicit separators, then validate each fragment.
@@ -501,10 +526,18 @@ def normalize_model_answers(
         if not reasoning:
             reasoning = "ไม่มีคำอธิบายประกอบ"
 
+        # The model sometimes emits an empty/invalid duplicate first. Keep a
+        # usable later answer instead of permanently retaining that blank.
+        if entry_id in result and (result[entry_id]["answer"] or not answer):
+            continue
         result[entry_id] = {
             "answer": answer,
             "confidence": confidence,
             "reasoning": reasoning[:1200],
+            "empty_reason": (
+                "choice_mismatch" if not answer and choices and values
+                else "model_blank" if not answer else ""
+            ),
         }
 
     return result

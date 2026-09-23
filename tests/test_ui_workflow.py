@@ -140,3 +140,25 @@ def test_review_compares_answer_and_shows_final_overview_without_submitting():
     assert not app.exception
     assert any("final-overview" in item.value for item in app.markdown)
     assert app.button(key="confirm_submit").label == "ยืนยันและส่งคำตอบ"
+
+
+def test_unanswered_text_question_exposes_retry_and_persisted_quota_reason():
+    app = build_app()
+    app.session_state["workspace_started"] = True
+    app.session_state["questions"] = [SimpleNamespace(
+        entry_id="entry.1", title="ตอบสั้น ๆ", choices=[], is_multi=False,
+        is_required=True, page_index=0, images=[], choice_images={}, branch_map={},
+    )]
+    app.session_state["ai_answers"] = {}
+    app.session_state["personal_data_map"] = {}
+    app.session_state["analysis_errors"] = ["429 RESOURCE_EXHAUSTED quota PerDay"]
+    app.session_state["fbzx"] = "token"
+    app.session_state["fvv"] = "1"
+    app.session_state["default_next"] = [-1]
+    app.session_state["page_count"] = 1
+    app.session_state["submit_url"] = "https://docs.google.com/forms/d/e/test/formResponse"
+    app.run()
+
+    assert not app.exception
+    assert app.button(key="retry_unanswered").label == "ลองตอบเฉพาะข้อที่ยังว่าง"
+    assert any("โควตา AI รายวันหมด" in warning.value for warning in app.warning)
