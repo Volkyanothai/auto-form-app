@@ -35,6 +35,21 @@ def test_landing_opens_setup_stage():
     ]
 
 
+def test_deployment_reloads_stale_submission_module():
+    import importlib
+    import submission_flow
+
+    # Streamlit can rerun the updated app.py in a process that cached the old
+    # helper module before build_original_form_url existed.
+    del submission_flow.build_original_form_url
+    try:
+        app = build_app().run()
+        assert not app.exception
+        assert callable(submission_flow.build_original_form_url)
+    finally:
+        importlib.reload(submission_flow)
+
+
 def test_profile_values_survive_workspace_navigation():
     app = build_app().run()
     app.button[0].click().run()
