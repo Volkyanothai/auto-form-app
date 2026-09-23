@@ -8,6 +8,11 @@ from urllib.parse import urlencode, urlsplit, urlunsplit
 import requests
 
 
+# Google can reject long prefilled links with HTTP 400. Leave room below its
+# usual request-line limit for redirects and browser-added parameters.
+MAX_PREFILL_URL_LENGTH = 6000
+
+
 def check_submit_success(
     response_text: str,
     status_code: int,
@@ -39,12 +44,23 @@ def check_submit_success(
     return False, "Google Forms ไม่ส่งหน้ายืนยันกลับมา จึงยังยืนยันไม่ได้ว่าบันทึกคำตอบแล้ว"
 
 
-def build_prefilled_form_url(submit_url: str, payload: Mapping[str, Any]) -> Optional[str]:
-    """Give the respondent a native Forms page with their reviewed values."""
+def build_original_form_url(submit_url: str) -> Optional[str]:
+    """Return the clean native form URL without a submission query or answers."""
     parts = urlsplit(submit_url)
     if parts.scheme != "https" or parts.hostname not in {"docs.google.com", "forms.google.com"}:
         return None
     if not parts.path.startswith("/forms/") or not parts.path.endswith("/formResponse"):
+        return None
+
+    return urlunsplit((
+        "https", parts.netloc, parts.path[:-len("formResponse")] + "viewform", "", "",
+    ))
+
+
+def build_prefilled_form_url(submit_url: str, payload: Mapping[str, Any]) -> Optional[str]:
+    """Give the respondent all reviewed values, or no prefill if it would be too long."""
+    original_url = build_original_form_url(submit_url)
+    if original_url is None:
         return None
 
     fields = [("usp", "pp_url")]
@@ -54,10 +70,8 @@ def build_prefilled_form_url(submit_url: str, payload: Mapping[str, Any]) -> Opt
         values = value if isinstance(value, list) else [value]
         fields.extend((str(key), str(item)) for item in values if item is not None and str(item).strip())
 
-    return urlunsplit((
-        "https", parts.netloc, parts.path[:-len("formResponse")] + "viewform",
-        urlencode(fields), "",
-    ))
+    prefilled_url = f"{original_url}?{urlencode(fields)}"
+    return prefilled_url if len(prefilled_url) <= MAX_PREFILL_URL_LENGTH else None
 
 
 def post_form_response(
