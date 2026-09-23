@@ -1,4 +1,5 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 from streamlit.testing.v1 import AppTest
 
@@ -108,3 +109,34 @@ def test_result_does_not_expose_non_google_score_link():
 
     assert not app.exception
     assert not app.get("link_button")
+
+
+def test_review_compares_answer_and_shows_final_overview_without_submitting():
+    app = build_app()
+    app.session_state["workspace_started"] = True
+    app.session_state["questions"] = [SimpleNamespace(
+        entry_id="entry.1", title="เลือกคำตอบที่ถูก", choices=["A", "B"],
+        is_multi=False, is_required=True, page_index=0, images=[], choice_images={},
+        branch_map={},
+    )]
+    app.session_state["ai_answers"] = {
+        "entry.1": {"answer": "B", "confidence": 85, "reliability_score": 75,
+                    "risk_level": "review", "reasoning": "ตรวจจากโจทย์"}
+    }
+    app.session_state["personal_data_map"] = {}
+    app.session_state["fbzx"] = "token"
+    app.session_state["fvv"] = "1"
+    app.session_state["default_next"] = [-1]
+    app.session_state["page_count"] = 1
+    app.session_state["submit_url"] = "https://docs.google.com/forms/d/e/test/formResponse"
+    app.run()
+
+    assert not app.exception
+    assert app.get("toggle")[0].label == "ดูโจทย์คู่กับคำตอบ AI"
+    assert any("AI เสนอคำตอบ" in item.value for item in app.markdown)
+    assert any('class="review-answer">B' in item.value for item in app.markdown)
+
+    app.button(key="review_submit").click().run()
+    assert not app.exception
+    assert any("final-overview" in item.value for item in app.markdown)
+    assert app.button(key="confirm_submit").label == "ยืนยันและส่งคำตอบ"

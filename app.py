@@ -1493,6 +1493,7 @@ def analyze_all(
     exam_context: str,
     progress_cb=None,
     verify_risky: bool = True,
+    live_cb: Optional[Callable[[str, Dict[str, Any]], None]] = None,
 ) -> Tuple[Dict[str, Any], List[str], List[str]]:
     indexed = list(enumerate(questions, 1))
     chunks = build_balanced_batches(indexed, _ready_image_count)
@@ -1560,11 +1561,11 @@ def analyze_all(
             for future in as_completed(futures):
                 chunk_index = futures[future]
                 done += 1
-                if report_progress and progress_cb:
-                    progress_cb(done, len(chunk_set))
                 try:
                     chunk_result, used_model = future.result()
                     phase_results.update(chunk_result)
+                    if live_cb:
+                        live_cb(phase, chunk_result)
                     completed_entry_ids.update(
                         question.entry_id
                         for _, question in chunk_set[chunk_index]
@@ -1580,9 +1581,13 @@ def analyze_all(
                     )
                 except Exception as e:
                     phase_errors.append(str(e))
+                    if live_cb:
+                        live_cb(phase, {})
                     debug_logs.append(
                         f"{phase} {chunk_index + 1}/{len(chunk_set)} ไม่สำเร็จ: {str(e)}"
                     )
+                if report_progress and progress_cb:
+                    progress_cb(done, len(chunk_set))
         return phase_results, phase_errors, completed_entry_ids
 
     first_results, first_pass_errors, _ = run_chunks(
@@ -2112,6 +2117,43 @@ def render_image_status(img: QuestionImage):
     return "กำลังเตรียม"
 
 
+def answer_text(value: Any) -> str:
+    if isinstance(value, list):
+        return ", ".join(str(item) for item in value if str(item).strip())
+    return str(value or "").strip()
+
+
+def live_answer_cards(questions: List[Question], answers: Dict[str, Any]) -> str:
+    """Render real completed results; pending questions never show invented answers."""
+    cards = []
+    for index, question in enumerate(questions, 1):
+        result = answers.get(question.entry_id)
+        answer = answer_text(result.get("answer")) if result else ""
+        if result is None:
+            label, state = "กำลังรอวิเคราะห์", "pending"
+        elif not answer:
+            label, state = "ยังไม่มีคำตอบ", "risky"
+        elif int(result.get("confidence", 0) or 0) < 80:
+            label, state = "ควรตรวจทาน", "review"
+        else:
+            label, state = "ได้คำตอบแล้ว", "ready"
+        cards.append(
+            f'<div class="live-answer-card {state}">'
+            f'<div class="live-answer-head"><span>ข้อ {index:02d}</span><span>{label}</span></div>'
+            f'<div class="live-question">{html_lib.escape(question.title)}</div>'
+            f'<div class="live-answer">{html_lib.escape(answer) if answer else "รอผลลัพธ์…"}</div>'
+            '</div>'
+        )
+    return '<div class="live-answer-grid">' + "".join(cards) + '</div>'
+
+
+@st.dialog("ดูรูปโจทย์")
+def show_full_image(image: QuestionImage, caption: str) -> None:
+    if image.is_ready():
+        st.image(image.data, use_container_width=True, caption=caption)
+        st.caption("รูปที่ใช้วิเคราะห์คำถาม")
+
+
 render_header()
 
 WORKSPACE_DRAFT_KEYS = (
@@ -2374,9 +2416,28 @@ if not has_analysis:
 
                     st.write(f"กำลังวิเคราะห์คำถาม {len(questions)} ข้อ")
                     bar = st.progress(0.0)
+                    live_heading = st.empty()
+                    live_board = st.empty()
+                    live_answers: Dict[str, Any] = {}
+                    live_heading.caption(f"ได้คำตอบ 0/{len(questions)} ข้อ · ผลจะแสดงเมื่อแต่ละชุดวิเคราะห์เสร็จ")
+                    live_board.markdown(live_answer_cards(questions, live_answers), unsafe_allow_html=True)
 
                     def ai_cb(done, total):
                         bar.progress(done / total, text=f"วิเคราะห์ {done}/{total}")
+
+                    def live_cb(phase: str, new_answers: Dict[str, Any]) -> None:
+                        if phase in {"ชุดหลัก", "ชุดซ่อม"}:
+                            live_answers.update(new_answers)
+                            count = sum(bool(answer_text(item.get("answer"))) for item in live_answers.values())
+                            live_heading.caption(f"ได้คำตอบ {count}/{len(questions)} ข้อ · {phase}")
+                            live_board.markdown(
+                                live_answer_cards(questions, live_answers),
+                                unsafe_allow_html=True,
+                            )
+                        elif phase == "ตรวจอิสระ":
+                            live_heading.caption("กำลังตรวจทานข้อที่มีความเสี่ยงเพิ่มเติม")
+                        elif phase == "รอบตัดสิน":
+                            live_heading.caption("กำลังตรวจคำตอบที่ผลสองรอบต่างกัน")
 
                     ai_answers, ai_errors, debug_logs = analyze_all(
                         questions,
@@ -2384,9 +2445,12 @@ if not has_analysis:
                         exam_context,
                         ai_cb,
                         verify_risky=accuracy_mode,
+                        live_cb=live_cb,
                     )
                     debug_logs = parse_logs + debug_logs
                     bar.empty()
+                    live_heading.empty()
+                    live_board.empty()
 
                     answered_count = sum(1 for q in questions if get_ai_answer(ai_answers, q.entry_id).get("answer"))
                     unanswered_count = len(questions) - answered_count
@@ -2538,6 +2602,12 @@ if "questions" in st.session_state:
         key="review_filter",
     )
     selected_filter = filter_labels[selected_filter_label]
+    compare_view = st.toggle(
+        "ดูโจทย์คู่กับคำตอบ AI",
+        value=True,
+        key="compare_view",
+        help="แสดงโจทย์และรูปทางซ้าย พร้อมคำตอบและเหตุผลของ AI ทางขวา",
+    )
 
     col_safe, col_accept, col_reset = st.columns(3)
     with col_safe:
@@ -2590,164 +2660,182 @@ if "questions" in st.session_state:
         ai_has_answer = bool(default_val) and (not isinstance(default_val, list) or len(default_val) > 0)
 
         with st.container(border=True):
-            header_html = f'<div class="q-title">{idx}. {html_lib.escape(q.title)}</div>'
-            st.markdown(header_html, unsafe_allow_html=True)
-
-            if q.images:
-                st.markdown('<div class="image-gallery">', unsafe_allow_html=True)
-                img_cols = st.columns(min(len(q.images), 3))
-                for i, img in enumerate(q.images):
-                    with img_cols[i % 3]:
-                        if img.is_ready():
-                            st.image(img.data, use_container_width=True, caption=f"รูป {i+1} {render_image_status(img)}")
-                        else:
-                            st.markdown(f'<div class="image-fallback">โหลดรูปที่ {i+1} ไม่ได้ ({img.error or "ไม่ทราบสาเหตุ"})</div>', unsafe_allow_html=True)
-                st.markdown('</div>', unsafe_allow_html=True)
-
-            choice_image_pairs = [
-                (choice_index, image)
-                for choice_index, images in q.choice_images.items()
-                for image in images
-            ]
-            if choice_image_pairs:
-                st.caption("รูปประกอบตัวเลือก")
-                choice_cols = st.columns(min(len(choice_image_pairs), 3))
-                for image_index, (choice_index, image) in enumerate(choice_image_pairs):
-                    with choice_cols[image_index % 3]:
-                        caption = f"ตัวเลือก {choice_index + 1}: {q.choices[choice_index]}"
-                        if image.is_ready():
-                            st.image(image.data, use_container_width=True, caption=caption)
-                        else:
-                            st.warning(f"{caption} — โหลดรูปไม่ได้")
-
-            all_question_images = q.images + [image for _, image in choice_image_pairs]
-            has_ready_image = any(img.is_ready() for img in all_question_images)
-            if has_ready_image:
-                if st.button(f"วิเคราะห์ข้อ {idx} ใหม่โดยใช้รูปล่าสุด", key=f"reanalyze_{entry_id}"):
-                    with st.spinner("กำลังวิเคราะห์คำถามนี้"):
-                        bad_keys_local: set = set()
-                        exhausted_local: set = set()
-                        lock_local = threading.Lock()
-                        try:
-                            result, used_model = call_gemini_chunk(
-                                api_keys, 0,
-                                st.session_state.get("exam_context", exam_context),
-                                [(idx, q)], MODEL_CANDIDATES,
-                                bad_keys_local, lock_local,
-                                exhausted_local, lock_local,
-                            )
-                            if entry_id in result:
-                                result[entry_id]["verification"] = "not_checked"
-                                result[entry_id]["source_pass"] = "manual"
-                                result[entry_id].update(calculate_answer_reliability(
-                                    result[entry_id],
-                                    has_images=_ready_image_count((idx, q)) > 0,
-                                    image_expected=bool(q.images or q.choice_images),
-                                    has_choices=bool(q.choices),
-                                ))
-                                ai_answers[entry_id] = result[entry_id]
-                                st.session_state["ai_answers"] = ai_answers
-                                apply_ai_answer_to_state(q, result[entry_id])
-                                st.success(f"อัปเดตคำตอบแล้ว (โมเดล: {used_model})")
-                            else:
-                                st.warning("ระบบยังไม่สามารถตอบข้อนี้ได้ กรุณาลองอีกครั้ง")
-                        except Exception as e:
-                            st.error(f"เกิดข้อผิดพลาด: {e}")
-                    st.rerun()
-
-            looks_like_image_q = bool(all_question_images) or ("รูป" in q.title or "ภาพ" in q.title)
-            # เปิด fallback ให้ทุกข้อเสมอ เพราะบางฟอร์มใช้รูปเป็นโจทย์โดยที่
-            # ชื่อคำถามไม่มีคำว่า "รูป/ภาพ" และ Google อาจซ่อน URL ไว้หลัง JS
-            # จนตรวจอัตโนมัติไม่พบ โดยค่าเริ่มต้นยังพับไว้จึงไม่รบกวนหน้า Review
-            offer_manual_image_upload = True
-            if offer_manual_image_upload:
-                with st.expander(
-                    ("เพิ่มรูปด้วยตนเอง" if not has_ready_image else "เปลี่ยนหรือเพิ่มรูป")
-                    + f" — ข้อ {idx}",
-                    expanded=looks_like_image_q and not has_ready_image,
-                ):
-                    uploaded = st.file_uploader(
-                        "เลือกไฟล์รูปภาพ (jpg, jpeg, png, webp)",
-                        type=["jpg", "jpeg", "png", "webp"],
-                        key=f"upload_{entry_id}",
+            question_panel, ai_panel = st.columns([1.12, 1], gap="large") if compare_view else (st.container(), st.container())
+            with question_panel:
+                st.markdown('<div class="review-panel-label">โจทย์ต้นฉบับ</div>', unsafe_allow_html=True)
+                header_html = f'<div class="q-title">{idx}. {html_lib.escape(q.title)}</div>'
+                st.markdown(header_html, unsafe_allow_html=True)
+                if q.choices and compare_view:
+                    choices_html = "".join(
+                        f'<div class="review-option">{choice_index + 1}. {html_lib.escape(choice)}</div>'
+                        for choice_index, choice in enumerate(q.choices)
                     )
-                    if uploaded is not None:
-                        raw_bytes = uploaded.getvalue()
-                        file_hash = hashlib.md5(raw_bytes).hexdigest()
-                        marker_key = f"_upload_marker_{entry_id}"
-                        if st.session_state.get(marker_key) != file_hash:
-                            valid, fmt, size = validate_image(raw_bytes)
-                            if not valid:
-                                st.error("ไฟล์นี้เปิดเป็นรูปภาพไม่ได้ กรุณาลองไฟล์อื่น (jpg, jpeg, png, webp)")
+                    st.markdown(choices_html, unsafe_allow_html=True)
+
+                if q.images:
+                    st.markdown('<div class="image-gallery">', unsafe_allow_html=True)
+                    img_cols = st.columns(min(len(q.images), 3))
+                    for i, img in enumerate(q.images):
+                        with img_cols[i % 3]:
+                            if img.is_ready():
+                                st.image(img.data, use_container_width=True, caption=f"รูป {i+1} {render_image_status(img)}")
+                                if st.button(f"ขยายรูป {i+1}", key=f"zoom_{entry_id}_q_{i}", use_container_width=True):
+                                    show_full_image(img, f"ข้อ {idx} · รูป {i+1}")
                             else:
-                                max_dim = MAX_IMAGE_DIM_TEXT if fmt in ("PNG", "GIF", "BMP") else MAX_IMAGE_DIM
-                                processed, out_mime, status = compress_image(raw_bytes, max_dim=max_dim)
-                                if not processed:
-                                    st.error("ประมวลผลรูปไม่สำเร็จ กรุณาลองไฟล์อื่นหรือไฟล์ที่มีขนาดเล็กลง")
+                                st.markdown(f'<div class="image-fallback">โหลดรูปที่ {i+1} ไม่ได้ ({img.error or "ไม่ทราบสาเหตุ"})</div>', unsafe_allow_html=True)
+                    st.markdown('</div>', unsafe_allow_html=True)
+
+                choice_image_pairs = [
+                    (choice_index, image)
+                    for choice_index, images in q.choice_images.items()
+                    for image in images
+                ]
+                if choice_image_pairs:
+                    st.caption("รูปประกอบตัวเลือก")
+                    choice_cols = st.columns(min(len(choice_image_pairs), 3))
+                    for image_index, (choice_index, image) in enumerate(choice_image_pairs):
+                        with choice_cols[image_index % 3]:
+                            caption = f"ตัวเลือก {choice_index + 1}: {q.choices[choice_index]}"
+                            if image.is_ready():
+                                st.image(image.data, use_container_width=True, caption=caption)
+                                if st.button(f"ขยายตัวเลือก {choice_index + 1} · รูป {image_index + 1}", key=f"zoom_{entry_id}_c_{image_index}", use_container_width=True):
+                                    show_full_image(image, f"ข้อ {idx} · {caption}")
+                            else:
+                                st.warning(f"{caption} — โหลดรูปไม่ได้")
+
+                all_question_images = q.images + [image for _, image in choice_image_pairs]
+                has_ready_image = any(img.is_ready() for img in all_question_images)
+                if has_ready_image:
+                    if st.button(f"วิเคราะห์ข้อ {idx} ใหม่โดยใช้รูปล่าสุด", key=f"reanalyze_{entry_id}"):
+                        with st.spinner("กำลังวิเคราะห์คำถามนี้"):
+                            bad_keys_local: set = set()
+                            exhausted_local: set = set()
+                            lock_local = threading.Lock()
+                            try:
+                                result, used_model = call_gemini_chunk(
+                                    api_keys, 0,
+                                    st.session_state.get("exam_context", exam_context),
+                                    [(idx, q)], MODEL_CANDIDATES,
+                                    bad_keys_local, lock_local,
+                                    exhausted_local, lock_local,
+                                )
+                                if entry_id in result:
+                                    result[entry_id]["verification"] = "not_checked"
+                                    result[entry_id]["source_pass"] = "manual"
+                                    result[entry_id].update(calculate_answer_reliability(
+                                        result[entry_id],
+                                        has_images=_ready_image_count((idx, q)) > 0,
+                                        image_expected=bool(q.images or q.choice_images),
+                                        has_choices=bool(q.choices),
+                                    ))
+                                    ai_answers[entry_id] = result[entry_id]
+                                    st.session_state["ai_answers"] = ai_answers
+                                    apply_ai_answer_to_state(q, result[entry_id])
+                                    st.success(f"อัปเดตคำตอบแล้ว (โมเดล: {used_model})")
                                 else:
-                                    st.session_state[marker_key] = file_hash
-                                    new_img = QuestionImage(
-                                        source="manual_upload",
-                                        url=None,
-                                        data=processed,
-                                        mime_type=out_mime,
-                                        width=size[0] if size else None,
-                                        height=size[1] if size else None,
-                                        status=status,
-                                    )
-                                    manual_images[entry_id] = new_img
-                                    st.session_state["manual_images"] = manual_images
-                                    q.images = [img for img in q.images if img.source != "manual_upload"]
-                                    q.images.append(new_img)
-                                    st.success(
-                                        f"อัปโหลดรูปข้อ {idx} แล้ว กดปุ่มวิเคราะห์ข้อ {idx} ใหม่เพื่อใช้รูปนี้ในการประมวลผล"
-                                    )
-                                    st.rerun()
+                                    st.warning("ระบบยังไม่สามารถตอบข้อนี้ได้ กรุณาลองอีกครั้ง")
+                            except Exception as e:
+                                st.error(f"เกิดข้อผิดพลาด: {e}")
+                        st.rerun()
 
-            if not ai_has_answer:
-                st.markdown(
-                    '<div style="background:#3a1414;border:1px solid #ff6b6b;border-radius:8px;'
-                    'padding:8px 12px;margin-bottom:8px;color:#ff9b9b;font-size:0.9em;">'
-                    'ระบบยังไม่มีคำตอบสำหรับข้อนี้ กรุณาเลือกหรือพิมพ์คำตอบด้วยตนเอง'
-                    '</div>',
-                    unsafe_allow_html=True,
-                )
-            elif reliability > 0:
-                color = confidence_color(reliability)
-                st.markdown(
-                    f'<div class="confidence-track"><div class="confidence-fill" style="width:{reliability}%;background:{color};"></div></div>',
-                    unsafe_allow_html=True
-                )
-                risk_text = {
-                    "safe": "พร้อมใช้",
-                    "review": "ควรตรวจ",
-                    "risky": "เสี่ยง",
-                }.get(risk_level, "ควรตรวจ")
-                st.markdown(
-                    f'<div class="confidence-label">ความน่าเชื่อถือของระบบ: {reliability}% · {risk_text} '
-                    f'(ความเชื่อมั่นจากการวิเคราะห์ {confidence}%)</div>',
-                    unsafe_allow_html=True,
-                )
-                if risk_reasons:
-                    st.caption(" · ".join(str(reason) for reason in risk_reasons[:3]))
-            if reasoning and ai_has_answer:
-                st.markdown(f'<div class="reasoning-text"><strong>เหตุผลประกอบ</strong><br>{html_lib.escape(reasoning)}</div>', unsafe_allow_html=True)
+                looks_like_image_q = bool(all_question_images) or ("รูป" in q.title or "ภาพ" in q.title)
+                # เปิด fallback ให้ทุกข้อเสมอ เพราะบางฟอร์มใช้รูปเป็นโจทย์โดยที่
+                # ชื่อคำถามไม่มีคำว่า "รูป/ภาพ" และ Google อาจซ่อน URL ไว้หลัง JS
+                # จนตรวจอัตโนมัติไม่พบ โดยค่าเริ่มต้นยังพับไว้จึงไม่รบกวนหน้า Review
+                offer_manual_image_upload = True
+                if offer_manual_image_upload:
+                    with st.expander(
+                        ("เพิ่มรูปด้วยตนเอง" if not has_ready_image else "เปลี่ยนหรือเพิ่มรูป")
+                        + f" — ข้อ {idx}",
+                        expanded=looks_like_image_q and not has_ready_image,
+                    ):
+                        uploaded = st.file_uploader(
+                            "เลือกไฟล์รูปภาพ (jpg, jpeg, png, webp)",
+                            type=["jpg", "jpeg", "png", "webp"],
+                            key=f"upload_{entry_id}",
+                        )
+                        if uploaded is not None:
+                            raw_bytes = uploaded.getvalue()
+                            file_hash = hashlib.md5(raw_bytes).hexdigest()
+                            marker_key = f"_upload_marker_{entry_id}"
+                            if st.session_state.get(marker_key) != file_hash:
+                                valid, fmt, size = validate_image(raw_bytes)
+                                if not valid:
+                                    st.error("ไฟล์นี้เปิดเป็นรูปภาพไม่ได้ กรุณาลองไฟล์อื่น (jpg, jpeg, png, webp)")
+                                else:
+                                    max_dim = MAX_IMAGE_DIM_TEXT if fmt in ("PNG", "GIF", "BMP") else MAX_IMAGE_DIM
+                                    processed, out_mime, status = compress_image(raw_bytes, max_dim=max_dim)
+                                    if not processed:
+                                        st.error("ประมวลผลรูปไม่สำเร็จ กรุณาลองไฟล์อื่นหรือไฟล์ที่มีขนาดเล็กลง")
+                                    else:
+                                        st.session_state[marker_key] = file_hash
+                                        new_img = QuestionImage(
+                                            source="manual_upload",
+                                            url=None,
+                                            data=processed,
+                                            mime_type=out_mime,
+                                            width=size[0] if size else None,
+                                            height=size[1] if size else None,
+                                            status=status,
+                                        )
+                                        manual_images[entry_id] = new_img
+                                        st.session_state["manual_images"] = manual_images
+                                        q.images = [img for img in q.images if img.source != "manual_upload"]
+                                        q.images.append(new_img)
+                                        st.success(
+                                            f"อัปโหลดรูปข้อ {idx} แล้ว กดปุ่มวิเคราะห์ข้อ {idx} ใหม่เพื่อใช้รูปนี้ในการประมวลผล"
+                                        )
+                                        st.rerun()
 
-            verification = ans_data.get("verification")
-            if verification == "verified":
-                st.success("ตรวจทานซ้ำแล้ว ผลลัพธ์ตรงกัน")
-            elif verification == "revised":
-                st.info("ตรวจทานซ้ำและปรับคำตอบจากรอบแรกแล้ว")
-            elif verification == "adjudicated":
-                st.success("ผลตรวจสองรอบต่างกัน และการตรวจรอบสุดท้ายยืนยันคำตอบเดิม")
-            elif verification == "adjudicated_revised":
-                st.info("ผลตรวจสองรอบต่างกัน และการตรวจรอบสุดท้ายเลือกคำตอบที่ปรับใหม่")
-            elif verification == "conflict":
-                st.warning("ผลตรวจซ้ำไม่ตรงกัน ระบบคงคำตอบรอบแรกไว้ กรุณาตรวจทานด้วยตนเอง")
-            elif verification == "failed":
-                st.caption("รอบตรวจซ้ำไม่สำเร็จ แต่ระบบยังคงคำตอบรอบแรกไว้")
-            elif verification == "budget_skipped":
-                st.caption("ไม่ได้ตรวจซ้ำข้อนี้ เพื่อควบคุมลิมิต API")
+
+            with ai_panel:
+                st.markdown('<div class="review-panel-label">AI เสนอคำตอบ</div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="review-answer">{html_lib.escape(answer_text(default_val) or "ยังไม่มีคำตอบ")}</div>', unsafe_allow_html=True)
+                if not ai_has_answer:
+                    st.markdown(
+                        '<div style="background:#3a1414;border:1px solid #ff6b6b;border-radius:8px;'
+                        'padding:8px 12px;margin-bottom:8px;color:#ff9b9b;font-size:0.9em;">'
+                        'ระบบยังไม่มีคำตอบสำหรับข้อนี้ กรุณาเลือกหรือพิมพ์คำตอบด้วยตนเอง'
+                        '</div>',
+                        unsafe_allow_html=True,
+                    )
+                elif reliability > 0:
+                    color = confidence_color(reliability)
+                    st.markdown(
+                        f'<div class="confidence-track"><div class="confidence-fill" style="width:{reliability}%;background:{color};"></div></div>',
+                        unsafe_allow_html=True
+                    )
+                    risk_text = {
+                        "safe": "พร้อมใช้",
+                        "review": "ควรตรวจ",
+                        "risky": "เสี่ยง",
+                    }.get(risk_level, "ควรตรวจ")
+                    st.markdown(
+                        f'<div class="confidence-label">ความน่าเชื่อถือของระบบ: {reliability}% · {risk_text} '
+                        f'(ความเชื่อมั่นจากการวิเคราะห์ {confidence}%)</div>',
+                        unsafe_allow_html=True,
+                    )
+                    if risk_reasons:
+                        st.caption(" · ".join(str(reason) for reason in risk_reasons[:3]))
+                if reasoning and ai_has_answer:
+                    st.markdown(f'<div class="reasoning-text"><strong>เหตุผลประกอบ</strong><br>{html_lib.escape(reasoning)}</div>', unsafe_allow_html=True)
+
+                verification = ans_data.get("verification")
+                if verification == "verified":
+                    st.success("ตรวจทานซ้ำแล้ว ผลลัพธ์ตรงกัน")
+                elif verification == "revised":
+                    st.info("ตรวจทานซ้ำและปรับคำตอบจากรอบแรกแล้ว")
+                elif verification == "adjudicated":
+                    st.success("ผลตรวจสองรอบต่างกัน และการตรวจรอบสุดท้ายยืนยันคำตอบเดิม")
+                elif verification == "adjudicated_revised":
+                    st.info("ผลตรวจสองรอบต่างกัน และการตรวจรอบสุดท้ายเลือกคำตอบที่ปรับใหม่")
+                elif verification == "conflict":
+                    st.warning("ผลตรวจซ้ำไม่ตรงกัน ระบบคงคำตอบรอบแรกไว้ กรุณาตรวจทานด้วยตนเอง")
+                elif verification == "failed":
+                    st.caption("รอบตรวจซ้ำไม่สำเร็จ แต่ระบบยังคงคำตอบรอบแรกไว้")
+                elif verification == "budget_skipped":
+                    st.caption("ไม่ได้ตรวจซ้ำข้อนี้ เพื่อควบคุมลิมิต API")
+
 
             ans_key = f"ans_{entry_id}"
 
@@ -2822,7 +2910,7 @@ if "questions" in st.session_state:
 
     pending_submission = st.session_state.get("pending_submission")
     if pending_submission:
-        _, current_missing, current_payload, current_fingerprint = current_submission_snapshot()
+        current_answers, current_missing, current_payload, current_fingerprint = current_submission_snapshot()
         if current_missing or current_fingerprint != pending_submission.get("fingerprint"):
             st.warning("คำตอบถูกเปลี่ยนหลังเปิดหน้าตรวจสอบ กรุณากด ‘ตรวจสอบก่อนส่ง’ ใหม่")
             st.session_state.pop("pending_submission", None)
@@ -2833,7 +2921,18 @@ if "questions" in st.session_state:
             )
             with st.container(border=True):
                 st.markdown('<div class="glass-header">ยืนยันก่อนส่งจริง</div>', unsafe_allow_html=True)
-                st.write(f"พร้อมส่งข้อมูลส่วนตัว {len(personal_data_map)} ช่อง และคำตอบ {len(questions)} ข้อ")
+                answered_before_submit = sum(
+                    bool(answer_text(current_answers.get(question.entry_id)))
+                    for question in questions
+                )
+                st.markdown(
+                    '<div class="final-overview">'
+                    f'<div class="final-stat"><strong>{answered_before_submit}/{len(questions)}</strong>ตอบแล้ว</div>'
+                    f'<div class="final-stat review"><strong>{risky_before_submit}</strong>ข้อที่ควรตรวจ</div>'
+                    f'<div class="final-stat risky"><strong>{len(questions) - answered_before_submit}</strong>ข้อที่ยังว่าง</div>'
+                    '</div>', unsafe_allow_html=True,
+                )
+                st.caption(f"ข้อมูลส่วนตัว {len(personal_data_map)} ช่อง · ตรวจคำตอบที่แก้เองได้ด้านบน")
                 if risky_before_submit:
                     st.warning(
                         f"มี {risky_before_submit} ข้อที่ระบบจัดว่า ‘ควรตรวจ/เสี่ยง’ "
@@ -2841,6 +2940,12 @@ if "questions" in st.session_state:
                     )
                 else:
                     st.success("คำตอบทุกข้อผ่านเกณฑ์ความน่าเชื่อถือของระบบ")
+                with st.expander("ดูรายการคำตอบที่จะส่ง", expanded=False):
+                    for qidx, question in enumerate(questions, 1):
+                        current_value = answer_text(current_answers.get(question.entry_id))
+                        ai_value = answer_text(get_ai_answer(ai_answers, question.entry_id).get("answer"))
+                        marker = " · แก้เอง" if current_value != ai_value else ""
+                        st.write(f"ข้อ {qidx}: {current_value or 'ยังไม่ตอบ'}{marker}")
                 st.caption("ระบบจะส่งไป Google Forms จริงเมื่อกดปุ่มยืนยันด้านล่างเท่านั้น")
 
                 confirm_col, cancel_col = st.columns(2)
