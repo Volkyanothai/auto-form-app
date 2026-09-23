@@ -160,6 +160,10 @@ def test_review_compares_answer_and_shows_final_overview_without_submitting():
     assert any("final-overview" in item.value for item in app.markdown)
     assert app.button(key="confirm_submit").label == "ยืนยันและส่งคำตอบ"
     assert app.button(key="confirm_submit").disabled
+    assert not app.get("link_button")
+    app.checkbox(key="review_risk_ack").check().run()
+    assert not app.exception
+    assert not app.button(key="confirm_submit").disabled
 
 
 def test_focus_navigation_keeps_hidden_answers_and_alternative_requires_acceptance():
