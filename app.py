@@ -2748,7 +2748,7 @@ if "questions" in st.session_state:
     if not review_items:
         st.info("ไม่มีคำถามในตัวกรองนี้")
 
-    for idx, q in review_items:
+    for visible_position, (idx, q) in enumerate(review_items):
         entry_id = q.entry_id
         ans_data = get_ai_answer(ai_answers, entry_id)
         default_val = ans_data.get("answer", "")
@@ -2760,6 +2760,20 @@ if "questions" in st.session_state:
         ai_has_answer = bool(default_val) and (not isinstance(default_val, list) or len(default_val) > 0)
 
         with st.container(border=True):
+            card_status = (
+                "พร้อมตรวจ" if risk_level == "safe"
+                else "ควรทบทวน" if ai_has_answer
+                else "รอคำตอบ"
+            )
+            card_tone = "ready" if risk_level == "safe" else "review" if ai_has_answer else "risky"
+            featured_class = " featured" if visible_position == 0 else ""
+            st.markdown(
+                f'<div class="question-card-mark {card_tone}{featured_class}" tabindex="0" aria-label="คำถามข้อ {idx}">'
+                f'<span class="question-card-number">{idx:02d}</span>'
+                f'<span class="question-card-caption">QUESTION <strong>{idx:02d}</strong></span>'
+                f'<span class="question-card-state">{card_status}</span></div>',
+                unsafe_allow_html=True,
+            )
             question_panel, ai_panel = st.columns([1.12, 1], gap="large") if compare_view else (st.container(), st.container())
             with question_panel:
                 st.markdown('<div class="review-panel-label">โจทย์ต้นฉบับ</div>', unsafe_allow_html=True)
