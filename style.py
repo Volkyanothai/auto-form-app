@@ -623,7 +623,7 @@ div.stLinkButton>a:hover{box-shadow:inset 0 1px 0 rgba(255,255,255,.3),0 14px 34
 RESPONSIVE_CSS = """<style>
 /* Predictable sizing and overflow at every viewport */
 .live-answer-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),1fr));gap:10px;margin:14px 0;max-height:430px;overflow:auto;padding:3px;}
-.live-answer-card{padding:13px 14px;border:1px solid rgba(127,179,255,.22);border-radius:14px;background:linear-gradient(140deg,rgba(16,37,70,.88),rgba(6,18,36,.9));animation:liveReveal .35s ease both;min-width:0;}
+.live-answer-card{padding:13px 14px;border:1px solid rgba(127,179,255,.22);border-radius:14px;background:linear-gradient(140deg,rgba(16,37,70,.88),rgba(6,18,36,.9));min-width:0;}
 .live-answer-card.ready{border-color:rgba(95,227,208,.48);}
 .live-answer-card.review{border-color:rgba(232,201,138,.55);}
 .live-answer-card.risky{border-color:rgba(255,107,107,.55);}
@@ -770,6 +770,73 @@ RESPONSIVE_CSS = """<style>
   div.stButton>button,div.stLinkButton>a,
   [data-testid="stExpander"] summary{min-height:48px;}
   [data-testid="stCheckbox"] label,[data-testid="stToggle"] label{min-height:44px;}
+}
+
+/* Question cards respond to touch and focus; the rest of the dashboard stays quiet. */
+div[data-testid="stVerticalBlockBorderWrapper"]:has(.review-panel-label){
+  position:relative;isolation:isolate;
+  transition:transform .24s ease,border-color .24s ease,box-shadow .28s ease!important;
+}
+div[data-testid="stVerticalBlockBorderWrapper"]:has(.review-panel-label)::before{
+  content:"";position:absolute;inset:0;border-radius:inherit;pointer-events:none;z-index:0;
+  opacity:0;background:radial-gradient(ellipse 70% 90% at 88% 0%,rgba(67,200,232,.14),transparent 75%);
+  transition:opacity .3s ease;
+}
+div[data-testid="stVerticalBlockBorderWrapper"]:has(.review-panel-label)::after{
+  content:"";position:absolute;inset:0;border-radius:inherit;pointer-events:none;z-index:0;
+  opacity:0;transform:translateX(-110%);
+  background:linear-gradient(110deg,transparent 28%,rgba(115,210,241,.07) 47%,rgba(95,227,208,.12) 50%,transparent 70%);
+}
+div[data-testid="stVerticalBlockBorderWrapper"]:has(.review-panel-label)>[data-testid="stVerticalBlock"]{
+  position:relative;z-index:1;
+}
+div[data-testid="stVerticalBlockBorderWrapper"]:has(.review-panel-label):is(:focus-within,:active){
+  border-color:rgba(95,227,208,.68)!important;
+  box-shadow:0 16px 42px rgba(0,0,0,.28),0 0 0 1px rgba(95,227,208,.18),0 0 26px rgba(67,200,232,.12)!important;
+}
+div[data-testid="stVerticalBlockBorderWrapper"]:has(.review-panel-label):is(:focus-within,:active)::before{opacity:1;}
+div[data-testid="stVerticalBlockBorderWrapper"]:has(.review-panel-label):is(:focus-within,:active)::after{
+  opacity:1;animation:questionSheen .8s ease-out 1 both;
+}
+@media (hover:hover) and (pointer:fine){
+  div[data-testid="stVerticalBlockBorderWrapper"]:has(.review-panel-label):hover{
+    transform:translateY(-3px);border-color:rgba(127,179,255,.55)!important;
+    box-shadow:0 20px 48px rgba(0,0,0,.3),0 0 25px rgba(67,200,232,.1)!important;
+  }
+  div[data-testid="stVerticalBlockBorderWrapper"]:has(.review-panel-label):hover::before{opacity:1;}
+}
+@keyframes questionSheen{from{transform:translateX(-110%)}to{transform:translateX(110%)}}
+
+/* A compact, truthful phase display; answer count is updated only on completed batches. */
+.analysis-dashboard{padding:15px;border:1px solid rgba(95,227,208,.3);border-radius:16px;background:linear-gradient(135deg,rgba(13,42,61,.84),rgba(12,22,46,.88));margin:5px 0 14px;box-shadow:inset 0 1px rgba(255,255,255,.07),0 14px 36px rgba(0,0,0,.18);}
+.analysis-dashboard-head{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:12px;font-size:.74rem;color:#8bc6d7;}
+.analysis-dashboard-head>span{font-size:.6rem;letter-spacing:.14em;font-weight:800;white-space:nowrap;}
+.analysis-dashboard-head strong{color:#e7f8ff;font-size:.82rem;text-align:right;}
+.analysis-steps{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;}
+.analysis-step{display:flex;align-items:center;gap:7px;min-width:0;padding:9px 8px;border:1px solid rgba(127,179,255,.13);border-radius:9px;font-size:.69rem;color:#8597b1;white-space:nowrap;}
+.analysis-step i{width:7px;height:7px;flex:0 0 auto;border-radius:50%;background:#53637c;}
+.analysis-step.done{color:#9fe2d8;border-color:rgba(95,227,208,.25);}
+.analysis-step.done i{background:#5fe3d0;}
+.analysis-step.active{color:#fff;background:rgba(67,200,232,.13);border-color:rgba(95,227,208,.53);box-shadow:inset 0 0 16px rgba(67,200,232,.08);}
+.analysis-step.active i{background:#5fe3d0;box-shadow:0 0 0 4px rgba(95,227,208,.13),0 0 13px rgba(95,227,208,.8);animation:activeStepPulse 2s ease-in-out infinite;}
+@keyframes activeStepPulse{50%{box-shadow:0 0 0 6px rgba(95,227,208,.04),0 0 18px rgba(95,227,208,.9)}}
+
+.live-answer-card{position:relative;overflow:hidden;isolation:isolate;}
+.live-answer-card>*{position:relative;z-index:1;}
+.live-answer-card.pending.scanning::before{content:"";position:absolute;inset:0;background:linear-gradient(105deg,transparent 25%,rgba(95,227,208,.085) 47%,transparent 68%);transform:translateX(-105%);animation:pendingScan 2.5s ease-in-out infinite;pointer-events:none;}
+.live-answer-card.revealed{animation:liveReveal .48s cubic-bezier(.2,.8,.2,1) both,answerArrival .95s ease-out 1;}
+@keyframes pendingScan{55%,100%{transform:translateX(105%)}}
+@keyframes answerArrival{0%{box-shadow:0 0 0 0 rgba(95,227,208,.34)}60%{box-shadow:0 0 0 4px rgba(95,227,208,.13)}100%{box-shadow:0 0 0 0 rgba(95,227,208,0)}}
+@media(max-width:640px){
+  .analysis-dashboard-head{flex-direction:column;align-items:flex-start;gap:5px;}
+  .analysis-dashboard-head strong{text-align:left;}
+  .analysis-steps{grid-template-columns:repeat(2,minmax(0,1fr));}
+}
+@media(prefers-reduced-motion:reduce){
+  .live-answer-card.pending.scanning::before,.live-answer-card.revealed,
+  .analysis-step.active i,div[data-testid="stVerticalBlockBorderWrapper"]:has(.review-panel-label)::after{
+    animation:none!important;
+  }
 }
 
 /* Keyboard focus remains obvious across native and Streamlit controls. */
