@@ -4,6 +4,7 @@ from analysis_validation import (
     answer_matches_review_filter,
     answers_equivalent,
     build_balanced_batches,
+    build_recovery_batches,
     calculate_answer_reliability,
     choose_autofill_value,
     merge_adjudication_result,
@@ -70,6 +71,16 @@ class NormalizeModelAnswersTests(unittest.TestCase):
         self.assertNotIn("entry.unknown", result)
         self.assertEqual(result["entry.single"]["answer"], "")
         self.assertEqual(result["entry.single"]["confidence"], 0)
+
+    def test_preserves_whole_choice_with_separator_and_later_valid_duplicate(self):
+        expected = {"entry.1": {"choices": ["แดง, เหลือง", "น้ำเงิน"], "is_multi": False}}
+        data = {"answers": [
+            {"entry_id": "entry.1", "answer": ["ไม่ใช่ตัวเลือก"], "confidence": 80},
+            {"entry_id": "entry.1", "answer": ["แดง, เหลือง"], "confidence": 90},
+        ]}
+        result = normalize_model_answers(data, expected)
+        self.assertEqual(result["entry.1"]["answer"], "แดง, เหลือง")
+        self.assertEqual(result["entry.1"]["empty_reason"], "")
 
     def test_accepts_legacy_string_and_free_text(self):
         data = {
@@ -292,6 +303,22 @@ class ReliabilityScoreTests(unittest.TestCase):
 
 
 class ReviewAndSubmissionSafetyTests(unittest.TestCase):
+    def test_thirty_question_form_retries_twelve_missing_in_smaller_batches(self):
+        questions = list(range(1, 31))
+        first_answers = {number: f"answer {number}" for number in questions[:18]}
+        missing = [number for number in questions if number not in first_answers]
+
+        paired = build_recovery_batches(missing, lambda _: 0, attempt=0)
+        self.assertEqual([len(batch) for batch in paired], [2] * 6)
+        self.assertEqual([item for batch in paired for item in batch], missing)
+
+        # Simulate two questions still missing after the pair retry.
+        recovered = {**first_answers, **{n: f"answer {n}" for n in missing[:-2]}}
+        last_missing = [number for number in questions if number not in recovered]
+        singles = build_recovery_batches(last_missing, lambda _: 0, attempt=1)
+        self.assertEqual(singles, [[29], [30]])
+        self.assertEqual(len(first_answers), 18)  # existing results remain intact
+
     def test_review_filters_use_system_risk_and_image_state(self):
         safe = {"answer": "A", "risk_level": "safe"}
         risky = {"answer": "B", "risk_level": "review"}
