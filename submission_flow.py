@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+from html.parser import HTMLParser
 from typing import Any, Mapping, Optional, Tuple
 from urllib.parse import urlencode, urlsplit, urlunsplit
 
@@ -11,6 +12,32 @@ import requests
 # Google can reject long prefilled links with HTTP 400. Leave room below its
 # usual request-line limit for redirects and browser-added parameters.
 MAX_PREFILL_URL_LENGTH = 6000
+
+
+class _VisibleFormText(HTMLParser):
+    """Read visible confirmation text and detect an unanswered form page."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.hidden = 0
+        self.has_form = False
+        self.text = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag in {"script", "style", "noscript"}:
+            self.hidden += 1
+        if tag == "form":
+            self.has_form = True
+        if tag == "input" and any(name == "name" and (value or "").startswith("entry.") for name, value in attrs):
+            self.has_form = True
+
+    def handle_endtag(self, tag):
+        if tag in {"script", "style", "noscript"} and self.hidden:
+            self.hidden -= 1
+
+    def handle_data(self, data):
+        if not self.hidden:
+            self.text.append(data)
 
 
 def check_submit_success(
@@ -23,7 +50,22 @@ def check_submit_success(
         return False, f"Google Forms ตอบกลับ HTTP {status_code} จึงยังยืนยันการบันทึกไม่ได้"
 
     body = (response_text or "").casefold()
-    if "freebirdformviewerviewresponseconfirmationmessage" in body:
+    page = _VisibleFormText()
+    page.feed(response_text or "")
+    visible = " ".join(" ".join(page.text).casefold().split())
+    confirmation = any(phrase in visible for phrase in (
+        "your response has been recorded",
+        "your response was recorded",
+        "your response has been submitted",
+        "บันทึกคำตอบของคุณแล้ว",
+        "บันทึกคำตอบของคุณเรียบร้อยแล้ว",
+        "ส่งคำตอบของคุณแล้ว",
+    ))
+    # The old CSS marker and modern visible messages are both valid, but a
+    # returned form can contain confirmation text in its description or JS.
+    if not page.has_form and (
+        "freebirdformviewerviewresponseconfirmationmessage" in body or confirmation
+    ):
         return True, None
 
     url = (response_url or "").casefold()
