@@ -51,6 +51,20 @@ def test_deployment_reloads_stale_submission_module():
         importlib.reload(submission_flow)
 
 
+def test_deployment_reloads_cached_submission_implementation():
+    import importlib
+    import submission_flow
+
+    old_version = submission_flow.SUBMISSION_FLOW_VERSION
+    submission_flow.SUBMISSION_FLOW_VERSION = 0
+    try:
+        app = build_app().run()
+        assert not app.exception
+        assert submission_flow.SUBMISSION_FLOW_VERSION == old_version
+    finally:
+        importlib.reload(submission_flow)
+
+
 def test_profile_values_survive_workspace_navigation():
     app = build_app().run()
     app.button[0].click().run()
