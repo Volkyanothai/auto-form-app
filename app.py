@@ -274,16 +274,18 @@ choose_autofill_value = getattr(
 from style import inject_css, render_header
 _SUBMISSION_HELPERS = (
     "build_original_form_url",
+    "build_form_view_url",
     "build_prefilled_form_url",
     "post_form_response",
 )
 if (
-    getattr(_submission_flow, "SUBMISSION_FLOW_VERSION", 0) < 2
+    getattr(_submission_flow, "SUBMISSION_FLOW_VERSION", 0) < 3
     or not all(hasattr(_submission_flow, name) for name in _SUBMISSION_HELPERS)
 ):
     _submission_flow = importlib.reload(_submission_flow)
 
 build_original_form_url = _submission_flow.build_original_form_url
+build_form_view_url = _submission_flow.build_form_view_url
 build_prefilled_form_url = _submission_flow.build_prefilled_form_url
 post_form_response = _submission_flow.post_form_response
 
@@ -862,6 +864,8 @@ def fetch_form(form_url: str) -> Tuple[dict, str, str, str, str]:
     if not re.match(r"^https?://", form_url, re.IGNORECASE):
         form_url = "https://" + form_url
 
+    # formResponse is the submission endpoint; read the respondent page instead.
+    form_url = build_form_view_url(form_url)
     try:
         session = requests.Session()
         res = session.get(
@@ -870,6 +874,21 @@ def fetch_form(form_url: str) -> Tuple[dict, str, str, str, str]:
             headers=UA,
             timeout=20,
         )
+        # Short links can also redirect directly to formResponse.
+        redirected_view_url = build_form_view_url(res.url)
+        if redirected_view_url != res.url:
+            res = session.get(
+                redirected_view_url,
+                allow_redirects=True,
+                headers=UA,
+                timeout=20,
+            )
+        if res.status_code in (401, 403):
+            raise RuntimeError(
+                "Google Forms ปฏิเสธการเข้าถึงฟอร์ม "
+                f"(HTTP {res.status_code}) ฟอร์มอาจต้องลงชื่อเข้าใช้บัญชี Google "
+                "หรือเจ้าของฟอร์มยังไม่ได้ให้สิทธิ์ผู้ตอบ"
+            )
         res.raise_for_status()
     except requests.exceptions.RequestException as e:
         raise RuntimeError(f"เปิดลิงก์ Google Form ไม่สำเร็จ: {e}")

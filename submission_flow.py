@@ -12,7 +12,7 @@ import requests
 # Google can reject long prefilled links with HTTP 400. Leave room below its
 # usual request-line limit for redirects and browser-added parameters.
 MAX_PREFILL_URL_LENGTH = 6000
-SUBMISSION_FLOW_VERSION = 2
+SUBMISSION_FLOW_VERSION = 3
 
 
 class _VisibleFormText(HTMLParser):
@@ -87,6 +87,23 @@ def check_submit_success(
         )
 
     return False, "Google Forms ไม่ส่งหน้ายืนยันกลับมา จึงยังยืนยันไม่ได้ว่าบันทึกคำตอบแล้ว"
+
+
+def build_form_view_url(url: str) -> str:
+    """Read the respondent page when a Google Forms submission URL is supplied."""
+    parts = urlsplit(url)
+    if (
+        parts.scheme not in {"http", "https"}
+        or parts.hostname not in {"docs.google.com", "forms.google.com"}
+        or not parts.path.startswith("/forms/")
+        or not parts.path.endswith("/formResponse")
+    ):
+        return url
+    return urlunsplit((
+        parts.scheme, parts.netloc,
+        parts.path[:-len("formResponse")] + "viewform",
+        parts.query, parts.fragment,
+    ))
 
 
 def build_original_form_url(submit_url: str) -> Optional[str]:

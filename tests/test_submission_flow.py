@@ -6,6 +6,7 @@ import requests
 from submission_flow import (
     MAX_PREFILL_URL_LENGTH,
     build_original_form_url,
+    build_form_view_url,
     build_prefilled_form_url,
     check_submit_success,
     post_form_response,
@@ -97,3 +98,16 @@ def test_returned_form_and_timeout_never_trigger_automatic_second_post():
     success, message, html, url = post_form_response(FORM_RESPONSE, {"entry.1": "A"}, {}, 5, times_out)
     assert not success and "ไม่ทราบผล" in message
     assert html is None and url is None and len(calls) == 2
+
+def test_submission_link_is_opened_as_respondent_page():
+    response_url = FORM_RESPONSE + "?usp=pp_url"
+    assert build_form_view_url(response_url) == (
+        "https://docs.google.com/forms/d/e/FORM_ID/viewform?usp=pp_url"
+    )
+    assert build_form_view_url("https://forms.gle/short") == "https://forms.gle/short"
+    assert build_form_view_url(
+        "https://evil.example/forms/d/e/FORM_ID/formResponse"
+    ).endswith("/formResponse")
+    assert build_form_view_url(FORM_RESPONSE.replace("formResponse", "viewform")) == (
+        FORM_RESPONSE.replace("formResponse", "viewform")
+    )
