@@ -41,5 +41,26 @@ public class SmokeTest {
             if (!loaded) Thread.sleep(500);
         }
         assertTrue("Bundled HTML/JS and native bridge loaded", loaded);
+        instrumentation.runOnMainSync(() -> {
+            android.view.ViewGroup root = activity.getActivity().findViewById(android.R.id.content);
+            ((WebView) root.getChildAt(0)).evaluateJavascript(
+                "window.testImageLoaded=false;let image=new Image();" +
+                "image.onload=()=>{window.testImageLoaded=image.naturalWidth>0;};" +
+                "image.src='data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aWQ0AAAAASUVORK5CYII=';",
+                null);
+        });
+        boolean imageLoaded = false;
+        for (int attempt = 0; attempt < 20 && !imageLoaded; attempt++) {
+            CountDownLatch latch = new CountDownLatch(1);
+            instrumentation.runOnMainSync(() -> {
+                android.view.ViewGroup root = activity.getActivity().findViewById(android.R.id.content);
+                ((WebView) root.getChildAt(0)).evaluateJavascript("window.testImageLoaded",
+                    value -> { result[0] = value; latch.countDown(); });
+            });
+            assertTrue(latch.await(10, TimeUnit.SECONDS));
+            imageLoaded = "true".equals(result[0]);
+            if (!imageLoaded) Thread.sleep(250);
+        }
+        assertTrue("Embedded question images render in the WebView", imageLoaded);
     }
 }

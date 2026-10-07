@@ -80,6 +80,8 @@ public class MainActivity extends Activity {
             .addPathHandler("/assets/", new WebViewAssetLoader.AssetsPathHandler(this)).build();
         web.setWebViewClient(new WebViewClient() {
             @Override public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
+                if ("data".equals(request.getUrl().getScheme()) &&
+                    request.getUrl().toString().startsWith("data:image/")) return null;
                 WebResourceResponse asset = loader.shouldInterceptRequest(request.getUrl());
                 if (asset != null) return asset;
                 return new WebResourceResponse("text/plain", "UTF-8",
