@@ -50,6 +50,11 @@ public class SmokeTest {
             formVisible = "true".equals(evaluate(
                 "document.querySelector('input[placeholder=\\\"https://forms.gle/...\\\"]')!==null"));
             if (!formVisible) {
+                if (attempt % 20 == 0) {
+                    System.out.println("WEB_PAGE_DIAGNOSTICS " + evaluate(
+                        "JSON.stringify({title:document.title,url:location.origin+location.pathname," +
+                        "body:document.body.innerText.slice(0,1200),agent:navigator.userAgent})"));
+                }
                 evaluate("Array.from(document.querySelectorAll('button')).find(" +
                     "b=>b.textContent.trim()==='เริ่มต้นใช้งาน')?.click()");
                 Thread.sleep(1000);
