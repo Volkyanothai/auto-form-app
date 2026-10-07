@@ -1,0 +1,105 @@
+name: Build Android APK
+on:
+  push:
+    branches: [main, android-apk]
+    paths:
+      - 'android/**'
+      - 'scripts/export_android_core.py'
+      - 'app.py'
+      - 'analysis_validation.py'
+      - 'form_media.py'
+      - 'submission_flow.py'
+      - 'logo.png'
+      - 'tests/**'
+      - '.github/workflows/android-apk.yml'
+  pull_request:
+    paths:
+      - 'android/**'
+      - 'scripts/export_android_core.py'
+      - 'app.py'
+      - 'analysis_validation.py'
+      - 'form_media.py'
+      - 'submission_flow.py'
+      - 'tests/**'
+      - '.github/workflows/android-apk.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+      - name: Validate existing app and Android engine
+        run: |
+          python -m pip install -r requirements.txt pytest
+          python scripts/export_android_core.py
+          python -m pytest -q
+          python -m compileall -q android/app/src/main/python
+          node --check android/app/src/main/assets/app.js
+      - name: Build installable APK
+        working-directory: android
+        run: gradle assembleDebug assembleDebugAndroidTest lintDebug --stacktrace
+      - name: Enable emulator acceleration
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Test app launch, embedded Python and image codec on Android
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 29
+          arch: x86_64
+          profile: pixel_2
+          disable-animations: true
+          working-directory: android
+          script: gradle connectedDebugAndroidTest --stacktrace
+      - name: Prepare download
+        run: |
+          mkdir -p dist
+          cp android/app/build/outputs/apk/debug/app-debug.apk dist/EZEXAM.apk
+          sha256sum dist/EZEXAM.apk > dist/SHA256SUMS.txt
+          cp android/README.md dist/README.md
+      - uses: actions/upload-artifact@v4
+        with:
+          name: EZEXAM-Android-APK
+          path: dist/
+          retention-days: 90
+      - name: Publish downloadable APK after tests pass
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "android-${{ github.run_number }}" dist/EZEXAM.apk dist/SHA256SUMS.txt \
+            --target "${{ github.sha }}" --prerelease \
+            --title "EZEXAM Android 1.0 — build ${{ github.run_number }}" \
+            --notes-file android/RELEASE_NOTES.md
+      - name: Upload test and lint reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Android-test-reports
+          path: |
+            android/app/build/reports/
+            android/app/build/outputs/androidTest-results/
+          if-no-files-found: ignore
