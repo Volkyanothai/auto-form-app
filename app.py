@@ -2243,7 +2243,10 @@ def restore_workspace_draft() -> None:
 
 
 if "workspace_started" not in st.session_state:
-    st.session_state["workspace_started"] = "questions" in st.session_state
+    st.session_state["workspace_started"] = (
+        "questions" in st.session_state
+        or st.query_params.get("client") == "android"
+    )
 
 if not st.session_state.get("workspace_started"):
     st.markdown(
