@@ -33,6 +33,12 @@ public class SmokeTest {
         return result[0];
     }
 
+    private String evaluateLive(String script) throws Exception {
+        // Community Cloud embeds Streamlit at /~/+/ on the same origin.
+        return evaluate("(function(document){return (" + script + ");})(" +
+            "document.querySelector('iframe[title=streamlitApp]')?.contentDocument || document)");
+    }
+
     private void awaitTrue(String script) throws Exception {
         for (int attempt = 0; attempt < 60; attempt++) {
             if ("true".equals(evaluate(script))) return;
@@ -47,23 +53,23 @@ public class SmokeTest {
         // Read the real UI only; do not invoke Gemini or submit any form.
         boolean formVisible = false;
         for (int attempt = 0; attempt < 240 && !formVisible; attempt++) {
-            formVisible = "true".equals(evaluate(
+            formVisible = "true".equals(evaluateLive(
                 "document.querySelector('input[placeholder=\\\"https://forms.gle/...\\\"]')!==null"));
             if (!formVisible) {
                 if (attempt % 20 == 0) {
-                    System.out.println("WEB_PAGE_DIAGNOSTICS " + evaluate(
+                    System.out.println("WEB_PAGE_DIAGNOSTICS " + evaluateLive(
                         "JSON.stringify({title:document.title,url:location.origin+location.pathname," +
                         "body:document.body.innerText.slice(0,1200),agent:navigator.userAgent})"));
                 }
-                evaluate("Array.from(document.querySelectorAll('button')).find(" +
+                evaluateLive("Array.from(document.querySelectorAll('button')).find(" +
                     "b=>['เริ่มต้นใช้งาน','Yes, get this app back up!'].includes(b.textContent.trim()))?.click()");
                 Thread.sleep(1000);
             }
         }
-        String diagnostics = evaluate("JSON.stringify({url:location.origin+location.pathname," +
+        String diagnostics = evaluateLive("JSON.stringify({url:location.origin+location.pathname," +
             "title:document.title,body:document.body.innerText.slice(0,1800),agent:navigator.userAgent})");
         assertTrue("Hosted EZEXAM form did not load. Page diagnostics: " + diagnostics, formVisible);
-        assertEquals("true", evaluate("document.querySelector('input[type=password]')===null"));
+        assertEquals("true", evaluateLive("document.querySelector('input[type=password]')===null"));
     }
 
     @Test public void onlyAppOriginAndExpectedCloudAuthRemainInApp() {

@@ -17,17 +17,19 @@ with sync_playwright() as p:
     try:
         response = page.goto("https://ezexam.streamlit.app/?client=android",
                              wait_until="domcontentloaded", timeout=60000)
+        ui = page.main_frame
         for attempt in range(90):
-            if page.locator('input[placeholder="https://forms.gle/..."]').count():
+            ui = next((frame for frame in page.frames if urlsplit(frame.url).path.startswith("/~/+/")), page.main_frame)
+            if ui.locator('input[placeholder="https://forms.gle/..."]').count():
                 break
             for label in ("Yes, get this app back up!", "เริ่มต้นใช้งาน"):
-                button = page.get_by_role("button", name=label, exact=True)
+                button = ui.get_by_role("button", name=label, exact=True)
                 if button.count() and button.first.is_visible():
                     button.first.click()
             if attempt % 10 == 0:
                 print("PAGE_STATE", json.dumps({
                     "origin_path": path(page.url), "title": page.title(),
-                    "body": page.locator("body").inner_text()[:2200],
+                    "body": ui.locator("body").inner_text()[:2200],
                     "html": page.locator("#root").inner_html()[:1800] if page.locator("#root").count() else "",
                     "frames": [path(frame.url) for frame in page.frames],
                 }, ensure_ascii=False), flush=True)
@@ -35,10 +37,12 @@ with sync_playwright() as p:
         print(json.dumps({
             "status": response.status if response else None,
             "origin_path": path(page.url), "title": page.title(),
-            "visible_text": page.locator("body").inner_text()[:2200],
-            "buttons": page.get_by_role("button").all_text_contents()[:20],
-            "inputs": page.locator("input").evaluate_all(
+            "visible_text": ui.locator("body").inner_text()[:2200],
+            "buttons": ui.get_by_role("button").all_text_contents()[:20],
+            "inputs": ui.locator("input").evaluate_all(
                 "(items)=>items.map(i=>({type:i.type,placeholder:i.placeholder}))"),
         }, ensure_ascii=False), flush=True)
+        assert ui.locator('input[placeholder="https://forms.gle/..."]').count(), "Original form input did not load"
+        assert not ui.locator('input[type="password"]').count(), "Unexpected key/password field"
     finally:
         browser.close()
