@@ -55,7 +55,9 @@ public class SmokeTest {
                 Thread.sleep(1000);
             }
         }
-        assertTrue("Hosted EZEXAM UI loaded with the server key already configured", formVisible);
+        String diagnostics = evaluate("JSON.stringify({url:location.origin+location.pathname," +
+            "title:document.title,body:document.body.innerText.slice(0,1800),agent:navigator.userAgent})");
+        assertTrue("Hosted EZEXAM form did not load. Page diagnostics: " + diagnostics, formVisible);
         assertEquals("true", evaluate("document.querySelector('input[type=password]')===null"));
     }
 

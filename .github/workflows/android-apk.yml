@@ -59,6 +59,19 @@ jobs:
       - name: Validate hosted app URL
         id: web
         run: python scripts/check_android_web.py
+      - name: Check public website response
+        if: steps.web.outputs.configured == 'true'
+        run: |
+          python - <<'PY'
+          import os, re, requests
+          from urllib.parse import urlsplit
+          response = requests.get(os.environ["EZEXAM_WEB_URL"], timeout=60)
+          parsed = urlsplit(response.url)
+          title = re.search(r"<title[^>]*>(.*?)</title>", response.text, re.S | re.I)
+          print("Website status:", response.status_code)
+          print("Final origin/path:", parsed.scheme + "://" + parsed.netloc + parsed.path)
+          print("Title:", title.group(1)[:200] if title else "(none)")
+          PY
       - name: Build and check Android app
         working-directory: android
         run: gradle "-PwebAppUrl=$EZEXAM_WEB_URL" assembleDebug assembleDebugAndroidTest lintDebug --stacktrace
@@ -70,9 +83,10 @@ jobs:
       - name: Test Android web UI, navigation and session support
         uses: reactivecircus/android-emulator-runner@v2
         with:
-          api-level: 29
+          api-level: 35
           arch: x86_64
-          profile: pixel_2
+          target: google_apis
+          profile: pixel_6
           disable-animations: true
           working-directory: android
           script: gradle "-PwebAppUrl=$EZEXAM_WEB_URL" connectedDebugAndroidTest --stacktrace
