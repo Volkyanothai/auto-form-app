@@ -498,7 +498,7 @@ def compress_image(
         img = img.convert("RGB")
 
     if max(img.size) > max_dim:
-        img.thumbnail((max_dim, max_dim), Image.LANCZOS)
+        img.thumbnail((max_dim, max_dim), Image.Resampling.LANCZOS)
 
     best_data = None
     best_mime = "image/jpeg"
@@ -523,7 +523,7 @@ def compress_image(
             continue
 
     if best_data is None:
-        img.thumbnail((max_dim // 2, max_dim // 2), Image.LANCZOS)
+        img.thumbnail((max_dim // 2, max_dim // 2), Image.Resampling.LANCZOS)
         buf = io.BytesIO()
         img.save(buf, "JPEG", quality=40, optimize=True)
         best_data = buf.getvalue()

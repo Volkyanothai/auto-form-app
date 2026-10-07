@@ -163,6 +163,8 @@ def self_test():
     from PIL import Image
     import io
     image = io.BytesIO()
-    Image.new("RGB", (16, 16), "blue").save(image, "PNG")
+    Image.new("RGB", (128, 128), "blue").save(image, "PNG")
     assert core.validate_image(image.getvalue())[0]
+    compressed, mime, status = core.compress_image(image.getvalue(), max_dim=64)
+    assert compressed and Image.open(io.BytesIO(compressed)).size == (64, 64)
     return "ok"

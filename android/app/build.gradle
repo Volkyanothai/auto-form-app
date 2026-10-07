@@ -24,7 +24,7 @@ chaquopy {
         version = '3.11'
         pip {
             install 'requests==2.32.3'
-            install 'Pillow==10.4.0'
+            install 'Pillow==11.0.0'
         }
     }
 }
@@ -38,10 +38,11 @@ tasks.register('preparePython', Exec) {
     workingDir rootProject.projectDir.parentFile
     commandLine 'python3', 'scripts/export_android_core.py'
     inputs.files(fileTree(rootProject.projectDir.parentFile) {
-        include 'app.py', 'analysis_validation.py', 'form_media.py', 'submission_flow.py',
+        include 'app.py', 'analysis_validation.py', 'form_media.py', 'submission_flow.py', 'logo.png',
                 'scripts/export_android_core.py'
     })
     outputs.dir file('generated/python')
+    outputs.file file('src/main/assets/logo.png')
 }
 tasks.named('preBuild').configure { dependsOn 'preparePython' }
 tasks.configureEach {
