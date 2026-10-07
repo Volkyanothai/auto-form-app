@@ -1,0 +1,53 @@
+plugins {
+    id 'com.android.application'
+    id 'com.chaquo.python'
+}
+android {
+    namespace 'com.volkyanothai.ezexam'
+    compileSdk 35
+    defaultConfig {
+        applicationId 'com.volkyanothai.ezexam'
+        minSdk 24
+        targetSdk 35
+        versionCode 1
+        versionName '1.0.0'
+        ndk { abiFilters 'arm64-v8a', 'armeabi-v7a', 'x86_64' }
+        testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+chaquopy {
+    defaultConfig {
+        version = '3.11'
+        pip {
+            install 'requests==2.32.3'
+            install 'Pillow==11.0.0'
+        }
+    }
+}
+dependencies {
+    implementation 'androidx.webkit:webkit:1.12.1'
+    androidTestImplementation 'androidx.test:runner:1.6.2'
+    androidTestImplementation 'androidx.test:rules:1.6.1'
+    androidTestImplementation 'androidx.test.ext:junit:1.2.1'
+}
+tasks.register('preparePython', Exec) {
+    workingDir rootProject.projectDir.parentFile
+    commandLine 'python3', 'scripts/export_android_core.py'
+    inputs.files(fileTree(rootProject.projectDir.parentFile) {
+        include 'app.py', 'analysis_validation.py', 'form_media.py', 'submission_flow.py', 'logo.png',
+                'scripts/export_android_core.py'
+    })
+    outputs.dir file('generated/python')
+    outputs.file file('src/main/assets/logo.png')
+}
+tasks.named('preBuild').configure { dependsOn 'preparePython' }
+tasks.configureEach {
+    if (name != 'preparePython' && name.contains('Python')) dependsOn 'preparePython'
+}
+chaquopy.sourceSets {
+    main { srcDir 'generated/python' }
+}
