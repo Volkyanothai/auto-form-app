@@ -16,7 +16,7 @@
 ใส่ URL เว็บจริงใน `android/webapp.properties`:
 
 ```properties
-url=https://YOUR-DEPLOYED-APP.streamlit.app/
+url=https://ezexam.streamlit.app/
 ```
 
 ไฟล์นี้ใส่เฉพาะ URL ห้ามใส่ API Key
