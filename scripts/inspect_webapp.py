@@ -1,4 +1,4 @@
-"""Read-only browser diagnostics: no AI calls or form submissions."""
+"""Wake the hosted app and inspect its UI; no AI calls or form submissions."""
 import json
 from urllib.parse import urlsplit
 from playwright.sync_api import sync_playwright
@@ -9,7 +9,14 @@ with sync_playwright() as p:
     try:
         response = page.goto("https://ezexam.streamlit.app/?client=android",
                              wait_until="domcontentloaded", timeout=60000)
-        page.wait_for_timeout(20000)
+        for _ in range(120):
+            if page.locator('input[placeholder="https://forms.gle/..."]').count():
+                break
+            for label in ("Yes, get this app back up!", "เริ่มต้นใช้งาน"):
+                button = page.get_by_role("button", name=label, exact=True)
+                if button.count() and button.first.is_visible():
+                    button.first.click()
+            page.wait_for_timeout(2000)
         parsed = urlsplit(page.url)
         print(json.dumps({
             "status": response.status if response else None,

@@ -46,7 +46,7 @@ public class SmokeTest {
             "example.invalid".equals(Uri.parse(BuildConfig.WEB_APP_URL).getHost()));
         // Read the real UI only; do not invoke Gemini or submit any form.
         boolean formVisible = false;
-        for (int attempt = 0; attempt < 120 && !formVisible; attempt++) {
+        for (int attempt = 0; attempt < 240 && !formVisible; attempt++) {
             formVisible = "true".equals(evaluate(
                 "document.querySelector('input[placeholder=\\\"https://forms.gle/...\\\"]')!==null"));
             if (!formVisible) {
@@ -56,7 +56,7 @@ public class SmokeTest {
                         "body:document.body.innerText.slice(0,1200),agent:navigator.userAgent})"));
                 }
                 evaluate("Array.from(document.querySelectorAll('button')).find(" +
-                    "b=>b.textContent.trim()==='เริ่มต้นใช้งาน')?.click()");
+                    "b=>['เริ่มต้นใช้งาน','Yes, get this app back up!'].includes(b.textContent.trim()))?.click()");
                 Thread.sleep(1000);
             }
         }
