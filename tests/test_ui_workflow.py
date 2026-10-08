@@ -270,3 +270,24 @@ def test_multi_answer_same_set_in_new_order_is_rejected():
     assert validate_distinct_alternative(
         candidate, [["หนึ่ง", "สอง"]], ["หนึ่ง", "สอง", "สาม"], True
     )[0]
+
+
+def test_android_opens_the_existing_form_entry_without_api_key_input():
+    app = build_app()
+    app.query_params["client"] = "android"
+    app.run()
+    assert not app.exception
+    assert [field.label for field in app.text_input] == [
+        "ลิงก์แบบทดสอบ", "ชื่อ-นามสกุล", "เลขที่", "เลขประจำตัว", "ชั้น/ห้อง",
+    ]
+    assert any(button.label == "เริ่มวิเคราะห์" for button in app.button)
+    assert not any("API" in field.label for field in app.text_input)
+
+
+def test_android_can_return_to_the_original_landing_page():
+    app = build_app()
+    app.query_params["client"] = "android"
+    app.run()
+    next(button for button in app.button if button.label == "กลับหน้าหลัก").click().run()
+    assert not app.exception
+    assert [button.label for button in app.button] == ["เริ่มต้นใช้งาน"]

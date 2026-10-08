@@ -2,12 +2,14 @@
 
 เว็บแอป Python/Streamlit สำหรับอ่าน Google Forms วิเคราะห์และตรวจทานคำตอบด้วย Gemini
 
-## Android APK
+## Android
 
-เพิ่มแอป Android ที่รวม Python engine เดิมในเครื่องและมีหน้าจอสำหรับมือถือ
-ดู [วิธีติดตั้งและใช้งาน](android/README.md)
-ดาวน์โหลด APK ที่ผ่านการทดสอบจาก [GitHub Releases](https://github.com/Volkyanothai/auto-form-app/releases)
-ระบบสร้าง APK อยู่ใน [GitHub Actions](https://github.com/Volkyanothai/auto-form-app/actions/workflows/android-apk.yml)
+แอป Android 2 เปิดเว็บ EZEXAM จริงในแอป
+จึงได้หน้าตาและฟังก์ชันเดียวกับเว็บ และใช้ Gemini API Key ที่ตั้งไว้ฝั่งเซิร์ฟเวอร์
+เปิดแอป วางลิงก์ Google Forms แล้วกดเริ่มวิเคราะห์ได้เลย
+
+ดู [วิธีติดตั้งและตั้งค่าที่อยู่เว็บ](android/README.md)
+ดาวน์โหลด [APK จาก GitHub Releases](https://github.com/Volkyanothai/auto-form-app/releases)
 
 ## เว็บแอป
 
@@ -17,4 +19,4 @@ streamlit run app.py
 ```
 
 ตั้งค่า GEMINI_API_KEY ใน Streamlit secrets ของ deployment
-คีย์ในเว็บไม่ถูกนำไปใส่ใน APK ผู้ใช้ Android ตั้งค่าคีย์ในแอปและเก็บแบบเข้ารหัสได้
+URL ที่มี `?client=android` จะเปิดเข้าหน้าวางลิงก์โดยตรง

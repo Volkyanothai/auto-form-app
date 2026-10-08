@@ -1,5 +1,3 @@
 .gradle/
 local.properties
 **/build/
-app/generated/
-app/src/main/assets/logo.png

@@ -19,8 +19,9 @@ import json
 import logging
 import re
 import threading
+import time
 import traceback
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed, wait, FIRST_COMPLETED
 from dataclasses import dataclass, field, replace
 from html.parser import HTMLParser
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, TypeVar, Union
@@ -317,6 +318,7 @@ MAX_VERIFICATION_ITEMS = 8
 MAX_ADJUDICATION_ITEMS = 3
 MAX_IMAGE_WORKERS = 6
 ANALYSIS_TIMEOUT_MS = 30_000
+ANALYSIS_BUDGET_SECONDS = 120
 SUBMIT_TIMEOUT = 30
 IMAGE_TIMEOUT = 10
 MAX_IMAGE_DIM = 1024
@@ -1392,12 +1394,8 @@ def call_gemini_chunk_with_key(
     exam_context: str,
     chunk: List[Tuple[int, Question]],
     model_name: str,
+    timeout_ms: int = ANALYSIS_TIMEOUT_MS,
 ) -> Dict[str, Any]:
-    client = genai.Client(
-        api_key=api_key,
-        http_options=types.HttpOptions(timeout=ANALYSIS_TIMEOUT_MS),
-    )
-
     contents: List[types.Part] = []
     for idx, q in chunk:
         contents.extend(build_question_parts(idx, q))
@@ -1417,11 +1415,16 @@ def call_gemini_chunk_with_key(
         except Exception:
             pass
 
-    resp = client.models.generate_content(
-        model=model_name,
-        contents=contents,
-        config=gen_config,
-    )
+    # Routing below owns retries; do not multiply attempts inside the SDK.
+    with genai.Client(
+        api_key=api_key,
+        http_options=types.HttpOptions(
+            timeout=timeout_ms, retry_options=types.HttpRetryOptions(attempts=1),
+        ),
+    ) as client:
+        resp = client.models.generate_content(
+            model=model_name, contents=contents, config=gen_config,
+        )
 
     if not resp or not resp.text:
         raise RuntimeError("โมเดลตอบกลับเป็นค่าว่าง")
@@ -1443,9 +1446,10 @@ def try_key_model(
     exam_context: str,
     chunk: List[Tuple[int, Question]],
     model_name: str,
+    timeout_ms: int = ANALYSIS_TIMEOUT_MS,
 ) -> Tuple[str, Any]:
     try:
-        data = call_gemini_chunk_with_key(api_key, exam_context, chunk, model_name)
+        data = call_gemini_chunk_with_key(api_key, exam_context, chunk, model_name, timeout_ms)
         return "ok", data
     except Exception as err:
         msg = str(err)
@@ -1471,6 +1475,7 @@ def call_gemini_chunk(
     exhausted: set,
     exhausted_lock: threading.Lock,
     max_route_attempts: int = MAX_ROUTE_ATTEMPTS,
+    deadline: Optional[float] = None,
 ) -> Tuple[Dict[str, Any], str]:
     n = len(keys)
     last_err: Optional[Exception] = None
@@ -1492,8 +1497,14 @@ def call_gemini_chunk(
                 if (key, model_name) in exhausted:
                     continue
 
+            timeout_ms = ANALYSIS_TIMEOUT_MS
+            if deadline is not None:
+                remaining_ms = int((deadline - time.monotonic()) * 1000)
+                if remaining_ms <= 0:
+                    raise TimeoutError("ครบเวลาวิเคราะห์แล้ว คงคำตอบที่ได้ไว้ให้ตรวจ")
+                timeout_ms = min(timeout_ms, remaining_ms)
             routes_tried += 1
-            status, result = try_key_model(key, exam_context, chunk, model_name)
+            status, result = try_key_model(key, exam_context, chunk, model_name, timeout_ms)
 
             if status == "ok":
                 return result, model_name
@@ -1513,6 +1524,8 @@ def call_gemini_chunk(
                 continue
 
             if status == "model_bad":
+                with exhausted_lock:
+                    exhausted.add((key, model_name))
                 last_err = result
                 continue
 
@@ -1546,7 +1559,10 @@ def analyze_all(
     progress_cb=None,
     verify_risky: bool = True,
     live_cb: Optional[Callable[[str, Dict[str, Any]], None]] = None,
+    status_cb: Optional[Callable[[str, int, int, int], None]] = None,
 ) -> Tuple[Dict[str, Any], List[str], List[str]]:
+    started = time.monotonic()
+    deadline = started + ANALYSIS_BUDGET_SECONDS
     indexed = list(enumerate(questions, 1))
     chunks = build_balanced_batches(indexed, _ready_image_count)
     results: Dict[str, Any] = {}
@@ -1587,11 +1603,14 @@ def analyze_all(
         completed_entry_ids: set = set()
         if not chunk_set:
             return phase_results, phase_errors, completed_entry_ids
+        if time.monotonic() >= deadline:
+            return phase_results, ["ครบเวลาวิเคราะห์แล้ว เก็บคำตอบที่ได้ไว้ให้ตรวจ"], completed_entry_ids
 
         # API limits are project-based, not key-count-based. Two workers keep
         # throughput useful without serialising users who configure one key.
-        workers = min(MAX_PARALLEL_WORKERS if phase == "ชุดหลัก" else 1, len(chunk_set))
-        with ThreadPoolExecutor(max_workers=workers) as pool:
+        workers = min(MAX_PARALLEL_WORKERS, len(chunk_set))
+        pool = ThreadPoolExecutor(max_workers=workers)
+        try:
             futures = {
                 pool.submit(
                     call_gemini_chunk,
@@ -1605,12 +1624,30 @@ def analyze_all(
                     exhausted,
                     exhausted_lock,
                     route_limit,
+                    deadline,
                 ): chunk_index
                 for chunk_index, chunk in enumerate(chunk_set)
             }
 
             done = 0
-            for future in as_completed(futures):
+            def completed_with_status():
+                pending = set(futures)
+                while pending:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        # Collect results already ready at the deadline.
+                        completed = {future for future in pending if future.done()}
+                        yield from completed
+                        if pending - completed:
+                            phase_errors.append("ครบเวลาวิเคราะห์แล้ว เก็บคำตอบที่ได้ไว้ให้ตรวจ")
+                        return
+                    if status_cb:
+                        status_cb(phase, done, len(chunk_set), int(time.monotonic() - started))
+                    completed, pending = wait(
+                        pending, timeout=min(1, remaining), return_when=FIRST_COMPLETED)
+                    yield from completed
+
+            for future in completed_with_status():
                 chunk_index = futures[future]
                 done += 1
                 try:
@@ -1648,6 +1685,10 @@ def analyze_all(
                     )
                 if report_progress and progress_cb:
                     progress_cb(done, len(chunk_set))
+        finally:
+            # Do not wait for overdue network calls; workers have no UI/session
+            # writes and cannot start another route beyond the shared deadline.
+            pool.shutdown(wait=False, cancel_futures=True)
         return phase_results, phase_errors, completed_entry_ids
 
     first_results, first_pass_errors, _ = run_chunks(
@@ -1662,6 +1703,16 @@ def analyze_all(
     # ซ่อมเฉพาะข้อที่ยังไม่มีคำตอบ ไม่ว่าชุดเดิมจะตอบไม่ครบหรือทั้งชุดล้ม
     # เพื่อให้ timeout หนึ่งชุดไม่ทำให้ข้อเหล่านั้นถูกข้ามถาวร
     for repair_attempt in range(MAX_REPAIR_ATTEMPTS):
+        if time.monotonic() >= deadline:
+            debug_logs.append("ครบเวลาวิเคราะห์: หยุดการซ่อมอัตโนมัติและคงคำตอบที่ได้ไว้")
+            break
+        if not any(answer.get("answer") for answer in results.values()) and first_pass_errors and all(
+            is_quota_or_transient_error(error) or is_daily_quota_error(error)
+            or is_model_unavailable_error(error) or is_dead_key_error(error)
+            for error in first_pass_errors
+        ):
+            debug_logs.append("หยุดลองซ้ำ: บริการ AI ไม่พร้อมใช้งานและยังไม่ได้คำตอบ")
+            break
         missing = [
             item
             for item in indexed
@@ -1708,13 +1759,19 @@ def analyze_all(
     for answer_data in results.values():
         answer_data.setdefault("verification", "not_needed")
 
+    if verify_risky and time.monotonic() >= deadline:
+        debug_logs.append("ครบเวลาวิเคราะห์: คงผลที่ได้และพักการตรวจทานเพิ่มเติม")
+        for answer_data in results.values():
+            if answer_data.get("verification") == "not_needed":
+                answer_data["verification"] = "budget_skipped"
+
     remaining_missing = [q for _, q in indexed if not results.get(q.entry_id, {}).get("answer")]
     if verify_risky and remaining_missing:
         debug_logs.append(
             f"ยังมี {len(remaining_missing)} ข้อที่ไม่มีคำตอบ จึงพักการตรวจซ้ำข้อที่ตอบแล้วเพื่อประหยัดโควตา"
         )
 
-    if verify_risky and not remaining_missing:
+    if verify_risky and not remaining_missing and time.monotonic() < deadline:
         ranked_verification_items: List[Tuple[int, int, Question]] = []
         for idx, question in indexed:
             original = results.get(question.entry_id, {})
@@ -2243,7 +2300,10 @@ def restore_workspace_draft() -> None:
 
 
 if "workspace_started" not in st.session_state:
-    st.session_state["workspace_started"] = "questions" in st.session_state
+    st.session_state["workspace_started"] = (
+        "questions" in st.session_state
+        or st.query_params.get("client") == "android"
+    )
 
 if not st.session_state.get("workspace_started"):
     st.markdown(
@@ -2514,6 +2574,12 @@ if not has_analysis:
                             stage_board.markdown(analysis_stage_markup("ตรวจทาน", count, len(questions)), unsafe_allow_html=True)
                             live_heading.caption("กำลังตรวจคำตอบที่ผลสองรอบต่างกัน")
 
+                    def status_cb(phase: str, done: int, total: int, elapsed: int) -> None:
+                        live_heading.caption(
+                            f"{phase} · เสร็จ {done}/{total} ชุด · ผ่านไป {elapsed} วินาที "
+                            "· วิเคราะห์ไม่เกิน 2 นาที แล้วเก็บคำตอบที่ได้ไว้ให้ตรวจ"
+                        )
+
                     ai_answers, ai_errors, debug_logs = analyze_all(
                         questions,
                         api_keys,
@@ -2521,6 +2587,7 @@ if not has_analysis:
                         ai_cb,
                         verify_risky=accuracy_mode,
                         live_cb=live_cb,
+                        status_cb=status_cb,
                     )
                     debug_logs = parse_logs + debug_logs
                     bar.empty()
@@ -2539,7 +2606,7 @@ if not has_analysis:
                             st.error(
                                 f"มี {unanswered_count} ข้อที่ระบบยังไม่สามารถตอบได้ "
                                 "หากรายละเอียดทางเทคนิคระบุว่าโควตาของทุกโมเดลหรือคีย์หมด "
-                                "กรุณารอให้โควตารีเซ็ต เพิ่ม API Key หรือเปิดการเรียกเก็บเงินของบริการที่ใช้งาน"
+                                "กรุณารอให้บริการพร้อมแล้วลองเฉพาะข้อที่ยังว่างอีกครั้ง"
                             )
                     else:
                         st.success(f"วิเคราะห์ครบ {len(ai_answers)} ข้อ")
