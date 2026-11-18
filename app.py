@@ -317,8 +317,12 @@ MAX_ROUTE_ATTEMPTS = 2
 MAX_VERIFICATION_ITEMS = 8
 MAX_ADJUDICATION_ITEMS = 3
 MAX_IMAGE_WORKERS = 6
-ANALYSIS_TIMEOUT_MS = 30_000
-ANALYSIS_BUDGET_SECONDS = 120
+# The Gemini Developer API rejects manually supplied deadlines below 10 seconds.
+# Keep a safety margin and never send a request when the shared analysis budget
+# has less than the API's documented minimum remaining.
+MIN_GEMINI_TIMEOUT_MS = 10_000
+ANALYSIS_TIMEOUT_MS = 45_000
+ANALYSIS_BUDGET_SECONDS = 300
 SUBMIT_TIMEOUT = 30
 IMAGE_TIMEOUT = 10
 MAX_IMAGE_DIM = 1024
@@ -1500,8 +1504,11 @@ def call_gemini_chunk(
             timeout_ms = ANALYSIS_TIMEOUT_MS
             if deadline is not None:
                 remaining_ms = int((deadline - time.monotonic()) * 1000)
-                if remaining_ms <= 0:
-                    raise TimeoutError("ครบเวลาวิเคราะห์แล้ว คงคำตอบที่ได้ไว้ให้ตรวจ")
+                if remaining_ms < MIN_GEMINI_TIMEOUT_MS:
+                    raise TimeoutError(
+                        "เวลาวิเคราะห์ที่เหลือน้อยกว่า 10 วินาที "
+                        "จึงงดส่งคำขอใหม่เพื่อป้องกัน Gemini ปฏิเสธ Deadline (400)"
+                    )
                 timeout_ms = min(timeout_ms, remaining_ms)
             routes_tried += 1
             status, result = try_key_model(key, exam_context, chunk, model_name, timeout_ms)
